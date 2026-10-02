@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v5.4';
+  const APP_VERSION = 'v5.5';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -661,6 +661,7 @@ const App = (() => {
       <div class="setrow" data-act="import"><div>Add music to library<div class="sub">Import audio files from the Files app</div></div><span style="color:var(--sub)">${icon('plus')}</span></div>
       <div class="setrow" data-act="import-zip"><div>Import ZIP<div class="sub">Pull the songs out of a zip file</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
       <div class="setrow" data-act="export-library"><div>Export library<div class="sub">Back up your songs to a private download link</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
+      <div class="setrow" data-act="export-drive"><div>Back up to Google Drive<div class="sub">Send your songs to Drive, organized by album</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
       <div class="setrow" data-act="open-plimport"><div>Import Spotify playlist<div class="sub" id="plimport-sub">Turn a playlist into library downloads</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
       <div class="setrow" data-act="fix-all-tags"><div>utag fixer<div class="sub">Retag every album in your library</div></div><span style="color:var(--sub)">${icon('tag')}</span></div>
       <div class="setrow"><div>Songs in library<div class="sub" id="set-storage">Counting…</div></div><span style="color:var(--sub)">${n}</span></div>
@@ -789,7 +790,14 @@ const App = (() => {
       xhr.send(blob);
     });
   }
-  async function exportLibrary() {
+  async function exportLibrary(mode) {
+    if (exporting) return;
+    const toDrive = mode === 'drive';
+    /* Drive bridge: the phone uploads parts to a fixed staging bin; a worker
+       on my server drains it into the user's Google Drive. Session-tagged part
+       names keep concurrent backups from colliding in the shared bin. */
+    const BRIDGE_BIN = 'splotify-bridge-01f7ca01ad84edb7438d7084';
+    const sess = Date.now().toString(36);
     if (exporting) return;
     const tracks = S.tracks.filter(t => t.file);
     if (!tracks.length) { toast('No songs to export yet'); return; }
@@ -810,7 +818,7 @@ const App = (() => {
        deterministic (sorted tracks, fixed part size), so a fingerprint of the
        library tells us whether saved progress still applies. */
     const fp = tracks.length + ':' + tracks.reduce((a, t) => a + (t.file.size || 0), 0) + ':' + batches.length;
-    const SKEY = 'splotify-export-progress';
+    const SKEY = 'splotify-export-progress-' + (toDrive ? 'drive' : 'link');
     let saved = null;
     try { saved = JSON.parse(localStorage.getItem(SKEY) || 'null'); } catch (e) { /* ignore */ }
     let bin = null, done = null;
@@ -823,13 +831,16 @@ const App = (() => {
         try { localStorage.removeItem(SKEY); } catch (e) { /* ignore */ }
       }
     }
-    if (!bin) { bin = 'splotify-' + Date.now().toString(36); done = batches.map(() => false); }
+    if (!bin) {
+      bin = toDrive ? BRIDGE_BIN : 'splotify-' + sess;
+      done = batches.map(() => false);
+    }
     const save = () => { try { localStorage.setItem(SKEY, JSON.stringify({ fp, bin, done })); } catch (e) { /* ignore */ } };
     /* Verify the "done" parts are still on filebin (bins expire after 6 days);
        anything missing gets re-uploaded. */
     for (let b = 0; b < batches.length; b++) {
       if (!done[b]) continue;
-      const name = 'splotify-backup-part' + (b + 1) + '-of-' + batches.length + '.zip';
+      const name = toDrive ? 'splotify-backup-' + sess + '-part' + (b + 1) + '-of-' + batches.length + '.zip' : 'splotify-backup-part' + (b + 1) + '-of-' + batches.length + '.zip';
       try {
         const r = await fetch('https://filebin.net/' + bin + '/' + encodeURIComponent(name), { method: 'HEAD' });
         if (!r.ok) done[b] = false;
@@ -861,13 +872,13 @@ const App = (() => {
       for (let b = 0; b < batches.length; b++) {
         if (exportCancel) throw new Error('cancelled');
         if (done[b]) continue;
-        title.textContent = 'Backing up part ' + (b + 1) + ' of ' + batches.length + ' — keep Splotify open (tap to pause)';
+        title.textContent = (toDrive ? 'Sending part ' : 'Backing up part ') + (b + 1) + ' of ' + batches.length + ' — keep Splotify open (tap to pause)';
         const ui = (i, n, doneBytes) => {
           count.textContent = 'Part ' + (b + 1) + '/' + batches.length + ' • packing song ' + i + ' of ' + n + ' • ' + gb(doneBytes);
           fill.style.width = ((b + (n ? i / n : 1)) / batches.length * 50) + '%';
         };
         const blob = await buildZipBlob(batches[b], ui);
-        const name = 'splotify-backup-part' + (b + 1) + '-of-' + batches.length + '.zip';
+        const name = toDrive ? 'splotify-backup-' + sess + '-part' + (b + 1) + '-of-' + batches.length + '.zip' : 'splotify-backup-part' + (b + 1) + '-of-' + batches.length + '.zip';
         await uploadPart(blob, bin, name, frac => {
           count.textContent = 'Part ' + (b + 1) + '/' + batches.length + ' • uploading ' + Math.round(frac * 100) + '%';
           fill.style.width = ((b + 0.5 + frac * 0.5) / batches.length * 100) + '%';
@@ -885,6 +896,10 @@ const App = (() => {
     }
     try { localStorage.removeItem(SKEY); } catch (e) { /* ignore */ }
     finish();
+    if (toDrive) {
+      toast('Upload complete — moving everything to your Drive now');
+      return;
+    }
     const url = 'https://filebin.net/' + bin;
     try { await navigator.clipboard.writeText(url); } catch (e) { /* fall through */ }
     prompt('Backup complete — copy this link and send it to me:', url);
@@ -1271,7 +1286,8 @@ const App = (() => {
       case 'pill': S.pill = id; render(); break;
       case 'import': Importer.open(); break;
       case 'import-zip': Importer.openZip(); break;
-      case 'export-library': exportLibrary(); break;
+      case 'export-library': exportLibrary('link'); break;
+      case 'export-drive': exportLibrary('drive'); break;
       case 'open-plimport': nav('plimport'); break;
       case 'plimport-start': PlImport.startFromUI(); break;
       case 'plimport-cancel': PlImport.cancel(); break;
