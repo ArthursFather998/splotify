@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v5.8';
+  const APP_VERSION = 'v5.9';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -811,7 +811,10 @@ const App = (() => {
        on my server drains it into the user's Google Drive. Session-tagged part
        names keep concurrent backups from colliding in the shared bin. */
     const BRIDGE_BIN = 'splotify-bridge-01f7ca01ad84edb7438d7084';
-    const sess = Date.now().toString(36);
+    /* Session id, persisted with the progress: part filenames embed it, so a
+       resumed backup must reuse the SAME session or the already-uploaded
+       parts look missing and the run restarts at 0 (v5.8 bug). */
+    let sess = Date.now().toString(36);
     if (exporting) return;
     const tracks = S.tracks.filter(t => t.file);
     if (!tracks.length) { toast('No songs to export yet'); return; }
@@ -841,6 +844,7 @@ const App = (() => {
       if (n > 0 && n < batches.length &&
           (auto || confirm('Resume backup? ' + n + ' of ' + batches.length + ' parts are already uploaded.'))) {
         bin = saved.bin; done = saved.done.slice();
+        if (saved.sess) sess = saved.sess;
       } else if (n === batches.length) {
         try { localStorage.removeItem(SKEY); } catch (e) { /* ignore */ }
       }
@@ -849,7 +853,7 @@ const App = (() => {
       bin = toDrive ? BRIDGE_BIN : 'splotify-' + sess;
       done = batches.map(() => false);
     }
-    const save = () => { try { localStorage.setItem(SKEY, JSON.stringify({ fp, bin, done, userPaused: exportUserPaused })); } catch (e) { /* ignore */ } };
+    const save = () => { try { localStorage.setItem(SKEY, JSON.stringify({ fp, bin, done, sess, userPaused: exportUserPaused })); } catch (e) { /* ignore */ } };
     /* Verify the "done" parts are still on filebin (bins expire after 6 days);
        anything missing gets re-uploaded. */
     for (let b = 0; b < batches.length; b++) {
@@ -1460,7 +1464,7 @@ const App = (() => {
 
   /* utag fixer screen (v5.8): a dedicated view showing the auto fixer working
      live — per-song before/after, run stats — plus manual tag editing. */
-  const fixUI = { running: false, album: '', albumIdx: 0, albumCount: 0, scanned: 0, matched: 0, fixed: 0, notFound: 0, log: [] };
+  const fixUI = { running: false, album: '', albumIdx: 0, albumCount: 0, scanned: 0, matched: 0, fixed: 0, notFound: 0, log: [], via: { apple: 0, musicbrainz: 0, spotify: 0 } };
   const TAG_FIELDS = ['title', 'artist', 'album', 'albumArtist', 'genre'];
   const TAG_LABEL = { title: 'Title', artist: 'Artist', album: 'Album', albumArtist: 'Album artist', genre: 'Genre' };
   const snapTags = t => { const o = {}; TAG_FIELDS.forEach(f => o[f] = t[f] || ''); return o; };
@@ -1474,13 +1478,26 @@ const App = (() => {
   }
   function paintFixUI() {
     const set = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
-    set('fix-albums', fixUI.albumCount ? fixUI.albumIdx + ' of ' + fixUI.albumCount : '—');
-    set('fix-scanned', String(fixUI.scanned));
-    set('fix-matched', String(fixUI.matched));
-    set('fix-fixed', String(fixUI.fixed));
+    // Idle screen restores the last run's numbers so the stats aren't blank.
+    let d = fixUI, lastRun = false;
+    if (!fixUI.running && !fixUI.albumCount) {
+      try {
+        const last = JSON.parse(localStorage.getItem('splotify-tagfix-last') || 'null');
+        if (last && (last.scanned || last.fixed)) {
+          d = { albumIdx: last.albums || 0, albumCount: last.albums || 0, scanned: last.scanned || 0, matched: last.matched || 0, fixed: last.fixed || 0, via: last.via || {} };
+          lastRun = true;
+        }
+      } catch (e) { /* ignore */ }
+    }
+    set('fix-albums', d.albumCount ? d.albumIdx + ' of ' + d.albumCount : '—');
+    set('fix-scanned', String(d.scanned));
+    set('fix-matched', String(d.matched));
+    set('fix-fixed', String(d.fixed));
+    const vs = d.via || {};
+    set('fix-sources', 'Apple Music: ' + (vs.apple || 0) + ' · MusicBrainz: ' + (vs.musicbrainz || 0) + ' · Spotify: ' + (vs.spotify || 0));
     set('fix-status', fixUI.running
       ? 'Fixing ' + fixUI.album + '…'
-      : (fixUI.albumCount ? 'Last run: fixed ' + fixUI.fixed + ' of ' + fixUI.scanned + ' tracks' : 'Retag every album in your library.'));
+      : ((d.albumCount || lastRun) ? 'Last run: fixed ' + d.fixed + ' of ' + d.scanned + ' tracks' : 'Retag every album in your library.'));
     const log = document.getElementById('fix-log');
     if (log) {
       log.innerHTML = fixUI.log.map(e =>
@@ -1511,6 +1528,7 @@ const App = (() => {
         ${stat('fix-matched', 'Matched')}
         ${stat('fix-fixed', 'Fixed')}
       </div>
+      <div id="fix-sources" style="color:var(--sub);font-size:13px;margin-top:10px"></div>
       <div style="text-align:center"><button id="fix-run-btn" class="bigbtn pink" data-act="fix-run" style="margin:20px 0 8px">Fix all albums</button></div>
       <h2 style="font-size:16px;margin:22px 0 6px">Fixed in this run</h2>
       <div id="fix-log"></div>
@@ -1604,7 +1622,7 @@ const App = (() => {
     if (S.fixing || fixUI.running) return;
     const list = albums().filter(a => a.tracks && a.tracks.length);
     if (!list.length) { toast('No albums to fix'); return; }
-    Object.assign(fixUI, { running: true, album: '', albumIdx: 0, albumCount: list.length, scanned: 0, matched: 0, fixed: 0, notFound: 0, log: [] });
+    Object.assign(fixUI, { running: true, album: '', albumIdx: 0, albumCount: list.length, scanned: 0, matched: 0, fixed: 0, notFound: 0, log: [], via: { apple: 0, musicbrainz: 0, spotify: 0 } });
     paintFixUI();
     for (let i = 0; i < list.length; i++) {
       const a = list[i];
@@ -1619,6 +1637,10 @@ const App = (() => {
         fixUI.scanned += res.total || 0;
         fixUI.matched += res.matched || 0;
         fixUI.fixed += res.fixed || 0;
+        const rv = res.via || {};
+        fixUI.via.apple += rv.apple || 0;
+        fixUI.via.musicbrainz += rv.musicbrainz || 0;
+        fixUI.via.spotify += rv.spotify || 0;
         if (!res.found) fixUI.notFound++;
         for (const t of tracks) {
           const b = before.get(t.id); if (!b) continue;
@@ -1636,6 +1658,7 @@ const App = (() => {
       localStorage.setItem('splotify-tagfix-last', JSON.stringify({
         when: Date.now(), scanned: fixUI.scanned, matched: fixUI.matched,
         fixed: fixUI.fixed, notFound: fixUI.notFound, albums: fixUI.albumCount,
+        via: fixUI.via,
       }));
     } catch (e) { /* ignore */ }
     try { await refreshTracks(); render(); paintMini(); } catch (e) {}

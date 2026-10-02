@@ -632,6 +632,84 @@ const Importer = (() => {
     }
     return fixed;
   }
+  // MusicBrainz fallback: the largest open music database (what the Picard
+  // tagger uses). Consulted for tracks Apple Music can't identify. Free, no
+  // API key — politeness is 1 request/sec, enforced below, with an in-memory
+  // cache so a repeated title/artist costs nothing.
+  const mbCache = new Map();
+  let mbLastReq = 0;
+  async function mbSearchRecording(title, artist) {
+    const key = norm(title) + '|||' + norm(artist);
+    if (mbCache.has(key)) return mbCache.get(key);
+    const wait = 1100 - (Date.now() - mbLastReq);
+    if (wait > 0) await new Promise(r => setTimeout(r, wait));
+    mbLastReq = Date.now();
+    let out = null;
+    try {
+      let q = 'recording:"' + String(title || '').replace(/"/g, '') + '"';
+      if (artist && artist !== 'Unknown Artist') q += ' AND artist:"' + String(artist).replace(/"/g, '') + '"';
+      const c = new AbortController(); const t = setTimeout(() => c.abort(), 15000);
+      const r = await fetch('https://musicbrainz.org/ws/2/recording/?query=' + encodeURIComponent(q) + '&fmt=json&limit=8', { signal: c.signal });
+      clearTimeout(t);
+      if (r.ok) {
+        const d = await r.json();
+        out = (d.recordings || []).filter(x => x && (x.score || 0) >= 60);
+      }
+    } catch (e) { /* offline or throttled: skip */ }
+    mbCache.set(key, out);
+    return out;
+  }
+  function mbPick(recs, t) {
+    if (!recs || !recs.length) return null;
+    const dur = t.duration || 0;
+    let best = null, bestScore = -1;
+    for (const rec of recs) {
+      if (!titleSimilar(t.title, rec.title) && (rec.score || 0) < 85) continue;
+      let s = rec.score || 0;
+      const rlen = rec.length || 0;
+      if (dur > 0 && rlen > 0) {
+        const d = Math.abs(dur - rlen / 1000);
+        if (d > 20) continue;
+        s += 20 - d;
+      }
+      if (s > bestScore) { bestScore = s; best = rec; }
+    }
+    return best;
+  }
+  async function mbFixTracks(leftovers) {
+    let fixed = 0, matched = 0;
+    for (let i = leftovers.length - 1; i >= 0; i--) {
+      const t = leftovers[i];
+      if (!t.title || t.title === 'Unknown Title') continue;
+      let recs = null;
+      try { recs = await mbSearchRecording(t.title, t.artist); } catch (e) { continue; }
+      const pick = mbPick(recs, t);
+      if (!pick) continue;
+      matched++;
+      const tr = { ...t };
+      const before = [tr.title, tr.artist, tr.album, tr.albumArtist].join('|');
+      tr.title = pick.title || tr.title;
+      const mbArtist = (pick['artist-credit'] || []).map(a => (a.name || '') + (a.joinphrase || '')).join('').trim();
+      if (mbArtist) tr.artist = mbArtist;
+      const rel = (pick.releases || [])[0];
+      if (rel && rel.title) tr.album = rel.title;
+      if (!tr.albumArtist || tr.albumArtist === 'Unknown Artist') tr.albumArtist = tr.artist;
+      tr.tagged = true;
+      tr.tagsVia = 'MusicBrainz';
+      const changed = before !== [tr.title, tr.artist, tr.album, tr.albumArtist].join('|');
+      try {
+        await persistFix(t.id, tr);
+        Object.assign(t, {
+          title: tr.title, artist: tr.artist, album: tr.album, albumArtist: tr.albumArtist,
+          genre: tr.genre, year: tr.year, trackNo: tr.trackNo, discNo: tr.discNo,
+          art: tr.art, tagged: tr.tagged, tagsVia: tr.tagsVia,
+        });
+        if (changed) fixed++;
+      } catch (e) {}
+      leftovers.splice(i, 1);
+    }
+    return { fixed, matched };
+  }
   // Remember single releases on the track record. The bundled discography is
   // the complete source of truth, so this recomputes from scratch (replacing
   // any stale Apple-era "X - Single" names) and writes only the
@@ -715,7 +793,7 @@ const Importer = (() => {
   }
   async function fixAlbum(tracks, knownAlbums, knownArtists) {
     tracks = (tracks || []).filter(Boolean);
-    if (!tracks.length) return { fixed: 0, total: 0, matched: 0, found: false };
+    if (!tracks.length) return { fixed: 0, total: 0, matched: 0, found: false, via: { apple: 0, musicbrainz: 0, spotify: 0 } };
     const albumName = tracks[0].album || '';
     const artistName = tracks[0].albumArtist && tracks[0].albumArtist !== 'Unknown Artist' ? tracks[0].albumArtist
       : (tracks[0].artist && tracks[0].artist !== 'Unknown Artist' ? tracks[0].artist : '');
@@ -726,6 +804,7 @@ const Importer = (() => {
     // catalogs, all via id lookup) is matched by title/duration signals.
     if (!albumName || albumName === 'Unknown Album') {
       let fixed = 0, matched = 0, attempted = 0;
+      const via = { apple: 0, musicbrainz: 0, spotify: 0 };
       const leftover = [];
       for (const t of tracks) {
         const tr = { ...t };
@@ -739,7 +818,7 @@ const Importer = (() => {
               genre: tr.genre, year: tr.year, trackNo: tr.trackNo, discNo: tr.discNo,
               art: tr.art, tagged: tr.tagged, tagsVia: tr.tagsVia,
             });
-            fixed++; matched++; continue;
+            fixed++; matched++; via.apple++; continue;
           }
         } catch (e) {}
         leftover.push(t);
@@ -768,23 +847,28 @@ const Importer = (() => {
             if (!m) continue;
             const tr = { ...t };
             const changed = applyListing(tr, m, listing.col, listing.art);
-            try { await persistFix(t.id, tr); Object.assign(t, tr); matched++; if (changed) fixed++; } catch (e) {}
+            try { await persistFix(t.id, tr); Object.assign(t, tr); matched++; if (changed) { fixed++; via.apple++; } } catch (e) {}
             leftover.splice(i, 1);
           }
           if (!leftover.length) break;
         }
         note = `fix v13: tried ${attempted}, seedAlbums ${seedAlbums.length}, seedArtists ${seedArtists.size}, listings ${listings.length}, still ${leftover.length}`;
+        // MusicBrainz pass: anything Apple couldn't identify gets a shot
+        // against the open database before falling through to his own
+        // discography singles.
+        const mb = await mbFixTracks(leftover);
+        fixed += mb.fixed; matched += mb.matched; via.musicbrainz += mb.fixed;
         // Spotify discography pass: Apple Music doesn't carry some of his
         // singles (Harlot, Time, Time II), so the catalog passes above can
         // never tag them. This matches leftovers against his Spotify releases.
         const discoFixed = await discoFixTracks(leftover);
-        fixed += discoFixed; matched += discoFixed;
+        fixed += discoFixed; matched += discoFixed; via.spotify += discoFixed;
         await recordSingles(tracks);
         for (const t of leftover) {
           try { await persistFix(t.id, { ...t, diag: note }); } catch (e) {}
         }
       }
-      return { fixed, total: tracks.length, matched, found: attempted > 0 };
+      return { fixed, total: tracks.length, matched, found: attempted > 0, via };
     }
     // Known album: match each track against the album's own listing plus the
     // artist's other releases, with full albums tried before single releases.
@@ -802,9 +886,10 @@ const Importer = (() => {
       if (l && id && !seenCol.has(id)) { seenCol.add(id); ordered.push(l); }
     }
     ordered.sort((a, b) => b.songs.length - a.songs.length);
-    if (!ordered.length) return { fixed: 0, total: tracks.length, matched: 0, found: false, notFound: true };
+    if (!ordered.length) return { fixed: 0, total: tracks.length, matched: 0, found: false, notFound: true, via: { apple: 0, musicbrainz: 0, spotify: 0 } };
     const usedBy = new Map();
     let fixed = 0, matched = 0;
+    const via = { apple: 0, musicbrainz: 0, spotify: 0 };
     for (const t of tracks) {
       let best = null, bestListing = null;
       for (const listing of ordered) {
@@ -817,12 +902,12 @@ const Importer = (() => {
       matched++;
       const tr = { ...t };
       const changed = applyListing(tr, best, bestListing.col, bestListing.art);
-      try { await persistFix(t.id, tr); Object.assign(t, tr); if (changed) fixed++; } catch (e) {}
+      try { await persistFix(t.id, tr); Object.assign(t, tr); if (changed) { fixed++; via.apple++; } } catch (e) {}
     }
     await recordSingles(tracks);
     const albumLabel = primary ? primary.col.collectionName
       : (ordered[0] && ordered[0].col ? ordered[0].col.collectionName : '');
-    return { fixed, total: tracks.length, matched, found: true, album: albumLabel };
+    return { fixed, total: tracks.length, matched, found: true, album: albumLabel, via };
   }
   // Fix tags on tracks already in the library (runs quietly on launch).
   async function healLibrary() {
