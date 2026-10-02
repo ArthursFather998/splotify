@@ -100,6 +100,10 @@ const Player = (() => {
       navigator.mediaSession.setActionHandler('previoustrack', () => api.prev());
       navigator.mediaSession.setActionHandler('nexttrack', () => api.next());
       navigator.mediaSession.setActionHandler('seekto', d => { if (d.seekTime != null) api.seek(d.seekTime); });
+      /* iOS shows its own 10s skip buttons over previous/next unless they're
+         explicitly disabled — null removes them, leaving prev/play/next. */
+      navigator.mediaSession.setActionHandler('seekbackward', null);
+      navigator.mediaSession.setActionHandler('seekforward', null);
     } catch (e) { /* noop */ }
   }
 
