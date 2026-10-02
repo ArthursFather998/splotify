@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v5.9';
+  const APP_VERSION = 'v6.0';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -820,10 +820,10 @@ const App = (() => {
     if (!tracks.length) { toast('No songs to export yet'); return; }
     tracks.sort((a, b) => String(a.album || '').localeCompare(String(b.album || '')) ||
       ((a.trackNo || 0) - (b.trackNo || 0)) || String(a.title).localeCompare(String(b.title)));
-    /* Split into ~100 MB parts: each packs and uploads fast enough to finish
-       in the foreground, and a killed run resumes at the next unfinished part
-       instead of starting over. */
-    const PART = 100 * 1024 * 1024;
+    /* Split into ~25 MB parts: small enough that a part actually finishes on
+       a slow connection before the app gets closed, so progress checkpoints
+       often and a killed run resumes close to where it stopped. */
+    const PART = 25 * 1024 * 1024;
     const batches = []; let cur = [], curSize = 0;
     for (const t of tracks) {
       const s = t.file.size || 0;
