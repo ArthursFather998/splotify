@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v5.2';
+  const APP_VERSION = 'v5.3';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -660,7 +660,7 @@ const App = (() => {
     <div class="setgroup"><h2>Music</h2>
       <div class="setrow" data-act="import"><div>Add music to library<div class="sub">Import audio files from the Files app</div></div><span style="color:var(--sub)">${icon('plus')}</span></div>
       <div class="setrow" data-act="import-zip"><div>Import ZIP<div class="sub">Pull the songs out of a zip file</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
-      <div class="setrow" data-act="export-library"><div>Export library<div class="sub">Save your songs into backup zip files for iCloud Drive</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
+      <div class="setrow" data-act="export-library"><div>Export library<div class="sub">Back up your songs to a private download link</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
       <div class="setrow" data-act="open-plimport"><div>Import Spotify playlist<div class="sub" id="plimport-sub">Turn a playlist into library downloads</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
       <div class="setrow" data-act="fix-all-tags"><div>utag fixer<div class="sub">Retag every album in your library</div></div><span style="color:var(--sub)">${icon('tag')}</span></div>
       <div class="setrow"><div>Songs in library<div class="sub" id="set-storage">Counting…</div></div><span style="color:var(--sub)">${n}</span></div>
@@ -776,13 +776,18 @@ const App = (() => {
     push(new Uint8Array(eocd.buffer));
     return new Blob(parts, { type: 'application/zip' });
   }
-  async function shareZip(blob, name) {
-    const file = new File([blob], name, { type: 'application/zip' });
-    if (navigator.canShare && navigator.canShare({ files: [file] })) {
-      try { await navigator.share({ files: [file] }); return 'shared'; }
-      catch (e) { return (e && e.name === 'AbortError') ? 'cancelled' : 'error'; }
-    }
-    return 'noshare';
+  /* Upload one backup part to filebin (plain HTTPS, no account, CORS-open).
+     The bin holds every part; its link is good for 6 days. */
+  function uploadPart(blob, bin, name, onProg) {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', 'https://filebin.net/' + bin + '/' + encodeURIComponent(name));
+      xhr.setRequestHeader('Content-Type', 'application/zip');
+      xhr.upload.onprogress = e => { if (e.lengthComputable) onProg(e.loaded / e.total); };
+      xhr.onload = () => (xhr.status >= 200 && xhr.status < 300) ? resolve() : reject(new Error('http ' + xhr.status));
+      xhr.onerror = () => reject(new Error('network'));
+      xhr.send(blob);
+    });
   }
   async function exportLibrary() {
     if (exporting) return;
@@ -791,9 +796,9 @@ const App = (() => {
     exporting = true; exportCancel = false;
     tracks.sort((a, b) => String(a.album || '').localeCompare(String(b.album || '')) ||
       ((a.trackNo || 0) - (b.trackNo || 0)) || String(a.title).localeCompare(String(b.title)));
-    /* Split into ~300 MB parts: each one fits through the iOS share sheet and
-       can be saved straight to iCloud Drive without needing local storage. */
-    const PART = 300 * 1024 * 1024;
+    /* Split into ~200 MB parts: each uploads as one HTTPS POST, no share
+       sheet and no local phone storage involved. */
+    const PART = 200 * 1024 * 1024;
     const batches = []; let cur = [], curSize = 0;
     for (const t of tracks) {
       const s = t.file.size || 0;
@@ -801,6 +806,7 @@ const App = (() => {
       cur.push(t); curSize += s;
     }
     if (cur.length) batches.push(cur);
+    const bin = 'splotify-' + Date.now().toString(36);
     const prog = document.getElementById('import-progress');
     const title = document.getElementById('ip-title');
     const count = document.getElementById('ip-count');
@@ -810,30 +816,32 @@ const App = (() => {
     const gb = b => (b / 1073741824).toFixed(1) + ' GB';
     try {
       for (let b = 0; b < batches.length; b++) {
-        title.textContent = `Exporting backup part ${b + 1} of ${batches.length}… (tap to cancel)`;
+        title.textContent = `Backing up part ${b + 1} of ${batches.length}… (tap to cancel)`;
         const ui = (i, n, done) => {
-          count.textContent = `Part ${b + 1}/${batches.length} • song ${i} of ${n} • ${gb(done)}`;
-          fill.style.width = ((b + (n ? i / n : 1)) / batches.length * 100) + '%';
+          count.textContent = `Part ${b + 1}/${batches.length} • packing song ${i} of ${n} • ${gb(done)}`;
+          fill.style.width = ((b + (n ? i / n : 1)) / batches.length * 50) + '%';
         };
         const blob = await buildZipBlob(batches[b], ui);
-        const name = batches.length > 1
-          ? `splotify-backup-part${b + 1}-of-${batches.length}.zip`
-          : 'splotify-library.zip';
-        const res = await shareZip(blob, name);
-        if (res === 'cancelled' || exportCancel) throw new Error('cancelled');
-        if (res !== 'shared') throw new Error('share-unavailable');
-        if (b < batches.length - 1) toast(`Part ${b + 1} done — next part coming up`);
+        const name = `splotify-backup-part${b + 1}-of-${batches.length}.zip`;
+        await uploadPart(blob, bin, name, frac => {
+          count.textContent = `Part ${b + 1}/${batches.length} • uploading ${Math.round(frac * 100)}%`;
+          fill.style.width = ((b + 0.5 + frac * 0.5) / batches.length * 100) + '%';
+          if (exportCancel) throw new Error('cancelled');
+        });
+        if (exportCancel) throw new Error('cancelled');
       }
     } catch (e) {
       prog.style.display = 'none'; prog.onclick = null; exporting = false;
       const msg = e && e.message;
-      toast(msg === 'cancelled' ? 'Export canceled'
-        : msg === 'share-unavailable' ? 'The share sheet would not open — try again'
-        : 'Export failed');
+      toast(msg === 'cancelled' ? 'Backup canceled'
+        : 'Upload failed — check Wi-Fi and try again');
       return;
     }
     prog.style.display = 'none'; prog.onclick = null; exporting = false;
-    toast(batches.length > 1 ? 'Backup complete — every part exported' : 'Backup ready — choose Save to Files');
+    const url = 'https://filebin.net/' + bin;
+    try { await navigator.clipboard.writeText(url); } catch (e) { /* fall through */ }
+    prompt('Backup complete — copy this link and send it to me:', url);
+    toast('Backup link ready');
   }
   /* Checks the live sw.js for a newer build. The update row only lights up
      when the server has something newer than the running code. */
