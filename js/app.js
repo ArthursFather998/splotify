@@ -2014,7 +2014,7 @@ const App = (() => {
       case 'rs-done': nav('settings'); break;
       case 'rs-save-token': {
         const inp = document.getElementById('rs-token');
-        const v = (inp && inp.value || '').trim();
+        const v = ((inp && inp.value) || '').toLowerCase().replace(/[^0-9a-f]/g, '');
         if (!v) { toast('Paste the code first'); break; }
         try { localStorage.setItem(RS_TOKEN_KEY, v); } catch (e) { /* ignore */ }
         restoreLibrary(false);
