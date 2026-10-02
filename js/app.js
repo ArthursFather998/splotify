@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v6.5';
+  const APP_VERSION = 'v6.6';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -661,6 +661,7 @@ const App = (() => {
       <div class="setrow" data-act="import"><div>Add music to library<div class="sub">Import audio files from the Files app</div></div><span style="color:var(--sub)">${icon('plus')}</span></div>
       <div class="setrow" data-act="import-zip"><div>Import ZIP<div class="sub">Pull the songs out of a zip file</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
       <div class="setrow" data-act="export-hub"><div>Export music<div class="sub">Back up your songs to a link or Google Drive</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
+      <div class="setrow" data-act="restore-drive"><div>Pull from Drive backup<div class="sub">One-tap restore once your Drive backup is finished</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
       <div class="setrow" data-act="open-plimport"><div>Import Spotify playlist<div class="sub" id="plimport-sub">Turn a playlist into library downloads</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
       <div class="setrow" data-act="fix-all-tags"><div>utag fixer<div class="sub">Retag your library, watch it work, edit tags by hand</div></div><span style="color:var(--sub)">${icon('tag')}</span></div>
       <div class="setrow"><div>Songs in library<div class="sub" id="set-storage">Counting…</div></div><span style="color:var(--sub)">${n}</span></div>
@@ -1235,6 +1236,293 @@ const App = (() => {
     <div id="plimport-body" style="padding:0 16px 32px"></div>`;
   }
 
+  /* One-tap Drive restore (v6.6): pull the finished Drive backup into this
+     Splotify (new origin, empty library) straight from Google Drive. The
+     drain worker opens the backup folder to anyone-with-the-link and
+     publishes an ENCRYPTED manifest (song -> Drive file id); this app
+     decrypts it with the restore code and downloads every song directly.
+     The phone never re-uploads. Resumable per song, foreground only (same
+     iOS limits as the uploader). */
+  const RELAY_RENDEZVOUS = 'https://filebin.net/splotify-relay-01f7ca01ad84edb7438d7084/relay.json';
+  const BRIDGE_BIN_URL = 'https://filebin.net/splotify-bridge-01f7ca01ad84edb7438d7084';
+  const RS_KEY = 'splotify-restore-progress';
+  const RS_TOKEN_KEY = 'splotify-restore-token';
+  const rsUI = { phase: 'idle', file: 0, files: 0, frac: 0, gotBytes: 0, totalBytes: 0, t0: 0, note: '', backup: null };
+  let rsTimer = null, restoring = false, rsCancel = false;
+  const rsgb = b => (b / 1073741824).toFixed(1) + ' GB';
+  function rsElapsed() {
+    if (!rsUI.t0) return '0:00';
+    const s = Math.floor((Date.now() - rsUI.t0) / 1000);
+    return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+  }
+  function rsToken() { try { return localStorage.getItem(RS_TOKEN_KEY) || ''; } catch (e) { return ''; } }
+  async function rsManifestId() {
+    const r = await fetch(RELAY_RENDEZVOUS, { cache: 'no-store' });
+    if (!r.ok) throw new Error('rendezvous http ' + r.status);
+    const d = await r.json();
+    if (!d || !d.manifestFileId) throw new Error('no manifest yet');
+    return d.manifestFileId;
+  }
+  /* Backup status without any server: the rendezvous bin says whether a
+     finished manifest exists; otherwise count parts in the bridge bin. */
+  async function rsBackupStatus() {
+    const out = { ready: false, manifestFileId: null, partsDone: 0, partsTotal: 0 };
+    try { out.manifestFileId = await rsManifestId(); out.ready = true; return out; }
+    catch (e) { /* not published yet: fall through to part counts */ }
+    try {
+      const r = await fetch(BRIDGE_BIN_URL, { headers: { 'Accept': 'application/json' } });
+      if (r.ok) {
+        const d = await r.json();
+        const by = {};
+        for (const f of (d.files || [])) {
+          const m = /^splotify-backup-([a-z0-9]+)-part(\d+)-of-(\d+)\.zip$/.exec(f.filename || '');
+          if (m) { const k = m[1] + '/' + m[3]; (by[k] = by[k] || []).push(+m[2]); }
+        }
+        let best = null, bestN = 0;
+        for (const k of Object.keys(by)) if (by[k].length > bestN) { best = k; bestN = by[k].length; }
+        if (best) { out.partsDone = bestN; out.partsTotal = +best.split('/')[1]; }
+      }
+    } catch (e) { /* ignore */ }
+    return out;
+  }
+  /* Decrypt the manifest envelope (salt.nonce.ciphertext, base64) with the
+     restore code: PBKDF2-SHA256 260k -> AES-256-GCM. Must match drain.py. */
+  async function rsDecrypt(encText, code) {
+    const parts = encText.trim().split('.');
+    if (parts.length !== 3) throw new Error('bad envelope');
+    const b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+    const keyMat = await crypto.subtle.importKey('raw', new TextEncoder().encode(code), 'PBKDF2', false, ['deriveKey']);
+    const key = await crypto.subtle.deriveKey(
+      { name: 'PBKDF2', salt: b64(parts[0]), iterations: 260000, hash: 'SHA-256' },
+      keyMat, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
+    const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64(parts[1]) }, key, b64(parts[2]));
+    return JSON.parse(new TextDecoder().decode(pt));
+  }
+  const rsDriveDl = id => 'https://drive.google.com/uc?export=download&confirm=t&id=' + id;
+  function restoreUnfinished() {
+    try {
+      const s = JSON.parse(localStorage.getItem(RS_KEY) || 'null');
+      if (!s || !Array.isArray(s.done) || !s.done.length) return false;
+      return s.done.filter(Boolean).length < s.done.length;
+    } catch (e) { return false; }
+  }
+  function maybeAutoResumeRestore() {
+    if (restoring || exporting) return;
+    if (restoreUnfinished() && rsToken()) restoreLibrary(true);
+  }
+  function mimeFor(name) {
+    const ext = (name.split('.').pop() || '').toLowerCase();
+    return { mp3: 'audio/mpeg', flac: 'audio/flac', m4a: 'audio/mp4', m4b: 'audio/mp4', aac: 'audio/aac', wav: 'audio/wav', ogg: 'audio/ogg', opus: 'audio/opus' }[ext] || 'application/octet-stream';
+  }
+  const rsPaint = (i, frac, gotBytes, note) => {
+    Object.assign(rsUI, { file: i + 1, frac, gotBytes, note: note || '' });
+    const n = rsUI.files || 1;
+    const pct = Math.min(100, Math.round(((i + frac) / n) * 100));
+    const set = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
+    set('rs-status', note || rsUI.note || ('Pulling song ' + (i + 1) + ' of ' + n + '…'));
+    set('rs-pct', pct + '%');
+    set('rs-file', (i + 1) + ' of ' + n);
+    set('rs-got', rsgb(gotBytes) + ' of ' + rsgb(rsUI.totalBytes));
+    const f = document.getElementById('rs-fill'); if (f) f.style.width = pct + '%';
+  };
+  async function restoreLibrary(auto) {
+    if (restoring || exporting) return;
+    const code = rsToken();
+    if (!code) { rsUI.phase = 'need-token'; rsUI.note = ''; nav('restore'); return; }
+    restoring = true; rsCancel = false;
+    const fail = (note) => {
+      restoring = false;
+      Object.assign(rsUI, { phase: 'failed', note });
+      clearInterval(rsTimer); rsTimer = null;
+      nav('restore');
+    };
+    let st;
+    try { st = await rsBackupStatus(); }
+    catch (e) { fail('Could not check the backup status. Check your connection and try again on Wi-Fi.'); return; }
+    if (!st.ready) {
+      restoring = false;
+      Object.assign(rsUI, { phase: 'waiting', backup: st, note: '' });
+      nav('restore');
+      return;
+    }
+    let man;
+    try {
+      const mr = await fetch(rsDriveDl(st.manifestFileId), { cache: 'no-store' });
+      if (!mr.ok) throw new Error('http ' + mr.status);
+      man = await rsDecrypt(await mr.text(), code);
+    } catch (e) {
+      fail('');
+      rsUI.phase = 'need-token';
+      rsUI.note = 'That code did not work — check it and try again.';
+      nav('restore');
+      return;
+    }
+    const files = man.files || [];
+    if (!files.length) { fail('The backup list is empty — nothing to pull yet.'); return; }
+    const fp = files.length + ':' + (man.totalBytes || 0) + ':' + (man.session || '');
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem(RS_KEY) || 'null'); } catch (e) { /* ignore */ }
+    let done = null;
+    if (saved && saved.fp === fp && Array.isArray(saved.done) && saved.done.length === files.length) {
+      const n = saved.done.filter(Boolean).length;
+      if (n > 0 && n < files.length) {
+        if (auto || confirm('Resume restore? ' + n + ' of ' + files.length + ' songs are already here.')) {
+          done = saved.done.slice();
+        } else { restoring = false; return; }
+      } else if (n === files.length) {
+        try { localStorage.removeItem(RS_KEY); } catch (e) { /* ignore */ }
+      }
+    }
+    if (!done) done = files.map(() => false);
+    const save = () => { try { localStorage.setItem(RS_KEY, JSON.stringify({ fp, done })); } catch (e) { /* ignore */ } };
+    save();
+    Object.assign(rsUI, { phase: 'running', file: 0, files: files.length, frac: 0, gotBytes: 0, totalBytes: man.totalBytes || 0, t0: Date.now(), note: 'Connecting…' });
+    nav('restore');
+    clearInterval(rsTimer);
+    rsTimer = setInterval(() => { const el = document.getElementById('rs-time'); if (el) el.textContent = rsElapsed(); paintRsBgMode(); }, 1000);
+    let wake = null;
+    const grabWake = async () => { try { wake = await navigator.wakeLock.request('screen'); } catch (e) { /* unsupported */ } };
+    const onVis = () => { if (document.visibilityState === 'visible' && restoring && !wake) grabWake(); };
+    document.addEventListener('visibilitychange', onVis);
+    grabWake();
+    const finish = (phase, msg) => {
+      restoring = false;
+      document.removeEventListener('visibilitychange', onVis);
+      try { wake && wake.release(); } catch (e) { /* ignore */ } wake = null;
+      clearInterval(rsTimer); rsTimer = null;
+      Object.assign(rsUI, { phase, note: msg || '' });
+      if (phase === 'done') { try { localStorage.removeItem(RS_KEY); } catch (e) { /* ignore */ } }
+      render();
+    };
+    let existing = new Set();
+    try { existing = new Set((await DB.allTracks()).map(t => t.fileName + '|' + t.fileSize)); } catch (e) { /* ignore */ }
+    const batch = []; let batchBytes = 0, added = 0, skipped = 0;
+    const flush = async () => {
+      if (!batch.length) return;
+      const chunk = batch.splice(0); batchBytes = 0;
+      try { await DB.addTracks(chunk); added += chunk.length; }
+      catch (e) {
+        console.warn('restore flush failed, retrying once', e);
+        try { await DB.addTracks(chunk); added += chunk.length; }
+        catch (e2) { console.warn('restore flush failed twice, dropping', chunk.length, e2); skipped += chunk.length; }
+      }
+    };
+    const dl = async (entry) => {
+      let lastErr = null;
+      for (let a = 0; a < 3; a++) {
+        try {
+          const r = await fetch(rsDriveDl(entry.id));
+          if (!r.ok) throw new Error('http ' + r.status);
+          const ct = r.headers.get('content-type') || '';
+          if (ct.includes('text/html')) throw new Error('drive interstitial');
+          const blob = await r.blob();
+          if (!blob.size) throw new Error('empty file');
+          return blob;
+        } catch (e) { lastErr = e; await new Promise(r2 => setTimeout(r2, 1500)); }
+      }
+      throw lastErr;
+    };
+    try {
+      for (let i = 0; i < files.length; i++) {
+        if (rsCancel) { finish('paused', ''); return; }
+        if (done[i]) continue;
+        const e = files[i];
+        const key = e.name + '|' + e.size;
+        if (existing.has(key)) { done[i] = true; skipped++; save(); continue; }
+        rsPaint(i, 0, rsUI.gotBytes, 'Pulling ' + e.name + '…');
+        let blob;
+        try { blob = await dl(e); }
+        catch (err) { finish('failed', 'Lost the connection on "' + e.name + '". Your progress is saved — tap to resume.'); return; }
+        try {
+          const tr = await Importer.parseOne(new File([blob], e.name, { type: mimeFor(e.name) }));
+          batch.push(tr); batchBytes += tr.fileSize || e.size || 0;
+          existing.add(key);
+        } catch (err) { console.warn('restore parse failed', e.name, err); skipped++; }
+        if (batch.length >= 4 || batchBytes >= 128 * 1024 * 1024) await flush();
+        done[i] = true; rsUI.gotBytes += e.size || 0; save();
+        rsPaint(i, 1, rsUI.gotBytes);
+      }
+      await flush();
+    } catch (e) { finish('failed', 'Something went wrong. Your progress is saved — tap to resume.'); return; }
+    App.onLibraryChanged();
+    finish('done', added + ' song' + (added === 1 ? '' : 's') + ' pulled into this Splotify' + (skipped ? ' (' + skipped + ' skipped)' : '') + '.');
+  }
+  function paintRsBgMode() {
+    const el = document.getElementById('rs-bgmode');
+    if (!el) return;
+    let playing = false;
+    try { playing = !!(Player && Player.playing && !Player.playing.paused); } catch (e) { /* ignore */ }
+    el.textContent = playing
+      ? 'Music is playing, so uploads keep going if you leave Splotify.'
+      : 'Keep Splotify open — iPhone pauses downloads when the app is closed.';
+  }
+  function vRestore() {
+    const u = rsUI;
+    let savedN = null;
+    if (u.phase === 'idle' || u.phase === 'need-token') {
+      try {
+        const s = JSON.parse(localStorage.getItem(RS_KEY) || 'null');
+        if (s && Array.isArray(s.done)) {
+          const n = s.done.filter(Boolean).length;
+          if (n > 0 && n < s.done.length) savedN = { n, of: s.done.length };
+        }
+      } catch (e) { /* ignore */ }
+    }
+    const pct = u.files ? Math.min(100, Math.round(((u.file - 1 + u.frac) / u.files) * 100)) : 0;
+    let statusText, actionBtn, extra = '';
+    const hasToken = !!rsToken();
+    if (u.phase === 'running') {
+      statusText = u.note || 'Pulling…';
+      actionBtn = '<button class="bigbtn" data-act="rs-pause" style="margin-top:26px">Pause</button>';
+    } else if (u.phase === 'paused') {
+      statusText = 'Paused — your progress is saved.';
+      actionBtn = '<button class="bigbtn pink" data-act="rs-start" style="margin-top:26px">Resume restore</button>';
+    } else if (u.phase === 'done') {
+      statusText = u.note || 'Restore complete.';
+      actionBtn = '<button class="bigbtn" data-act="rs-done" style="margin-top:26px">Done</button>';
+    } else if (u.phase === 'failed') {
+      statusText = u.note || 'Something went wrong.';
+      actionBtn = '<button class="bigbtn pink" data-act="rs-start" style="margin-top:26px">Try again</button>';
+    } else if (u.phase === 'waiting') {
+      const b = u.backup || {};
+      const pd = b.partsDone || 0, pt = b.partsTotal || 0;
+      statusText = pt ? 'Your backup is still uploading: ' + pd + ' of ' + pt + ' parts.' : 'Your backup is still uploading.';
+      extra = '<div style="color:var(--sub);font-size:13px;margin-top:10px">The one-tap restore unlocks the moment the upload finishes. Keep the old Splotify open on Wi-Fi and this page will be ready when it lands.</div>';
+      actionBtn = '<button class="bigbtn" data-act="rs-done" style="margin-top:26px">Done</button>';
+    } else if (u.phase === 'need-token' || !hasToken) {
+      statusText = u.note || 'Enter your one-time restore code.';
+      extra = '<input id="rs-token" type="password" inputmode="text" autocomplete="off" placeholder="Paste the code I gave you" ' +
+        'style="width:100%;margin-top:14px;padding:14px;border-radius:12px;border:1px solid rgba(255,255,255,.2);background:rgba(255,255,255,.06);color:#fff;font-size:16px">' +
+        '<div style="color:var(--sub);font-size:13px;margin-top:8px">You only enter this once — this Splotify remembers it.</div>';
+      actionBtn = '<button class="bigbtn pink" data-act="rs-save-token" style="margin-top:18px">Continue</button>';
+    } else if (savedN) {
+      statusText = 'You have an unfinished restore.';
+      actionBtn = '<button class="bigbtn pink" data-act="rs-start" style="margin-top:26px">Resume restore — ' + savedN.n + ' of ' + savedN.of + ' songs pulled</button>';
+    } else {
+      statusText = 'Pull your finished Drive backup straight into this Splotify. One tap, no re-upload.';
+      actionBtn = '<button class="bigbtn pink" data-act="rs-start" style="margin-top:26px">Pull from Drive backup</button>';
+    }
+    return `<div class="pagehead"><button class="iconbtn" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><h1>Drive Restore</h1><span style="width:44px"></span></div>
+    <div style="padding:4px 20px 48px">
+      <div id="rs-status" style="font-size:17px;font-weight:700;margin:10px 0 2px">${statusText}</div>
+      ${extra}
+      <div style="display:flex;align-items:baseline;justify-content:space-between;margin-top:14px">
+        <span style="color:var(--sub);font-size:13px">Progress</span>
+        <span id="rs-pct" style="font-size:28px;font-weight:800">${pct}%</span>
+      </div>
+      <div style="height:8px;border-radius:4px;background:rgba(255,255,255,.12);margin:8px 0 4px;overflow:hidden">
+        <div id="rs-fill" style="height:100%;width:${pct}%;border-radius:4px;background:var(--pink);transition:width .3s"></div>
+      </div>
+      <div style="margin-top:14px;border-top:1px solid rgba(255,255,255,.1);padding-top:6px">
+        <div style="display:flex;justify-content:space-between;padding:8px 0;font-size:14px"><span style="color:var(--sub)">Song</span><span id="rs-file" style="font-weight:700">${u.files ? u.file + ' of ' + u.files : '—'}</span></div>
+        <div style="display:flex;justify-content:space-between;padding:8px 0;font-size:14px"><span style="color:var(--sub)">Pulled</span><span id="rs-got" style="font-weight:700">${u.totalBytes ? rsgb(u.gotBytes) + ' of ' + rsgb(u.totalBytes) : '—'}</span></div>
+        <div style="display:flex;justify-content:space-between;padding:8px 0;font-size:14px"><span style="color:var(--sub)">Elapsed</span><span id="rs-time" style="font-weight:700">${rsElapsed()}</span></div>
+      </div>
+      <div id="rs-bgmode" style="color:var(--sub);font-size:13px;margin-top:14px"></div>
+      <div style="text-align:center">${actionBtn}</div>
+    </div>`;
+  }
+
   /* ================= router ================= */
   const VIEWS = {
     home: vHome, search: vSearch, library: vLibrary, settings: vSettings,
@@ -1248,6 +1536,7 @@ const App = (() => {
     videos: () => vStub('Videos', 'playRect', 'No videos here yet.'),
     plimport: () => vPlImport(),
     driveBackup: () => vDriveBackup(),
+    restore: () => vRestore(),
     exportHub: () => vExportHub(),
     deviceExport: () => vDeviceExport(),
     tagFixer: () => vTagFixer(),
@@ -1719,6 +2008,18 @@ const App = (() => {
       case 'export-hub': nav('exportHub'); break;
       case 'export-device': nav('deviceExport'); break;
       case 'export-drive': if (exporting) nav('driveBackup'); else exportLibrary('drive'); break;
+      case 'restore-drive': if (!restoring) restoreLibrary(false); else nav('restore'); break;
+      case 'rs-start': restoreLibrary(false); break;
+      case 'rs-pause': rsCancel = true; break;
+      case 'rs-done': nav('settings'); break;
+      case 'rs-save-token': {
+        const inp = document.getElementById('rs-token');
+        const v = (inp && inp.value || '').trim();
+        if (!v) { toast('Paste the code first'); break; }
+        try { localStorage.setItem(RS_TOKEN_KEY, v); } catch (e) { /* ignore */ }
+        restoreLibrary(false);
+        break;
+      }
       case 'dev-start': exportLibrary('link'); break;
       case 'dev-pause': exportUserPaused = true; exportCancel = true; { const el = document.getElementById('dev-note'); if (el) el.textContent = 'Finishing this part, then pausing…'; } break;
       case 'dev-done': nav('settings'); break;
@@ -1957,9 +2258,9 @@ const App = (() => {
        deliberately paused it. Also re-check when the app comes back to the
        foreground, covering background kills without a full relaunch. */
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible') maybeAutoResumeDrive();
+      if (document.visibilityState === 'visible') { maybeAutoResumeDrive(); maybeAutoResumeRestore(); }
     });
-    setTimeout(maybeAutoResumeDrive, 2500);
+    setTimeout(() => { maybeAutoResumeDrive(); maybeAutoResumeRestore(); }, 2500);
     // Player's track cache is a separate object from the library list; keep the
     // visible record in sync when playback learns a missing duration.
     Player.on('duration', ({ id, duration }) => {
