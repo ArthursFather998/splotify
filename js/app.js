@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v5.7';
+  const APP_VERSION = 'v5.8';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -660,10 +660,9 @@ const App = (() => {
     <div class="setgroup"><h2>Music</h2>
       <div class="setrow" data-act="import"><div>Add music to library<div class="sub">Import audio files from the Files app</div></div><span style="color:var(--sub)">${icon('plus')}</span></div>
       <div class="setrow" data-act="import-zip"><div>Import ZIP<div class="sub">Pull the songs out of a zip file</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
-      <div class="setrow" data-act="export-library"><div>Export library<div class="sub">Back up your songs to a private download link</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
-      <div class="setrow" data-act="export-drive"><div>Back up to Google Drive<div class="sub">Send your songs to Drive, organized by album</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
+      <div class="setrow" data-act="export-hub"><div>Export music<div class="sub">Back up your songs to a link or Google Drive</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
       <div class="setrow" data-act="open-plimport"><div>Import Spotify playlist<div class="sub" id="plimport-sub">Turn a playlist into library downloads</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
-      <div class="setrow" data-act="fix-all-tags"><div>utag fixer<div class="sub">Retag every album in your library</div></div><span style="color:var(--sub)">${icon('tag')}</span></div>
+      <div class="setrow" data-act="fix-all-tags"><div>utag fixer<div class="sub">Retag your library, watch it work, edit tags by hand</div></div><span style="color:var(--sub)">${icon('tag')}</span></div>
       <div class="setrow"><div>Songs in library<div class="sub" id="set-storage">Counting…</div></div><span style="color:var(--sub)">${n}</span></div>
     </div>
     <div class="setgroup"><h2>Playback</h2>
@@ -877,6 +876,18 @@ const App = (() => {
       set('db-sent', dbgb(upBytes) + ' of ' + dbgb(totalBytes));
       const f = document.getElementById('db-fill'); if (f) f.style.width = pct + '%';
     };
+    /* Live painter for the Export-to-device screen: same shape as dbPaint,
+       writing to the dev- element ids. */
+    const devPaint = (b, frac, upBytes, note) => {
+      Object.assign(devUI, { part: b + 1, frac, upBytes, note: note || '' });
+      const pct = Math.min(100, Math.round(((b + frac) / batches.length) * 100));
+      const set = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
+      set('dev-status', note || devUI.note || ('Packing part ' + (b + 1) + ' of ' + batches.length + '…'));
+      set('dev-pct', pct + '%');
+      set('dev-part', (b + 1) + ' of ' + batches.length);
+      set('dev-sent', devgb(upBytes) + ' of ' + devgb(totalBytes));
+      const f = document.getElementById('dev-fill'); if (f) f.style.width = pct + '%';
+    };
     if (toDrive) {
       Object.assign(dbUI, { phase: 'running', part: 0, parts: batches.length, frac: 0, upBytes: 0, totalBytes, t0: Date.now(), note: 'Preparing your songs…' });
       nav('driveBackup');
@@ -890,21 +901,21 @@ const App = (() => {
     const onVis = () => { if (document.visibilityState === 'visible' && exporting && !wake) grabWake(); };
     document.addEventListener('visibilitychange', onVis);
     grabWake();
-    const prog = document.getElementById('import-progress');
-    const title = document.getElementById('ip-title');
-    const count = document.getElementById('ip-count');
-    const fill = document.getElementById('ip-fill');
     if (!toDrive) {
-      prog.style.display = 'block';
-      prog.onclick = () => { exportCancel = true; };
+      Object.assign(devUI, { phase: 'running', part: 0, parts: batches.length, frac: 0, upBytes: 0, totalBytes, t0: Date.now(), note: 'Preparing your songs…', link: '' });
+      nav('deviceExport');
+      clearInterval(devTimer);
+      devTimer = setInterval(() => { const el = document.getElementById('dev-time'); if (el) el.textContent = devElapsed(); }, 1000);
     }
-    const gb = b => (b / 1073741824).toFixed(1) + ' GB';
     const finish = msg => {
-      prog.style.display = 'none'; prog.onclick = null; exporting = false;
+      exporting = false;
       document.removeEventListener('visibilitychange', onVis);
       try { wake && wake.release(); } catch (e) { /* ignore */ } wake = null;
       clearInterval(dbTimer); dbTimer = null;
-      if (toDrive && (S.stack[S.stack.length - 1] || {}).v === 'driveBackup') render();
+      clearInterval(devTimer); devTimer = null;
+      const v = (S.stack[S.stack.length - 1] || {}).v;
+      if (toDrive && v === 'driveBackup') render();
+      if (!toDrive && v === 'deviceExport') render();
       if (msg) toast(msg);
     };
     try {
@@ -913,18 +924,16 @@ const App = (() => {
         if (done[b]) continue;
         const bytesBefore = batchSizes.slice(0, b).reduce((a, x) => a + x, 0);
         if (toDrive) dbPaint(b, 0, bytesBefore, 'Sending part ' + (b + 1) + ' of ' + batches.length + '…');
-        else title.textContent = 'Backing up part ' + (b + 1) + ' of ' + batches.length + ' — keep Splotify open (tap to pause)';
+        else devPaint(b, 0, bytesBefore, 'Packing part ' + (b + 1) + ' of ' + batches.length + '…');
         const ui = (i, n, doneBytes) => {
           if (toDrive) { dbPaint(b, (n ? i / n : 1) * 0.5, bytesBefore + doneBytes); return; }
-          count.textContent = 'Part ' + (b + 1) + '/' + batches.length + ' • packing song ' + i + ' of ' + n + ' • ' + gb(doneBytes);
-          fill.style.width = ((b + (n ? i / n : 1)) / batches.length * 50) + '%';
+          devPaint(b, (n ? i / n : 1) * 0.5, bytesBefore + doneBytes);
         };
         const blob = await buildZipBlob(batches[b], ui);
         const name = toDrive ? 'splotify-backup-' + sess + '-part' + (b + 1) + '-of-' + batches.length + '.zip' : 'splotify-backup-part' + (b + 1) + '-of-' + batches.length + '.zip';
         await uploadPart(blob, bin, name, frac => {
           if (toDrive) { dbPaint(b, 0.5 + frac * 0.5, bytesBefore + batchSizes[b], 'Uploading part ' + (b + 1) + ' of ' + batches.length + ' — ' + Math.round(frac * 100) + '%'); return; }
-          count.textContent = 'Part ' + (b + 1) + '/' + batches.length + ' • uploading ' + Math.round(frac * 100) + '%';
-          fill.style.width = ((b + 0.5 + frac * 0.5) / batches.length * 100) + '%';
+          devPaint(b, 0.5 + frac * 0.5, bytesBefore + batchSizes[b], 'Uploading part ' + (b + 1) + ' of ' + batches.length + ' — ' + Math.round(frac * 100) + '%');
           if (exportCancel) throw new Error('cancelled');
         });
         if (exportCancel) throw new Error('cancelled');
@@ -934,8 +943,9 @@ const App = (() => {
       save();
       const cancelled = e && e.message === 'cancelled';
       if (toDrive) Object.assign(dbUI, { phase: cancelled ? 'paused' : 'failed', note: cancelled ? '' : 'Upload failed — check Wi-Fi and try again.' });
+      else Object.assign(devUI, { phase: cancelled ? 'paused' : 'failed', note: cancelled ? '' : 'Upload failed — check Wi-Fi and try again.' });
       finish(cancelled
-        ? (toDrive ? 'Backup paused' : 'Backup paused — reopen Export to resume where it stopped')
+        ? (toDrive ? 'Backup paused' : 'Export paused — your progress is saved')
         : 'Upload failed — reopen Export to resume when Wi-Fi is back');
       return;
     }
@@ -945,11 +955,10 @@ const App = (() => {
       finish();
       return;
     }
-    finish();
     const url = 'https://filebin.net/' + bin;
     try { await navigator.clipboard.writeText(url); } catch (e) { /* fall through */ }
-    prompt('Backup complete — copy this link and send it to me:', url);
-    toast('Backup link ready');
+    Object.assign(devUI, { phase: 'done', part: batches.length, frac: 1, upBytes: totalBytes, link: url, note: '' });
+    finish();
   }
   /* Drive Backup screen (v5.6): a dedicated view showing what the backup is
      doing — phase, part progress, GB moved, elapsed time — instead of the
@@ -1038,6 +1047,99 @@ const App = (() => {
       <div style="text-align:center">${actionBtn}</div>
     </div>`;
   }
+  /* Export-to-device screen (v5.8): the same full progress screen as Drive
+     Backup, for the ZIP-parts-to-private-link export. */
+  const devUI = { phase: 'idle', part: 0, parts: 0, frac: 0, upBytes: 0, totalBytes: 0, t0: 0, note: '', link: '' };
+  let devTimer = null;
+  const devgb = b => (b / 1073741824).toFixed(1) + ' GB';
+  function devElapsed() {
+    if (!devUI.t0) return '0:00';
+    const s = Math.floor((Date.now() - devUI.t0) / 1000);
+    return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+  }
+  function vDeviceExport() {
+    const u = devUI;
+    let savedParts = null;
+    if (u.phase === 'idle') {
+      try {
+        const s = JSON.parse(localStorage.getItem('splotify-export-progress-link') || 'null');
+        if (s && Array.isArray(s.done)) {
+          const n = s.done.filter(Boolean).length;
+          if (n > 0 && n < s.done.length) savedParts = { n, of: s.done.length };
+        }
+      } catch (e) { /* ignore */ }
+    }
+    const pct = u.parts ? Math.min(100, Math.round(((u.part - 1 + u.frac) / u.parts) * 100)) : 0;
+    let statusText, actionBtn, extra = '';
+    if (u.phase === 'running') {
+      statusText = u.note || 'Working…';
+      actionBtn = '<button class="bigbtn" data-act="dev-pause" style="margin-top:26px">Pause</button>';
+    } else if (u.phase === 'paused') {
+      statusText = 'Paused — your progress is saved.';
+      actionBtn = '<button class="bigbtn pink" data-act="dev-start" style="margin-top:26px">Resume export</button>';
+    } else if (u.phase === 'done') {
+      statusText = 'Your songs are packed and uploaded.';
+      actionBtn = '<button class="bigbtn" data-act="dev-done" style="margin-top:26px">Done</button>';
+      extra = '<div style="margin-top:20px"><div style="color:var(--sub);font-size:13px;margin-bottom:8px">Download link (works for 6 days) — copy it and send it to me:</div>' +
+        '<div style="display:flex;gap:8px;align-items:center"><input id="dev-link" readonly value="' + esc(u.link) + '" ' +
+        'style="flex:1;min-width:0;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;color:var(--txt);font-size:13px" />' +
+        '<button class="bigbtn" data-act="dev-copy" style="margin:0;padding:12px 18px;flex-shrink:0">Copy</button></div></div>';
+    } else if (u.phase === 'failed') {
+      statusText = u.note || 'Something went wrong.';
+      actionBtn = '<button class="bigbtn pink" data-act="dev-start" style="margin-top:26px">Try again</button>';
+    } else if (savedParts) {
+      statusText = 'You have an unfinished export.';
+      actionBtn = '<button class="bigbtn pink" data-act="dev-start" style="margin-top:26px">Resume export — ' + savedParts.n + ' of ' + savedParts.of + ' parts uploaded</button>';
+    } else {
+      statusText = 'Pack your whole library into a private download link.';
+      actionBtn = '<button class="bigbtn pink" data-act="dev-start" style="margin-top:26px">Start export</button>';
+    }
+    const dot = st => '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:10px;background:' +
+      (st === 'done' ? 'var(--pink)' : st === 'active' ? '#fff' : 'rgba(255,255,255,.25)') + '"></span>';
+    const s1 = u.phase === 'done' ? 'done' : (u.phase === 'idle' && !savedParts ? '' : 'active');
+    const s2 = u.phase === 'done' ? 'active' : '';
+    const stepRow = (st, label, sub) =>
+      '<div style="display:flex;align-items:flex-start;padding:10px 0">' + dot(st) +
+      '<div><div style="font-weight:700;font-size:14px">' + label + '</div>' +
+      '<div style="color:var(--sub);font-size:13px;margin-top:2px">' + sub + '</div></div></div>';
+    return `<div class="pagehead"><button class="iconbtn" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><h1>Export to device</h1><span style="width:44px"></span></div>
+    <div style="padding:4px 20px 48px">
+      <div id="dev-status" style="font-size:17px;font-weight:700;margin:10px 0 2px">${statusText}</div>
+      <div id="dev-note" style="color:var(--sub);font-size:13px;min-height:18px"></div>
+      <div style="display:flex;align-items:baseline;justify-content:space-between;margin-top:14px">
+        <span style="color:var(--sub);font-size:13px">Progress</span>
+        <span id="dev-pct" style="font-size:28px;font-weight:800">${pct}%</span>
+      </div>
+      <div style="height:8px;border-radius:4px;background:rgba(255,255,255,.12);margin:8px 0 4px;overflow:hidden">
+        <div id="dev-fill" style="height:100%;width:${pct}%;border-radius:4px;background:var(--pink);transition:width .3s"></div>
+      </div>
+      <div style="margin-top:18px">
+        ${stepRow(s1, '1 · Packing and uploading', 'Songs pack into parts and upload with resume.')}
+        ${stepRow(s2, '2 · Your download link', u.phase === 'done' ? 'Copy it and send it to me.' : 'Appears here when the upload finishes.')}
+      </div>
+      <div style="margin-top:14px;border-top:1px solid rgba(255,255,255,.1);padding-top:6px">
+        <div style="display:flex;justify-content:space-between;padding:8px 0;font-size:14px"><span style="color:var(--sub)">Part</span><span id="dev-part" style="font-weight:700">${u.parts ? u.part + ' of ' + u.parts : '—'}</span></div>
+        <div style="display:flex;justify-content:space-between;padding:8px 0;font-size:14px"><span style="color:var(--sub)">Sent</span><span id="dev-sent" style="font-weight:700">${u.totalBytes ? devgb(u.upBytes) + ' of ' + devgb(u.totalBytes) : '—'}</span></div>
+        <div style="display:flex;justify-content:space-between;padding:8px 0;font-size:14px"><span style="color:var(--sub)">Elapsed</span><span id="dev-time" style="font-weight:700">${devElapsed()}</span></div>
+      </div>
+      ${extra}
+      <div style="color:var(--sub);font-size:13px;margin-top:14px">Keep Splotify open — iOS pauses uploads in the background. Tip: play any song and you can leave the app.</div>
+      <div style="text-align:center">${actionBtn}</div>
+    </div>`;
+  }
+  /* Export hub (v5.8): one "Export music" entry opens this chooser with the
+     two destinations — device link and Google Drive. */
+  function vExportHub() {
+    const card = (act, title, sub, ic) =>
+      '<div class="setrow" data-act="' + act + '" style="padding:18px 16px"><div style="font-size:16px;font-weight:700">' + title +
+      '<div class="sub" style="margin-top:4px">' + sub + '</div></div>' +
+      '<span style="color:var(--sub)">' + icon(ic, 'width:26px;height:26px') + '</span></div>';
+    return `<div class="pagehead"><button class="iconbtn" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><h1>Export music</h1><span style="width:44px"></span></div>
+    <div style="padding:8px 16px 48px;display:flex;flex-direction:column;gap:12px">
+      ${card('export-device', 'Export to device', 'Pack your songs into a private download link', 'download')}
+      ${card('export-drive', 'Back up to Google Drive', 'Send your songs to Drive, organized by album', 'download')}
+    </div>`;
+  }
   /* Checks the live sw.js for a newer build. The update row only lights up
      when the server has something newer than the running code. */
   let checkingUpdate = false;
@@ -1101,6 +1203,9 @@ const App = (() => {
     videos: () => vStub('Videos', 'playRect', 'No videos here yet.'),
     plimport: () => vPlImport(),
     driveBackup: () => vDriveBackup(),
+    exportHub: () => vExportHub(),
+    deviceExport: () => vDeviceExport(),
+    tagFixer: () => vTagFixer(),
   };
   function render() {
     const cur = S.stack[S.stack.length - 1] || { v: 'home' };
@@ -1112,6 +1217,7 @@ const App = (() => {
     view().onscroll = null;
     if (cur.v === 'artist') bindArtistScroll();
     if (cur.v === 'driveBackup') paintDbBgMode();
+    if (cur.v === 'tagFixer') { paintFixUI(); paintTagFixResults(); }
     S._lastViewKey = cur.v + '|' + (cur.id || '');
     document.querySelectorAll('.tab').forEach(b => {
       const on = b.dataset.tab === S.tab;
@@ -1123,6 +1229,8 @@ const App = (() => {
       q.addEventListener('input', () => { S.query = q.value; const pos = q.selectionStart; render(); const nq = document.getElementById('q'); nq.focus(); nq.setSelectionRange(pos, pos); });
       if (qHadFocus) { q.focus(); q.setSelectionRange(q.value.length, q.value.length); }
     }
+    const tq = document.getElementById('tagfix-q');
+    if (tq) tq.addEventListener('input', paintTagFixResults);
     updateStorageLine();
     updatePlImportLine();
     if ((S.stack[S.stack.length - 1] || {}).v === 'plimport') PlImport.paint();
@@ -1350,11 +1458,105 @@ const App = (() => {
     setTimeout(() => URL.revokeObjectURL(a.href), 20000);
   }
 
+  /* utag fixer screen (v5.8): a dedicated view showing the auto fixer working
+     live — per-song before/after, run stats — plus manual tag editing. */
+  const fixUI = { running: false, album: '', albumIdx: 0, albumCount: 0, scanned: 0, matched: 0, fixed: 0, notFound: 0, log: [] };
+  const TAG_FIELDS = ['title', 'artist', 'album', 'albumArtist', 'genre'];
+  const TAG_LABEL = { title: 'Title', artist: 'Artist', album: 'Album', albumArtist: 'Album artist', genre: 'Genre' };
+  const snapTags = t => { const o = {}; TAG_FIELDS.forEach(f => o[f] = t[f] || ''); return o; };
+  function diffTags(b, t) {
+    const parts = [];
+    TAG_FIELDS.forEach(f => {
+      const bv = b[f] || '', av = t[f] || '';
+      if (bv !== av) parts.push(TAG_LABEL[f] + ': ' + (bv || '—') + ' → ' + (av || '—'));
+    });
+    return parts.length ? parts.join('; ') : null;
+  }
+  function paintFixUI() {
+    const set = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
+    set('fix-albums', fixUI.albumCount ? fixUI.albumIdx + ' of ' + fixUI.albumCount : '—');
+    set('fix-scanned', String(fixUI.scanned));
+    set('fix-matched', String(fixUI.matched));
+    set('fix-fixed', String(fixUI.fixed));
+    set('fix-status', fixUI.running
+      ? 'Fixing ' + fixUI.album + '…'
+      : (fixUI.albumCount ? 'Last run: fixed ' + fixUI.fixed + ' of ' + fixUI.scanned + ' tracks' : 'Retag every album in your library.'));
+    const log = document.getElementById('fix-log');
+    if (log) {
+      log.innerHTML = fixUI.log.map(e =>
+        '<div class="setrow" data-act="tag-edit" data-id="' + e.id + '"><div>' + esc(e.title) +
+        '<div class="sub">' + esc(e.artist) + ' · ' + esc(e.changes) + '</div></div>' +
+        '<span style="color:var(--sub)">' + icon('chevR', 'width:20px;height:20px') + '</span></div>'
+      ).join('') || '<div style="color:var(--sub);font-size:13px">Nothing fixed yet — run the fixer and watch it work.</div>';
+    }
+    const btn = document.getElementById('fix-run-btn');
+    if (btn) {
+      btn.textContent = fixUI.running ? 'Fixing…' : 'Fix all albums';
+      btn.disabled = fixUI.running;
+      btn.classList.toggle('pink', !fixUI.running);
+      btn.style.opacity = fixUI.running ? 0.5 : 1;
+    }
+  }
+  function vTagFixer() {
+    const stat = (id, label) =>
+      '<div style="background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px">' +
+      '<div id="' + id + '" style="font-size:24px;font-weight:800">—</div>' +
+      '<div style="color:var(--sub);font-size:12px;margin-top:4px">' + label + '</div></div>';
+    return `<div class="pagehead"><button class="iconbtn" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><h1>utag fixer</h1><span style="width:44px"></span></div>
+    <div style="padding:4px 20px 48px">
+      <div id="fix-status" style="font-size:15px;font-weight:700;margin:10px 0 2px"></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px">
+        ${stat('fix-albums', 'Albums')}
+        ${stat('fix-scanned', 'Tracks scanned')}
+        ${stat('fix-matched', 'Matched')}
+        ${stat('fix-fixed', 'Fixed')}
+      </div>
+      <div style="text-align:center"><button id="fix-run-btn" class="bigbtn pink" data-act="fix-run" style="margin:20px 0 8px">Fix all albums</button></div>
+      <h2 style="font-size:16px;margin:22px 0 6px">Fixed in this run</h2>
+      <div id="fix-log"></div>
+      <h2 style="font-size:16px;margin:26px 0 6px">Edit by hand</h2>
+      <input id="tagfix-q" placeholder="Search songs to edit…" autocomplete="off" autocapitalize="off" spellcheck="false"
+        style="width:100%;box-sizing:border-box;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;color:var(--txt);font-size:15px;margin:4px 0 8px" />
+      <div id="tagfix-results"></div>
+    </div>`;
+  }
+  function paintTagFixResults() {
+    const qEl = document.getElementById('tagfix-q');
+    const box = document.getElementById('tagfix-results');
+    if (!box) return;
+    const needle = (qEl && qEl.value || '').trim().toLowerCase();
+    if (needle.length < 2) { box.innerHTML = ''; return; }
+    const hits = S.tracks.filter(t => ((t.title || '') + ' ' + (t.artist || '')).toLowerCase().includes(needle)).slice(0, 15);
+    box.innerHTML = hits.map(t =>
+      '<div class="setrow" data-act="tag-edit" data-id="' + t.id + '"><div>' + esc(t.title) +
+      '<div class="sub">' + esc(t.artist) + '</div></div>' +
+      '<span style="color:var(--sub)">' + icon('chevR', 'width:20px;height:20px') + '</span></div>'
+    ).join('') || '<div style="color:var(--sub);font-size:13px">No matches.</div>';
+  }
+  /* Manual tag editor: a sheet with the song's fields, saved straight to
+     the library. Opened from the fixer log or the manual search. */
+  function openTagEditor(id) {
+    const t = S.byId.get(id) || S.tracks.find(x => x.id === id);
+    if (!t) { toast('Song not found'); return; }
+    const inp = (fid, label, val, half) =>
+      '<label style="display:block;margin:10px 0;' + (half ? 'flex:1;min-width:0' : '') + '">' +
+      '<div style="color:var(--sub);font-size:12px;margin-bottom:6px">' + label + '</div>' +
+      '<input id="tagedit-' + fid + '" value="' + esc(val || '') + '" autocomplete="off" autocapitalize="off" spellcheck="false" ' +
+      'style="width:100%;box-sizing:border-box;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;color:var(--txt);font-size:15px" /></label>';
+    openSheet('<div style="padding:6px 4px 20px"><h3 style="margin:4px 0 2px;font-size:17px">' + esc(t.title) + '</h3>' +
+      '<div style="color:var(--sub);font-size:13px;margin-bottom:6px">' + esc(t.artist) + ' — edit tags</div>' +
+      inp('title', 'Title', t.title) + inp('artist', 'Artist', t.artist) +
+      inp('album', 'Album', t.album) + inp('albumArtist', 'Album artist', t.albumArtist) +
+      inp('genre', 'Genre', t.genre) +
+      '<div style="display:flex;gap:10px">' + inp('year', 'Year', t.year, true) + inp('trackNo', 'Track #', t.trackNo, true) + '</div>' +
+      '<button class="bigbtn pink" data-act="tag-save" data-id="' + t.id + '" style="width:100%;margin-top:14px">Save tags</button></div>');
+  }
   // Shared album-tag fixer: used by the album page button, the track ••• sheet,
   // and the Settings "utag fixer" (fix-all). Quiet mode skips per-album
   // toasts and view jumps so fixAllTags can aggregate; returns the raw result.
   async function fixAlbumByKey(key, opts = {}) {
     const quiet = !!opts.quiet;
+    const silent = !!opts.silent; // tag-fixer screen: no mid-run renders, it paints itself
     const a = albumByKey(key);
     if (!a || S.fixing) return null;
     const ids = a.tracks.map(t => t.id);
@@ -1372,14 +1574,14 @@ const App = (() => {
         if (!ids.includes(t.id) && (t.artist === a.artist || t.albumArtist === a.artist)) strays.push(t);
       }));
     if (!quiet) toast('Fixing album tags…');
-    S.fixing = key; render();
+    S.fixing = key; if (!silent) render();
     let res = null;
     try {
       res = await Importer.fixAlbum(a.tracks.concat(strays), knownAlbums, knownArtists);
     } catch (e) { console.warn('fix-album failed', e); }
     S.fixing = null;
     try {
-      await refreshTracks(); render(); paintMini();
+      await refreshTracks(); if (!silent) { render(); paintMini(); }
       if (quiet) return res;
       if (res && res.fixed > 0) {
         const na = albums().find(x => !x.single && x.tracks.some(t => ids.includes(t.id)))
@@ -1396,20 +1598,49 @@ const App = (() => {
     return res;
   }
   // utag fixer (fix-all): retag every album in the library, one by one.
+  // Paints the tag-fixer screen live: current album, per-song before/after,
+  // and running stats.
   async function fixAllTags() {
-    if (S.fixing) return;
+    if (S.fixing || fixUI.running) return;
     const list = albums().filter(a => a.tracks && a.tracks.length);
     if (!list.length) { toast('No albums to fix'); return; }
-    let fixed = 0, total = 0;
+    Object.assign(fixUI, { running: true, album: '', albumIdx: 0, albumCount: list.length, scanned: 0, matched: 0, fixed: 0, notFound: 0, log: [] });
+    paintFixUI();
     for (let i = 0; i < list.length; i++) {
-      toast(`utag fixer: album ${i + 1} of ${list.length}…`);
+      const a = list[i];
+      fixUI.album = a.name || 'Unknown Album'; fixUI.albumIdx = i + 1;
+      const tracks = a.tracks || [];
+      const before = new Map(tracks.map(t => [t.id, snapTags(t)]));
+      let res = null;
       try {
-        const res = await fixAlbumByKey(list[i].key, { quiet: true });
-        if (res) { fixed += res.fixed || 0; total += res.total || 0; }
-      } catch (e) { console.warn('utag fixer failed on', list[i].key, e); }
+        res = await fixAlbumByKey(a.key, { quiet: true, silent: true });
+      } catch (e) { console.warn('utag fixer failed on', a.key, e); }
+      if (res) {
+        fixUI.scanned += res.total || 0;
+        fixUI.matched += res.matched || 0;
+        fixUI.fixed += res.fixed || 0;
+        if (!res.found) fixUI.notFound++;
+        for (const t of tracks) {
+          const b = before.get(t.id); if (!b) continue;
+          const changes = diffTags(b, t);
+          if (changes) {
+            fixUI.log.unshift({ id: t.id, title: t.title, artist: t.artist, changes });
+            if (fixUI.log.length > 60) fixUI.log.pop();
+          }
+        }
+      }
+      paintFixUI();
     }
+    fixUI.running = false; fixUI.album = '';
+    try {
+      localStorage.setItem('splotify-tagfix-last', JSON.stringify({
+        when: Date.now(), scanned: fixUI.scanned, matched: fixUI.matched,
+        fixed: fixUI.fixed, notFound: fixUI.notFound, albums: fixUI.albumCount,
+      }));
+    } catch (e) { /* ignore */ }
     try { await refreshTracks(); render(); paintMini(); } catch (e) {}
-    toast(total ? `utag fixer: fixed ${fixed} of ${total} tracks` : 'utag fixer: tags already look good');
+    paintFixUI();
+    toast(fixUI.scanned ? `utag fixer: fixed ${fixUI.fixed} of ${fixUI.scanned} tracks` : 'utag fixer: tags already look good');
   }
 
   /* ================= actions ================= */
@@ -1421,8 +1652,13 @@ const App = (() => {
       case 'pill': S.pill = id; render(); break;
       case 'import': Importer.open(); break;
       case 'import-zip': Importer.openZip(); break;
-      case 'export-library': exportLibrary('link'); break;
+      case 'export-hub': nav('exportHub'); break;
+      case 'export-device': nav('deviceExport'); break;
       case 'export-drive': if (exporting) nav('driveBackup'); else exportLibrary('drive'); break;
+      case 'dev-start': exportLibrary('link'); break;
+      case 'dev-pause': exportUserPaused = true; exportCancel = true; { const el = document.getElementById('dev-note'); if (el) el.textContent = 'Finishing this part, then pausing…'; } break;
+      case 'dev-done': nav('settings'); break;
+      case 'dev-copy': { const u = devUI.link; if (u) { try { await navigator.clipboard.writeText(u); } catch (e) {} toast('Link copied'); } } break;
       case 'db-start': exportLibrary('drive'); break;
       case 'db-pause': exportUserPaused = true; exportCancel = true; { const el = document.getElementById('db-note'); if (el) el.textContent = 'Finishing this part, then pausing…'; } break;
       case 'db-done': nav('settings'); break;
@@ -1506,7 +1742,24 @@ const App = (() => {
         break;
       }
       case 'fix-album': await fixAlbumByKey(id); break;
-      case 'fix-all-tags': await fixAllTags(); break;
+      case 'fix-all-tags': nav('tagFixer'); break;
+      case 'fix-run': fixAllTags(); break;
+      case 'tag-edit': openTagEditor(id); break;
+      case 'tag-save': {
+        const val = fid => { const i = document.getElementById('tagedit-' + fid); return i ? i.value.trim() : ''; };
+        const patch = { title: val('title'), artist: val('artist'), album: val('album'), albumArtist: val('albumArtist'), genre: val('genre') };
+        const year = parseInt(val('year'), 10); if (year) patch.year = year;
+        const trackNo = parseInt(val('trackNo'), 10); if (trackNo) patch.trackNo = trackNo;
+        if (!patch.title) { toast('Title can\u2019t be empty'); break; }
+        try {
+          await DB.updateTrack(id, patch);
+          const t = S.byId.get(id); if (t) Object.assign(t, patch);
+          closeSheet(); await refreshTracks(); render(); paintMini();
+          paintFixUI();
+          toast('Tags saved');
+        } catch (e) { toast('Could not save tags'); }
+        break;
+      }
       case 'sheet-fixtags': {
         const t = S.byId.get(Number(id));
         closeSheet();
