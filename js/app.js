@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v5.0';
+  const APP_VERSION = 'v5.1';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -705,9 +705,9 @@ const App = (() => {
     tracks.sort((a, b) => String(a.album || '').localeCompare(String(b.album || '')) ||
       ((a.trackNo || 0) - (b.trackNo || 0)) || String(a.title).localeCompare(String(b.title)));
     const prog = document.getElementById('import-progress');
-    const title = document.getElementById('import-title');
-    const count = document.getElementById('import-count');
-    const fill = document.getElementById('import-fill');
+    const title = document.getElementById('ip-title');
+    const count = document.getElementById('ip-count');
+    const fill = document.getElementById('ip-fill');
     prog.style.display = 'block';
     prog.onclick = () => { exportCancel = true; };
     title.textContent = 'Exporting library backup… (tap to cancel)';
