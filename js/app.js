@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v5.1';
+  const APP_VERSION = 'v5.2';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -660,7 +660,7 @@ const App = (() => {
     <div class="setgroup"><h2>Music</h2>
       <div class="setrow" data-act="import"><div>Add music to library<div class="sub">Import audio files from the Files app</div></div><span style="color:var(--sub)">${icon('plus')}</span></div>
       <div class="setrow" data-act="import-zip"><div>Import ZIP<div class="sub">Pull the songs out of a zip file</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
-      <div class="setrow" data-act="export-library"><div>Export library<div class="sub">Save every song into one backup zip file</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
+      <div class="setrow" data-act="export-library"><div>Export library<div class="sub">Save your songs into backup zip files for iCloud Drive</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
       <div class="setrow" data-act="open-plimport"><div>Import Spotify playlist<div class="sub" id="plimport-sub">Turn a playlist into library downloads</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
       <div class="setrow" data-act="fix-all-tags"><div>utag fixer<div class="sub">Retag every album in your library</div></div><span style="color:var(--sub)">${icon('tag')}</span></div>
       <div class="setrow"><div>Songs in library<div class="sub" id="set-storage">Counting…</div></div><span style="color:var(--sub)">${n}</span></div>
@@ -695,128 +695,145 @@ const App = (() => {
     return (((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate()) & 0xffff;
   }
   let exporting = false, exportCancel = false;
+  /* Build one ZIP blob from a list of tracks: stored entries, one track at a
+     time, chunked CRC — memory stays flat no matter the part size. */
+  async function buildZipBlob(list, ui) {
+    const parts = []; const central = []; let offset = 0; const used = new Set();
+    const enc = new TextEncoder();
+    const push = u8 => { parts.push(u8); offset += u8.length; };
+    let done = 0;
+    for (let i = 0; i < list.length; i++) {
+      const t = list[i], f = t.file;
+      if (exportCancel) throw new Error('cancelled');
+      ui(i, list.length, done);
+      /* chunked CRC pass: file bytes are never held in full */
+      let crc = 0xFFFFFFFF;
+      const CH = 1024 * 1024;
+      for (let off = 0; off < f.size; off += CH) {
+        const buf = new Uint8Array(await f.slice(off, Math.min(f.size, off + CH)).arrayBuffer());
+        for (let j = 0; j < buf.length; j++) crc = CRC_TAB[(crc ^ buf[j]) & 0xFF] ^ (crc >>> 8);
+        if (exportCancel) throw new Error('cancelled');
+      }
+      crc = (crc ^ 0xFFFFFFFF) >>> 0;
+      const folder = (!t.album || t.album === 'Unknown Album') ? 'Singles' : zipClean(t.album, 'Singles');
+      const base = zipClean(t.fileName || ((t.artist ? t.artist + ' - ' : '') + (t.title || 'track')), 'track');
+      const dot = base.lastIndexOf('.');
+      const stem = dot > 0 ? base.slice(0, dot) : base;
+      const ext = dot > 0 ? base.slice(dot) : '';
+      let path = folder + '/' + base, k = 2;
+      while (used.has(path)) path = folder + '/' + stem + ' (' + (k++) + ')' + ext;
+      used.add(path);
+      const nameBytes = enc.encode(path);
+      const dt = t.dateAdded ? new Date(t.dateAdded) : new Date();
+      const wTime = dosStamp(dt, true), wDate = dosStamp(dt, false);
+      const lh = new DataView(new ArrayBuffer(30));
+      lh.setUint32(0, 0x04034b50, true);
+      lh.setUint16(4, 20, true);
+      lh.setUint16(6, 0x0800, true);
+      lh.setUint16(8, 0, true);
+      lh.setUint16(10, wTime, true);
+      lh.setUint16(12, wDate, true);
+      lh.setUint32(14, crc, true);
+      lh.setUint32(18, f.size, true);
+      lh.setUint32(22, f.size, true);
+      lh.setUint16(26, nameBytes.length, true);
+      lh.setUint16(28, 0, true);
+      const localOff = offset;
+      push(new Uint8Array(lh.buffer)); push(nameBytes); parts.push(f); offset += f.size;
+      central.push({ nameBytes, crc, size: f.size, off: localOff, wTime, wDate });
+      done += f.size;
+      ui(i + 1, list.length, done);
+    }
+    const cdStart = offset; let cdSize = 0;
+    for (const c of central) {
+      const ch = new DataView(new ArrayBuffer(46));
+      ch.setUint32(0, 0x02014b50, true);
+      ch.setUint16(4, 20, true);
+      ch.setUint16(6, 20, true);
+      ch.setUint16(8, 0x0800, true);
+      ch.setUint16(10, 0, true);
+      ch.setUint16(12, c.wTime, true);
+      ch.setUint16(14, c.wDate, true);
+      ch.setUint32(16, c.crc, true);
+      ch.setUint32(20, c.size, true);
+      ch.setUint32(24, c.size, true);
+      ch.setUint16(28, c.nameBytes.length, true);
+      ch.setUint16(30, 0, true);
+      ch.setUint16(32, 0, true);
+      ch.setUint16(34, 0, true);
+      ch.setUint16(36, 0, true);
+      ch.setUint32(38, 0, true);
+      ch.setUint32(42, c.off, true);
+      push(new Uint8Array(ch.buffer)); push(c.nameBytes); cdSize += 46 + c.nameBytes.length;
+    }
+    const eocd = new DataView(new ArrayBuffer(22));
+    eocd.setUint32(0, 0x06054b50, true);
+    eocd.setUint16(8, central.length, true);
+    eocd.setUint16(10, central.length, true);
+    eocd.setUint32(12, cdSize, true);
+    eocd.setUint32(16, cdStart, true);
+    eocd.setUint16(20, 0, true);
+    push(new Uint8Array(eocd.buffer));
+    return new Blob(parts, { type: 'application/zip' });
+  }
+  async function shareZip(blob, name) {
+    const file = new File([blob], name, { type: 'application/zip' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      try { await navigator.share({ files: [file] }); return 'shared'; }
+      catch (e) { return (e && e.name === 'AbortError') ? 'cancelled' : 'error'; }
+    }
+    return 'noshare';
+  }
   async function exportLibrary() {
     if (exporting) return;
     const tracks = S.tracks.filter(t => t.file);
     if (!tracks.length) { toast('No songs to export yet'); return; }
-    const total = tracks.reduce((s, t) => s + (t.file.size || 0), 0);
-    if (total > 0xFFFE0000) { toast('Library is too big for one zip file'); return; }
     exporting = true; exportCancel = false;
     tracks.sort((a, b) => String(a.album || '').localeCompare(String(b.album || '')) ||
       ((a.trackNo || 0) - (b.trackNo || 0)) || String(a.title).localeCompare(String(b.title)));
+    /* Split into ~300 MB parts: each one fits through the iOS share sheet and
+       can be saved straight to iCloud Drive without needing local storage. */
+    const PART = 300 * 1024 * 1024;
+    const batches = []; let cur = [], curSize = 0;
+    for (const t of tracks) {
+      const s = t.file.size || 0;
+      if (cur.length && curSize + s > PART) { batches.push(cur); cur = []; curSize = 0; }
+      cur.push(t); curSize += s;
+    }
+    if (cur.length) batches.push(cur);
     const prog = document.getElementById('import-progress');
     const title = document.getElementById('ip-title');
     const count = document.getElementById('ip-count');
     const fill = document.getElementById('ip-fill');
     prog.style.display = 'block';
     prog.onclick = () => { exportCancel = true; };
-    title.textContent = 'Exporting library backup… (tap to cancel)';
-    let done = 0;
-    const parts = []; const central = []; let offset = 0; const used = new Set();
-    const enc = new TextEncoder();
-    const push = u8 => { parts.push(u8); offset += u8.length; };
     const gb = b => (b / 1073741824).toFixed(1) + ' GB';
     try {
-      for (let i = 0; i < tracks.length; i++) {
-        const t = tracks[i], f = t.file;
-        count.textContent = `${i + 1} of ${tracks.length} • ${gb(done)}`;
-        fill.style.width = (i / tracks.length * 100) + '%';
-        if (exportCancel) throw new Error('cancelled');
-        /* chunked CRC pass: file bytes are never held in full */
-        let crc = 0xFFFFFFFF;
-        const CH = 1024 * 1024;
-        for (let off = 0; off < f.size; off += CH) {
-          const buf = new Uint8Array(await f.slice(off, Math.min(f.size, off + CH)).arrayBuffer());
-          for (let j = 0; j < buf.length; j++) crc = CRC_TAB[(crc ^ buf[j]) & 0xFF] ^ (crc >>> 8);
-          if (exportCancel) throw new Error('cancelled');
-        }
-        crc = (crc ^ 0xFFFFFFFF) >>> 0;
-        const folder = (!t.album || t.album === 'Unknown Album') ? 'Singles' : zipClean(t.album, 'Singles');
-        const base = zipClean(t.fileName || ((t.artist ? t.artist + ' - ' : '') + (t.title || 'track')), 'track');
-        const dot = base.lastIndexOf('.');
-        const stem = dot > 0 ? base.slice(0, dot) : base;
-        const ext = dot > 0 ? base.slice(dot) : '';
-        let path = folder + '/' + base, k = 2;
-        while (used.has(path)) path = folder + '/' + stem + ' (' + (k++) + ')' + ext;
-        used.add(path);
-        const nameBytes = enc.encode(path);
-        const dt = t.dateAdded ? new Date(t.dateAdded) : new Date();
-        const wTime = dosStamp(dt, true), wDate = dosStamp(dt, false);
-        const lh = new DataView(new ArrayBuffer(30));
-        lh.setUint32(0, 0x04034b50, true);
-        lh.setUint16(4, 20, true);
-        lh.setUint16(6, 0x0800, true);
-        lh.setUint16(8, 0, true);
-        lh.setUint16(10, wTime, true);
-        lh.setUint16(12, wDate, true);
-        lh.setUint32(14, crc, true);
-        lh.setUint32(18, f.size, true);
-        lh.setUint32(22, f.size, true);
-        lh.setUint16(26, nameBytes.length, true);
-        lh.setUint16(28, 0, true);
-        const localOff = offset;
-        push(new Uint8Array(lh.buffer)); push(nameBytes); parts.push(f); offset += f.size;
-        central.push({ nameBytes, crc, size: f.size, off: localOff, wTime, wDate });
-        done += f.size;
-        fill.style.width = ((i + 1) / tracks.length * 100) + '%';
+      for (let b = 0; b < batches.length; b++) {
+        title.textContent = `Exporting backup part ${b + 1} of ${batches.length}… (tap to cancel)`;
+        const ui = (i, n, done) => {
+          count.textContent = `Part ${b + 1}/${batches.length} • song ${i} of ${n} • ${gb(done)}`;
+          fill.style.width = ((b + (n ? i / n : 1)) / batches.length * 100) + '%';
+        };
+        const blob = await buildZipBlob(batches[b], ui);
+        const name = batches.length > 1
+          ? `splotify-backup-part${b + 1}-of-${batches.length}.zip`
+          : 'splotify-library.zip';
+        const res = await shareZip(blob, name);
+        if (res === 'cancelled' || exportCancel) throw new Error('cancelled');
+        if (res !== 'shared') throw new Error('share-unavailable');
+        if (b < batches.length - 1) toast(`Part ${b + 1} done — next part coming up`);
       }
-      const cdStart = offset; let cdSize = 0;
-      for (const c of central) {
-        const ch = new DataView(new ArrayBuffer(46));
-        ch.setUint32(0, 0x02014b50, true);
-        ch.setUint16(4, 20, true);
-        ch.setUint16(6, 20, true);
-        ch.setUint16(8, 0x0800, true);
-        ch.setUint16(10, 0, true);
-        ch.setUint16(12, c.wTime, true);
-        ch.setUint16(14, c.wDate, true);
-        ch.setUint32(16, c.crc, true);
-        ch.setUint32(20, c.size, true);
-        ch.setUint32(24, c.size, true);
-        ch.setUint16(28, c.nameBytes.length, true);
-        ch.setUint16(30, 0, true);
-        ch.setUint16(32, 0, true);
-        ch.setUint16(34, 0, true);
-        ch.setUint16(36, 0, true);
-        ch.setUint32(38, 0, true);
-        ch.setUint32(42, c.off, true);
-        push(new Uint8Array(ch.buffer)); push(c.nameBytes); cdSize += 46 + c.nameBytes.length;
-      }
-      const eocd = new DataView(new ArrayBuffer(22));
-      eocd.setUint32(0, 0x06054b50, true);
-      eocd.setUint16(8, central.length, true);
-      eocd.setUint16(10, central.length, true);
-      eocd.setUint32(12, cdSize, true);
-      eocd.setUint32(16, cdStart, true);
-      eocd.setUint16(20, 0, true);
-      push(new Uint8Array(eocd.buffer));
     } catch (e) {
       prog.style.display = 'none'; prog.onclick = null; exporting = false;
-      toast(e && e.message === 'cancelled' ? 'Export canceled' : 'Export failed');
+      const msg = e && e.message;
+      toast(msg === 'cancelled' ? 'Export canceled'
+        : msg === 'share-unavailable' ? 'The share sheet would not open — try again'
+        : 'Export failed');
       return;
     }
     prog.style.display = 'none'; prog.onclick = null; exporting = false;
-    const blob = new Blob(parts, { type: 'application/zip' });
-    const file = new File([blob], 'splotify-library.zip', { type: 'application/zip' });
-    let shared = false;
-    try {
-      if (navigator.canShare && navigator.canShare({ files: [file] })) {
-        await navigator.share({ files: [file] });
-        shared = true;
-      }
-    } catch (e) { if (e && e.name !== 'AbortError') { /* fall through to download */ } }
-    if (shared) {
-      toast('Backup ready — choose Save to Files');
-    } else if (navigator.canShare && navigator.canShare({ files: [file] })) {
-      toast('Share canceled — the backup stays here until you export again');
-    } else {
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url; a.download = 'splotify-library.zip';
-      document.body.appendChild(a); a.click();
-      setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 120000);
-      toast('Backup download started');
-    }
+    toast(batches.length > 1 ? 'Backup complete — every part exported' : 'Backup ready — choose Save to Files');
   }
   /* Checks the live sw.js for a newer build. The update row only lights up
      when the server has something newer than the running code. */
