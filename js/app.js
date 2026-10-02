@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v5.3';
+  const APP_VERSION = 'v5.4';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -793,12 +793,12 @@ const App = (() => {
     if (exporting) return;
     const tracks = S.tracks.filter(t => t.file);
     if (!tracks.length) { toast('No songs to export yet'); return; }
-    exporting = true; exportCancel = false;
     tracks.sort((a, b) => String(a.album || '').localeCompare(String(b.album || '')) ||
       ((a.trackNo || 0) - (b.trackNo || 0)) || String(a.title).localeCompare(String(b.title)));
-    /* Split into ~200 MB parts: each uploads as one HTTPS POST, no share
-       sheet and no local phone storage involved. */
-    const PART = 200 * 1024 * 1024;
+    /* Split into ~100 MB parts: each packs and uploads fast enough to finish
+       in the foreground, and a killed run resumes at the next unfinished part
+       instead of starting over. */
+    const PART = 100 * 1024 * 1024;
     const batches = []; let cur = [], curSize = 0;
     for (const t of tracks) {
       const s = t.file.size || 0;
@@ -806,7 +806,44 @@ const App = (() => {
       cur.push(t); curSize += s;
     }
     if (cur.length) batches.push(cur);
-    const bin = 'splotify-' + Date.now().toString(36);
+    /* Resume state: bin id + which parts made it up. The batch split is
+       deterministic (sorted tracks, fixed part size), so a fingerprint of the
+       library tells us whether saved progress still applies. */
+    const fp = tracks.length + ':' + tracks.reduce((a, t) => a + (t.file.size || 0), 0) + ':' + batches.length;
+    const SKEY = 'splotify-export-progress';
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem(SKEY) || 'null'); } catch (e) { /* ignore */ }
+    let bin = null, done = null;
+    if (saved && saved.fp === fp && saved.bin && Array.isArray(saved.done) && saved.done.length === batches.length) {
+      const n = saved.done.filter(Boolean).length;
+      if (n > 0 && n < batches.length &&
+          confirm('Resume backup? ' + n + ' of ' + batches.length + ' parts are already uploaded.')) {
+        bin = saved.bin; done = saved.done.slice();
+      } else if (n === batches.length) {
+        try { localStorage.removeItem(SKEY); } catch (e) { /* ignore */ }
+      }
+    }
+    if (!bin) { bin = 'splotify-' + Date.now().toString(36); done = batches.map(() => false); }
+    const save = () => { try { localStorage.setItem(SKEY, JSON.stringify({ fp, bin, done })); } catch (e) { /* ignore */ } };
+    /* Verify the "done" parts are still on filebin (bins expire after 6 days);
+       anything missing gets re-uploaded. */
+    for (let b = 0; b < batches.length; b++) {
+      if (!done[b]) continue;
+      const name = 'splotify-backup-part' + (b + 1) + '-of-' + batches.length + '.zip';
+      try {
+        const r = await fetch('https://filebin.net/' + bin + '/' + encodeURIComponent(name), { method: 'HEAD' });
+        if (!r.ok) done[b] = false;
+      } catch (e) { done[b] = false; }
+    }
+    save();
+    exporting = true; exportCancel = false;
+    /* Keep the screen awake while packing/uploading; iOS suspends background
+       tabs, which is what kills the run. Re-acquire if the tab was hidden. */
+    let wake = null;
+    const grabWake = async () => { try { wake = await navigator.wakeLock.request('screen'); } catch (e) { /* unsupported */ } };
+    const onVis = () => { if (document.visibilityState === 'visible' && exporting && !wake) grabWake(); };
+    document.addEventListener('visibilitychange', onVis);
+    grabWake();
     const prog = document.getElementById('import-progress');
     const title = document.getElementById('ip-title');
     const count = document.getElementById('ip-count');
@@ -814,30 +851,40 @@ const App = (() => {
     prog.style.display = 'block';
     prog.onclick = () => { exportCancel = true; };
     const gb = b => (b / 1073741824).toFixed(1) + ' GB';
+    const finish = msg => {
+      prog.style.display = 'none'; prog.onclick = null; exporting = false;
+      document.removeEventListener('visibilitychange', onVis);
+      try { wake && wake.release(); } catch (e) { /* ignore */ } wake = null;
+      if (msg) toast(msg);
+    };
     try {
       for (let b = 0; b < batches.length; b++) {
-        title.textContent = `Backing up part ${b + 1} of ${batches.length}… (tap to cancel)`;
-        const ui = (i, n, done) => {
-          count.textContent = `Part ${b + 1}/${batches.length} • packing song ${i} of ${n} • ${gb(done)}`;
+        if (exportCancel) throw new Error('cancelled');
+        if (done[b]) continue;
+        title.textContent = 'Backing up part ' + (b + 1) + ' of ' + batches.length + ' — keep Splotify open (tap to pause)';
+        const ui = (i, n, doneBytes) => {
+          count.textContent = 'Part ' + (b + 1) + '/' + batches.length + ' • packing song ' + i + ' of ' + n + ' • ' + gb(doneBytes);
           fill.style.width = ((b + (n ? i / n : 1)) / batches.length * 50) + '%';
         };
         const blob = await buildZipBlob(batches[b], ui);
-        const name = `splotify-backup-part${b + 1}-of-${batches.length}.zip`;
+        const name = 'splotify-backup-part' + (b + 1) + '-of-' + batches.length + '.zip';
         await uploadPart(blob, bin, name, frac => {
-          count.textContent = `Part ${b + 1}/${batches.length} • uploading ${Math.round(frac * 100)}%`;
+          count.textContent = 'Part ' + (b + 1) + '/' + batches.length + ' • uploading ' + Math.round(frac * 100) + '%';
           fill.style.width = ((b + 0.5 + frac * 0.5) / batches.length * 100) + '%';
           if (exportCancel) throw new Error('cancelled');
         });
         if (exportCancel) throw new Error('cancelled');
+        done[b] = true; save();
       }
     } catch (e) {
-      prog.style.display = 'none'; prog.onclick = null; exporting = false;
-      const msg = e && e.message;
-      toast(msg === 'cancelled' ? 'Backup canceled'
-        : 'Upload failed — check Wi-Fi and try again');
+      save();
+      finish(e && e.message === 'cancelled'
+        ? 'Backup paused — reopen Export to resume where it stopped'
+        : 'Upload failed — reopen Export to resume when Wi-Fi is back');
       return;
     }
-    prog.style.display = 'none'; prog.onclick = null; exporting = false;
+    try { localStorage.removeItem(SKEY); } catch (e) { /* ignore */ }
+    finish();
     const url = 'https://filebin.net/' + bin;
     try { await navigator.clipboard.writeText(url); } catch (e) { /* fall through */ }
     prompt('Backup complete — copy this link and send it to me:', url);
