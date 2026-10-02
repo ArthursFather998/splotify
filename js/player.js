@@ -1,32 +1,6 @@
 /* Splotify player engine — local <audio>, queue, shuffle/repeat, MediaSession. */
 const Player = (() => {
   const audio = new Audio();
-  /* Software volume via Web Audio: iOS Safari ignores audio.volume (hardware
-     buttons only), so the song is routed through a GainNode which iOS does
-     respect. Created once; the context resumes on the next user gesture. */
-  let actx = null, gainNode = null;
-  function applyGain() {
-    const v = S.muted ? 0 : (S.volume == null ? 1 : S.volume);
-    if (gainNode) { try { gainNode.gain.value = v; } catch (e) {} }
-    try { audio.volume = v; } catch (e) {}
-  }
-  function ensureGain() {
-    if (gainNode) return;
-    try {
-      const AC = window.AudioContext || window.webkitAudioContext;
-      if (!AC) return;
-      actx = new AC();
-      const src = actx.createMediaElementSource(audio);
-      gainNode = actx.createGain();
-      src.connect(gainNode);
-      gainNode.connect(actx.destination);
-      applyGain();
-    } catch (e) { /* fall back to audio.volume where it works */ }
-  }
-  function wakeAudio() {
-    ensureGain();
-    if (actx && actx.state === 'suspended') actx.resume().catch(() => {});
-  }
   audio.preload = 'auto';
   const listeners = { state: [], track: [], time: [], queue: [], duration: [], volume: [] };
   const emit = (ev, d) => listeners[ev].forEach(f => { try { f(d); } catch (e) { console.error(e); } });
@@ -70,7 +44,7 @@ const Player = (() => {
     audio.src = t._url;
     setMediaSession(t);
     emit('track', t);
-    if (autoplay) { try { wakeAudio(); await audio.play(); } catch (e) { /* iOS needs gesture; UI reflects */ } }
+    if (autoplay) { try { await audio.play(); } catch (e) { /* iOS needs gesture; UI reflects */ } }
     syncPlayState();
     saveNow();
     return true;
@@ -144,7 +118,12 @@ const Player = (() => {
       S.volume = Math.max(0, Math.min(1, (await DB.kvGet('pvolume', 1)) ?? 1));
       S.muted = !!(await DB.kvGet('pmuted', false));
       S.preMute = S.volume > 0 ? S.volume : 0.8;
-      ensureGain();
+      /* Mute goes through the element: iOS honors audio.muted (it ignores
+         audio.volume). No Web Audio routing — iOS suspends AudioContext in
+         the background, which would kill the keep-alive playback. */
+      audio.muted = S.muted;
+      try { audio.volume = S.volume; } catch (e) {}
+      if (navigator.audioSession) { try { navigator.audioSession.type = 'playback'; } catch (e) {} }
       const now = await DB.kvGet('now', null);
       if (now && now.trackId) {
         S.ctx = now.ctx; S.list = now.list || [];
@@ -178,8 +157,8 @@ const Player = (() => {
         await api.playContext({ kicker: 'PLAYING FROM SONGS', name: '', kind: 'single', id: 'single' }, [id], id);
       }
     },
-    toggle() { if (!S.track) return; wakeAudio(); if (audio.paused) audio.play().catch(() => {}); else audio.pause(); },
-    play() { if (S.track) { wakeAudio(); audio.play().catch(() => {}); } },
+    toggle() { if (!S.track) return; if (audio.paused) audio.play().catch(() => {}); else audio.pause(); },
+    play() { if (S.track) audio.play().catch(() => {}); },
     pause() { audio.pause(); },
     async next(auto) {
       if (!S.list.length) return;
@@ -206,22 +185,15 @@ const Player = (() => {
     get muted() { return !!S.muted; },
     setVolume(v) {
       S.volume = Math.max(0, Math.min(1, v));
-      if (S.volume > 0) { S.muted = false; S.preMute = S.volume; }
-      applyGain();
+      if (S.volume > 0) { S.muted = false; S.preMute = S.volume; audio.muted = false; }
+      try { audio.volume = S.volume; } catch (e) {}
       DB.kvSet('pvolume', S.volume).catch(() => {});
       DB.kvSet('pmuted', S.muted).catch(() => {});
       emit('volume', { volume: S.volume, muted: S.muted });
     },
     toggleMute() {
-      if (S.muted || S.volume === 0) {
-        S.muted = false;
-        if (!S.volume) S.volume = S.preMute || 0.8;
-      } else {
-        S.preMute = S.volume || 0.8;
-        S.muted = true;
-      }
-      applyGain();
-      DB.kvSet('pvolume', S.volume).catch(() => {});
+      S.muted = !S.muted;
+      audio.muted = S.muted;
       DB.kvSet('pmuted', S.muted).catch(() => {});
       emit('volume', { volume: S.volume, muted: S.muted });
     },
