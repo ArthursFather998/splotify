@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v5.6';
+  const APP_VERSION = 'v5.7';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -695,7 +695,7 @@ const App = (() => {
     if (wantTime) return ((d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1)) & 0xffff;
     return (((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate()) & 0xffff;
   }
-  let exporting = false, exportCancel = false;
+  let exporting = false, exportCancel = false, exportUserPaused = false;
   /* Build one ZIP blob from a list of tracks: stored entries, one track at a
      time, chunked CRC — memory stays flat no matter the part size. */
   async function buildZipBlob(list, ui) {
@@ -790,7 +790,22 @@ const App = (() => {
       xhr.send(blob);
     });
   }
-  async function exportLibrary(mode) {
+  /* Drive backup auto-resume: if the app was killed (not paused by the user)
+     with an unfinished Drive backup, pick it up on its own — the closest an
+     iPhone web app can get to "running in the background". */
+  function driveBackupUnfinished() {
+    try {
+      const s = JSON.parse(localStorage.getItem('splotify-export-progress-drive') || 'null');
+      if (!s || s.userPaused || !Array.isArray(s.done) || !s.done.length) return false;
+      return s.done.filter(Boolean).length < s.done.length;
+    } catch (e) { return false; }
+  }
+  function maybeAutoResumeDrive() {
+    if (exporting) return;
+    if (!S.tracks.some(t => t.file)) return;
+    if (driveBackupUnfinished()) exportLibrary('drive', true);
+  }
+  async function exportLibrary(mode, auto) {
     if (exporting) return;
     const toDrive = mode === 'drive';
     /* Drive bridge: the phone uploads parts to a fixed staging bin; a worker
@@ -825,7 +840,7 @@ const App = (() => {
     if (saved && saved.fp === fp && saved.bin && Array.isArray(saved.done) && saved.done.length === batches.length) {
       const n = saved.done.filter(Boolean).length;
       if (n > 0 && n < batches.length &&
-          confirm('Resume backup? ' + n + ' of ' + batches.length + ' parts are already uploaded.')) {
+          (auto || confirm('Resume backup? ' + n + ' of ' + batches.length + ' parts are already uploaded.'))) {
         bin = saved.bin; done = saved.done.slice();
       } else if (n === batches.length) {
         try { localStorage.removeItem(SKEY); } catch (e) { /* ignore */ }
@@ -835,7 +850,7 @@ const App = (() => {
       bin = toDrive ? BRIDGE_BIN : 'splotify-' + sess;
       done = batches.map(() => false);
     }
-    const save = () => { try { localStorage.setItem(SKEY, JSON.stringify({ fp, bin, done })); } catch (e) { /* ignore */ } };
+    const save = () => { try { localStorage.setItem(SKEY, JSON.stringify({ fp, bin, done, userPaused: exportUserPaused })); } catch (e) { /* ignore */ } };
     /* Verify the "done" parts are still on filebin (bins expire after 6 days);
        anything missing gets re-uploaded. */
     for (let b = 0; b < batches.length; b++) {
@@ -847,7 +862,7 @@ const App = (() => {
       } catch (e) { done[b] = false; }
     }
     save();
-    exporting = true; exportCancel = false;
+    exporting = true; exportCancel = false; exportUserPaused = false;
     const batchSizes = batches.map(ba => ba.reduce((a, t) => a + (t.file.size || 0), 0));
     const totalBytes = batchSizes.reduce((a, b) => a + b, 0);
     /* Live painter for the Drive Backup screen: updates the view's DOM in
@@ -866,7 +881,7 @@ const App = (() => {
       Object.assign(dbUI, { phase: 'running', part: 0, parts: batches.length, frac: 0, upBytes: 0, totalBytes, t0: Date.now(), note: 'Preparing your songs…' });
       nav('driveBackup');
       clearInterval(dbTimer);
-      dbTimer = setInterval(() => { const el = document.getElementById('db-time'); if (el) el.textContent = dbElapsed(); }, 1000);
+      dbTimer = setInterval(() => { const el = document.getElementById('db-time'); if (el) el.textContent = dbElapsed(); paintDbBgMode(); }, 1000);
     }
     /* Keep the screen awake while packing/uploading; iOS suspends background
        tabs, which is what kills the run. Re-acquire if the tab was hidden. */
@@ -947,6 +962,17 @@ const App = (() => {
     const s = Math.floor((Date.now() - dbUI.t0) / 1000);
     return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
   }
+  /* Background-mode line on the Drive Backup screen: iOS keeps uploads alive
+     while music is playing, so a playing song means the backup survives
+     leaving the app. */
+  function paintDbBgMode() {
+    const el = document.getElementById('db-bgmode');
+    if (!el) return;
+    const playing = (typeof Player !== 'undefined') && Player.isPlaying;
+    el.innerHTML = playing
+      ? '<span style="color:var(--pink)">&#9679;</span> Background-safe: music is playing — you can leave Splotify and the backup keeps going.'
+      : 'Keep Splotify open — iOS pauses uploads in the background. Tip: play any song and you can leave the app.';
+  }
   function vDriveBackup() {
     const u = dbUI;
     let savedParts = null;
@@ -1008,7 +1034,7 @@ const App = (() => {
         <div style="display:flex;justify-content:space-between;padding:8px 0;font-size:14px"><span style="color:var(--sub)">Sent</span><span id="db-sent" style="font-weight:700">${u.totalBytes ? dbgb(u.upBytes) + ' of ' + dbgb(u.totalBytes) : '—'}</span></div>
         <div style="display:flex;justify-content:space-between;padding:8px 0;font-size:14px"><span style="color:var(--sub)">Elapsed</span><span id="db-time" style="font-weight:700">${dbElapsed()}</span></div>
       </div>
-      <div style="color:var(--sub);font-size:13px;margin-top:14px">Keep Splotify open — iOS pauses uploads when the app goes to the background.</div>
+      <div id="db-bgmode" style="color:var(--sub);font-size:13px;margin-top:14px"></div>
       <div style="text-align:center">${actionBtn}</div>
     </div>`;
   }
@@ -1085,6 +1111,7 @@ const App = (() => {
     view().scrollTop = sameView ? st : 0;
     view().onscroll = null;
     if (cur.v === 'artist') bindArtistScroll();
+    if (cur.v === 'driveBackup') paintDbBgMode();
     S._lastViewKey = cur.v + '|' + (cur.id || '');
     document.querySelectorAll('.tab').forEach(b => {
       const on = b.dataset.tab === S.tab;
@@ -1397,7 +1424,7 @@ const App = (() => {
       case 'export-library': exportLibrary('link'); break;
       case 'export-drive': if (exporting) nav('driveBackup'); else exportLibrary('drive'); break;
       case 'db-start': exportLibrary('drive'); break;
-      case 'db-pause': exportCancel = true; { const el = document.getElementById('db-note'); if (el) el.textContent = 'Finishing this part, then pausing…'; } break;
+      case 'db-pause': exportUserPaused = true; exportCancel = true; { const el = document.getElementById('db-note'); if (el) el.textContent = 'Finishing this part, then pausing…'; } break;
       case 'db-done': nav('settings'); break;
       case 'open-plimport': nav('plimport'); break;
       case 'plimport-start': PlImport.startFromUI(); break;
@@ -1608,7 +1635,14 @@ const App = (() => {
     await Player.init();
 
     Player.on('track', () => { paintMini(); paintNowPlaying(); render(); });
-    Player.on('state', () => { paintMini(); paintNowPlaying(); });
+    Player.on('state', () => { paintMini(); paintNowPlaying(); paintDbBgMode(); });
+    /* Unfinished Drive backup? Pick it back up on its own — unless the user
+       deliberately paused it. Also re-check when the app comes back to the
+       foreground, covering background kills without a full relaunch. */
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') maybeAutoResumeDrive();
+    });
+    setTimeout(maybeAutoResumeDrive, 2500);
     // Player's track cache is a separate object from the library list; keep the
     // visible record in sync when playback learns a missing duration.
     Player.on('duration', ({ id, duration }) => {
