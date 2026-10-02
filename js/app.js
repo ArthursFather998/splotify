@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v5.5';
+  const APP_VERSION = 'v5.6';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -848,6 +848,26 @@ const App = (() => {
     }
     save();
     exporting = true; exportCancel = false;
+    const batchSizes = batches.map(ba => ba.reduce((a, t) => a + (t.file.size || 0), 0));
+    const totalBytes = batchSizes.reduce((a, b) => a + b, 0);
+    /* Live painter for the Drive Backup screen: updates the view's DOM in
+       place so no full re-render ever interrupts the upload. */
+    const dbPaint = (b, frac, upBytes, note) => {
+      Object.assign(dbUI, { part: b + 1, frac, upBytes, note: note || '' });
+      const pct = Math.min(100, Math.round(((b + frac) / batches.length) * 100));
+      const set = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
+      set('db-status', note || dbUI.note || ('Sending part ' + (b + 1) + ' of ' + batches.length + '…'));
+      set('db-pct', pct + '%');
+      set('db-part', (b + 1) + ' of ' + batches.length);
+      set('db-sent', dbgb(upBytes) + ' of ' + dbgb(totalBytes));
+      const f = document.getElementById('db-fill'); if (f) f.style.width = pct + '%';
+    };
+    if (toDrive) {
+      Object.assign(dbUI, { phase: 'running', part: 0, parts: batches.length, frac: 0, upBytes: 0, totalBytes, t0: Date.now(), note: 'Preparing your songs…' });
+      nav('driveBackup');
+      clearInterval(dbTimer);
+      dbTimer = setInterval(() => { const el = document.getElementById('db-time'); if (el) el.textContent = dbElapsed(); }, 1000);
+    }
     /* Keep the screen awake while packing/uploading; iOS suspends background
        tabs, which is what kills the run. Re-acquire if the tab was hidden. */
     let wake = null;
@@ -859,27 +879,35 @@ const App = (() => {
     const title = document.getElementById('ip-title');
     const count = document.getElementById('ip-count');
     const fill = document.getElementById('ip-fill');
-    prog.style.display = 'block';
-    prog.onclick = () => { exportCancel = true; };
+    if (!toDrive) {
+      prog.style.display = 'block';
+      prog.onclick = () => { exportCancel = true; };
+    }
     const gb = b => (b / 1073741824).toFixed(1) + ' GB';
     const finish = msg => {
       prog.style.display = 'none'; prog.onclick = null; exporting = false;
       document.removeEventListener('visibilitychange', onVis);
       try { wake && wake.release(); } catch (e) { /* ignore */ } wake = null;
+      clearInterval(dbTimer); dbTimer = null;
+      if (toDrive && (S.stack[S.stack.length - 1] || {}).v === 'driveBackup') render();
       if (msg) toast(msg);
     };
     try {
       for (let b = 0; b < batches.length; b++) {
         if (exportCancel) throw new Error('cancelled');
         if (done[b]) continue;
-        title.textContent = (toDrive ? 'Sending part ' : 'Backing up part ') + (b + 1) + ' of ' + batches.length + ' — keep Splotify open (tap to pause)';
+        const bytesBefore = batchSizes.slice(0, b).reduce((a, x) => a + x, 0);
+        if (toDrive) dbPaint(b, 0, bytesBefore, 'Sending part ' + (b + 1) + ' of ' + batches.length + '…');
+        else title.textContent = 'Backing up part ' + (b + 1) + ' of ' + batches.length + ' — keep Splotify open (tap to pause)';
         const ui = (i, n, doneBytes) => {
+          if (toDrive) { dbPaint(b, (n ? i / n : 1) * 0.5, bytesBefore + doneBytes); return; }
           count.textContent = 'Part ' + (b + 1) + '/' + batches.length + ' • packing song ' + i + ' of ' + n + ' • ' + gb(doneBytes);
           fill.style.width = ((b + (n ? i / n : 1)) / batches.length * 50) + '%';
         };
         const blob = await buildZipBlob(batches[b], ui);
         const name = toDrive ? 'splotify-backup-' + sess + '-part' + (b + 1) + '-of-' + batches.length + '.zip' : 'splotify-backup-part' + (b + 1) + '-of-' + batches.length + '.zip';
         await uploadPart(blob, bin, name, frac => {
+          if (toDrive) { dbPaint(b, 0.5 + frac * 0.5, bytesBefore + batchSizes[b], 'Uploading part ' + (b + 1) + ' of ' + batches.length + ' — ' + Math.round(frac * 100) + '%'); return; }
           count.textContent = 'Part ' + (b + 1) + '/' + batches.length + ' • uploading ' + Math.round(frac * 100) + '%';
           fill.style.width = ((b + 0.5 + frac * 0.5) / batches.length * 100) + '%';
           if (exportCancel) throw new Error('cancelled');
@@ -889,21 +917,100 @@ const App = (() => {
       }
     } catch (e) {
       save();
-      finish(e && e.message === 'cancelled'
-        ? 'Backup paused — reopen Export to resume where it stopped'
+      const cancelled = e && e.message === 'cancelled';
+      if (toDrive) Object.assign(dbUI, { phase: cancelled ? 'paused' : 'failed', note: cancelled ? '' : 'Upload failed — check Wi-Fi and try again.' });
+      finish(cancelled
+        ? (toDrive ? 'Backup paused' : 'Backup paused — reopen Export to resume where it stopped')
         : 'Upload failed — reopen Export to resume when Wi-Fi is back');
       return;
     }
     try { localStorage.removeItem(SKEY); } catch (e) { /* ignore */ }
-    finish();
     if (toDrive) {
-      toast('Upload complete — moving everything to your Drive now');
+      Object.assign(dbUI, { phase: 'moving', part: batches.length, frac: 1, upBytes: totalBytes, note: '' });
+      finish();
       return;
     }
+    finish();
     const url = 'https://filebin.net/' + bin;
     try { await navigator.clipboard.writeText(url); } catch (e) { /* fall through */ }
     prompt('Backup complete — copy this link and send it to me:', url);
     toast('Backup link ready');
+  }
+  /* Drive Backup screen (v5.6): a dedicated view showing what the backup is
+     doing — phase, part progress, GB moved, elapsed time — instead of the
+     toast card. The export loop below paints it live via paintDB hooks. */
+  const dbUI = { phase: 'idle', part: 0, parts: 0, frac: 0, upBytes: 0, totalBytes: 0, t0: 0, note: '' };
+  let dbTimer = null;
+  const dbgb = b => (b / 1073741824).toFixed(1) + ' GB';
+  function dbElapsed() {
+    if (!dbUI.t0) return '0:00';
+    const s = Math.floor((Date.now() - dbUI.t0) / 1000);
+    return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+  }
+  function vDriveBackup() {
+    const u = dbUI;
+    let savedParts = null;
+    if (u.phase === 'idle') {
+      try {
+        const s = JSON.parse(localStorage.getItem('splotify-export-progress-drive') || 'null');
+        if (s && Array.isArray(s.done)) {
+          const n = s.done.filter(Boolean).length;
+          if (n > 0 && n < s.done.length) savedParts = { n, of: s.done.length };
+        }
+      } catch (e) { /* ignore */ }
+    }
+    const pct = u.parts ? Math.min(100, Math.round(((u.part - 1 + u.frac) / u.parts) * 100)) : 0;
+    let statusText, actionBtn;
+    if (u.phase === 'running') {
+      statusText = u.note || 'Sending…';
+      actionBtn = '<button class="bigbtn" data-act="db-pause" style="margin-top:26px">Pause</button>';
+    } else if (u.phase === 'paused') {
+      statusText = 'Paused — your progress is saved.';
+      actionBtn = '<button class="bigbtn pink" data-act="db-start" style="margin-top:26px">Resume backup</button>';
+    } else if (u.phase === 'moving') {
+      statusText = 'Everything is sent.';
+      actionBtn = '<button class="bigbtn" data-act="db-done" style="margin-top:26px">Done</button>';
+    } else if (u.phase === 'failed') {
+      statusText = u.note || 'Something went wrong.';
+      actionBtn = '<button class="bigbtn pink" data-act="db-start" style="margin-top:26px">Try again</button>';
+    } else if (savedParts) {
+      statusText = 'You have an unfinished backup.';
+      actionBtn = '<button class="bigbtn pink" data-act="db-start" style="margin-top:26px">Resume backup — ' + savedParts.n + ' of ' + savedParts.of + ' parts sent</button>';
+    } else {
+      statusText = 'Send your whole library to Google Drive, organized by album.';
+      actionBtn = '<button class="bigbtn pink" data-act="db-start" style="margin-top:26px">Start backup</button>';
+    }
+    const dot = st => '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:10px;background:' +
+      (st === 'done' ? 'var(--pink)' : st === 'active' ? '#fff' : 'rgba(255,255,255,.25)') + '"></span>';
+    const s1 = u.phase === 'moving' ? 'done' : (u.phase === 'idle' && !savedParts ? '' : 'active');
+    const s2 = u.phase === 'moving' ? 'active' : '';
+    const stepRow = (st, label, sub) =>
+      '<div style="display:flex;align-items:flex-start;padding:10px 0">' + dot(st) +
+      '<div><div style="font-weight:700;font-size:14px">' + label + '</div>' +
+      '<div style="color:var(--sub);font-size:13px;margin-top:2px">' + sub + '</div></div></div>';
+    return `<div class="pagehead"><button class="iconbtn" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><h1>Drive Backup</h1><span style="width:44px"></span></div>
+    <div style="padding:4px 20px 48px">
+      <div id="db-status" style="font-size:17px;font-weight:700;margin:10px 0 2px">${statusText}</div>
+      <div id="db-note" style="color:var(--sub);font-size:13px;min-height:18px"></div>
+      <div style="display:flex;align-items:baseline;justify-content:space-between;margin-top:14px">
+        <span style="color:var(--sub);font-size:13px">Progress</span>
+        <span id="db-pct" style="font-size:28px;font-weight:800">${pct}%</span>
+      </div>
+      <div style="height:8px;border-radius:4px;background:rgba(255,255,255,.12);margin:8px 0 4px;overflow:hidden">
+        <div id="db-fill" style="height:100%;width:${pct}%;border-radius:4px;background:var(--pink);transition:width .3s"></div>
+      </div>
+      <div style="margin-top:18px">
+        ${stepRow(s1, '1 · Sending from your phone', 'Songs upload in parts with resume.')}
+        ${stepRow(s2, '2 · Moving to your Drive', u.phase === 'moving' ? 'Running on my side now — I\u2019ll message you when your songs are in Drive.' : 'Starts automatically when the upload finishes.')}
+      </div>
+      <div style="margin-top:14px;border-top:1px solid rgba(255,255,255,.1);padding-top:6px">
+        <div style="display:flex;justify-content:space-between;padding:8px 0;font-size:14px"><span style="color:var(--sub)">Part</span><span id="db-part" style="font-weight:700">${u.parts ? u.part + ' of ' + u.parts : '—'}</span></div>
+        <div style="display:flex;justify-content:space-between;padding:8px 0;font-size:14px"><span style="color:var(--sub)">Sent</span><span id="db-sent" style="font-weight:700">${u.totalBytes ? dbgb(u.upBytes) + ' of ' + dbgb(u.totalBytes) : '—'}</span></div>
+        <div style="display:flex;justify-content:space-between;padding:8px 0;font-size:14px"><span style="color:var(--sub)">Elapsed</span><span id="db-time" style="font-weight:700">${dbElapsed()}</span></div>
+      </div>
+      <div style="color:var(--sub);font-size:13px;margin-top:14px">Keep Splotify open — iOS pauses uploads when the app goes to the background.</div>
+      <div style="text-align:center">${actionBtn}</div>
+    </div>`;
   }
   /* Checks the live sw.js for a newer build. The update row only lights up
      when the server has something newer than the running code. */
@@ -967,6 +1074,7 @@ const App = (() => {
     podcasts: () => vStub('Podcasts', 'radio', 'No podcasts here yet.'),
     videos: () => vStub('Videos', 'playRect', 'No videos here yet.'),
     plimport: () => vPlImport(),
+    driveBackup: () => vDriveBackup(),
   };
   function render() {
     const cur = S.stack[S.stack.length - 1] || { v: 'home' };
@@ -1287,7 +1395,10 @@ const App = (() => {
       case 'import': Importer.open(); break;
       case 'import-zip': Importer.openZip(); break;
       case 'export-library': exportLibrary('link'); break;
-      case 'export-drive': exportLibrary('drive'); break;
+      case 'export-drive': if (exporting) nav('driveBackup'); else exportLibrary('drive'); break;
+      case 'db-start': exportLibrary('drive'); break;
+      case 'db-pause': exportCancel = true; { const el = document.getElementById('db-note'); if (el) el.textContent = 'Finishing this part, then pausing…'; } break;
+      case 'db-done': nav('settings'); break;
       case 'open-plimport': nav('plimport'); break;
       case 'plimport-start': PlImport.startFromUI(); break;
       case 'plimport-cancel': PlImport.cancel(); break;
