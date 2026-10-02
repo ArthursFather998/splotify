@@ -1,0 +1,81 @@
+/* Splotify local database — IndexedDB. Audio files + library live on-device only. */
+const DB = (() => {
+  const NAME = 'splotify', VER = 1;
+  let db = null;
+
+  function open() {
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open(NAME, VER);
+      req.onupgradeneeded = () => {
+        const d = req.result;
+        if (!d.objectStoreNames.contains('tracks')) {
+          const s = d.createObjectStore('tracks', { keyPath: 'id', autoIncrement: true });
+          s.createIndex('title', 'title', { unique: false });
+          s.createIndex('artist', 'artist', { unique: false });
+          s.createIndex('album', 'album', { unique: false });
+          s.createIndex('added', 'dateAdded', { unique: false });
+        }
+        if (!d.objectStoreNames.contains('playlists')) d.createObjectStore('playlists', { keyPath: 'id' });
+        if (!d.objectStoreNames.contains('kv')) d.createObjectStore('kv', { keyPath: 'k' });
+      };
+      req.onsuccess = () => { db = req.result; resolve(db); };
+      req.onerror = () => reject(req.error);
+    });
+  }
+  function tx(store, mode, fn) {
+    return new Promise((resolve, reject) => {
+      const t = db.transaction(store, mode);
+      const s = t.objectStore(store);
+      const out = fn(s);
+      t.oncomplete = () => resolve(out && out.result !== undefined ? out.result : out);
+      t.onerror = () => reject(t.error);
+    });
+  }
+  const req2p = r => new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+
+  return {
+    open,
+    addTracks(list) {
+      return new Promise((resolve, reject) => {
+        const t = db.transaction('tracks', 'readwrite');
+        const s = t.objectStore('tracks');
+        const ids = [];
+        list.forEach(tr => { const r = s.add(tr); r.onsuccess = () => ids.push(r.result); });
+        t.oncomplete = () => resolve(ids);
+        t.onerror = () => reject(t.error);
+      });
+    },
+    allTracks() { return tx('tracks', 'readonly', s => req2p(s.getAll())); },
+    getTrack(id) { return tx('tracks', 'readonly', s => req2p(s.get(id))); },
+    updateTrack(id, patch) {
+      return tx('tracks', 'readwrite', s =>
+        req2p(s.get(id)).then(cur => { if (!cur) return; Object.assign(cur, patch); return req2p(s.put(cur)); }));
+    },
+    delTrack(id) { return tx('tracks', 'readwrite', s => { s.delete(id); }); },
+    countTracks() { return tx('tracks', 'readonly', s => req2p(s.count())); },
+
+    allPlaylists() { return tx('playlists', 'readonly', s => req2p(s.getAll())); },
+    getPlaylist(id) { return tx('playlists', 'readonly', s => req2p(s.get(id))); },
+    putPlaylist(pl) { return tx('playlists', 'readwrite', s => { s.put(pl); }); },
+    delPlaylist(id) { return tx('playlists', 'readwrite', s => { s.delete(id); }); },
+
+    kvGet(k, def) {
+      return tx('kv', 'readonly', s => req2p(s.get(k))).then(r => (r ? r.v : def));
+    },
+    kvSet(k, v) { return tx('kv', 'readwrite', s => { s.put({ k, v }); }); },
+
+    usage() {
+      if (navigator.storage && navigator.storage.estimate) return navigator.storage.estimate();
+      return Promise.resolve({});
+    },
+    clearAll() {
+      return new Promise((resolve, reject) => {
+        const t = db.transaction(['tracks', 'playlists', 'kv'], 'readwrite');
+        t.objectStore('tracks').clear();
+        t.objectStore('playlists').clear();
+        t.objectStore('kv').clear();
+        t.oncomplete = resolve; t.onerror = () => reject(t.error);
+      });
+    }
+  };
+})();

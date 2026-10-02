@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Splotify</title>
+<meta name="theme-color" content="#121212">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Splotify">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" type="image/png" href="icons/favicon.png">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<div id="app">
+  <main id="view" aria-live="polite"></main>
+  <div id="miniplayer" class="hidden" role="button" tabindex="0" aria-label="Now playing, tap to expand">
+    <img id="mp-art" alt=""><div id="mp-ph" class="skel" style="display:none" aria-hidden="true"></div>
+    <div id="mp-meta"><div id="mp-title"></div><div id="mp-artist"></div></div>
+    <button id="mp-devices" class="iconbtn" aria-label="Devices"></button>
+    <button id="mp-play" class="iconbtn" aria-label="Play or pause"></button>
+    <div id="mp-progress"><div id="mp-fill"></div></div>
+  </div>
+  <nav id="tabbar" aria-label="Main navigation">
+    <button data-act="tab" data-tab="home" class="tab active" aria-label="Home"><span class="tabicon"></span><span class="tablabel">Home</span></button>
+    <button data-act="tab" data-tab="search" class="tab" aria-label="Search"><span class="tabicon"></span><span class="tablabel">Search</span></button>
+    <button data-act="tab" data-tab="library" class="tab" aria-label="Your Library"><span class="tabicon"></span><span class="tablabel">Your Library</span></button>
+  </nav>
+  <section id="nowplaying" aria-hidden="true" aria-label="Now playing">
+    <div id="np-bg"></div>
+    <div id="np-inner">
+      <header id="np-top">
+        <button id="np-close" class="iconbtn" aria-label="Close player"></button>
+        <div id="np-context"><div id="np-context-kicker">PLAYING FROM SONGS</div><div id="np-context-name"></div></div>
+        <button id="np-menu" class="iconbtn" aria-label="More options"></button>
+      </header>
+      <div id="np-artwrap"><img id="np-art" alt="Album artwork"><div id="np-ph" class="art-ph" aria-hidden="true"></div></div>
+      <div id="np-titlerow">
+        <div id="np-titlemeta"><div id="np-title"></div><div id="np-artist"></div></div>
+        <button id="np-like" class="iconbtn" aria-label="Like"></button>
+      </div>
+      <div id="np-seek">
+        <div id="np-bar" role="slider" aria-label="Seek" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" tabindex="0"><div id="np-track"><div id="np-fillbar"></div></div><div id="np-knob"></div></div>
+        <div id="np-times"><span id="np-cur">0:00</span><span id="np-dur">0:00</span></div>
+      </div>
+      <div id="np-controls">
+        <button id="np-shuffle" class="iconbtn" aria-label="Shuffle"></button>
+        <button id="np-prev" class="iconbtn" aria-label="Previous"></button>
+        <button id="np-play" aria-label="Play or pause"></button>
+        <button id="np-next" class="iconbtn" aria-label="Next"></button>
+        <button id="np-repeat" class="iconbtn" aria-label="Repeat"></button>
+      </div>
+      <footer id="np-bottom">
+        <button id="np-devices" class="iconbtn" aria-label="Devices"></button>
+        <button id="np-queue" class="iconbtn" aria-label="Queue"></button>
+      </footer>
+    </div>
+  </section>
+  <div id="sheet-scrim" class="hidden"></div>
+  <div id="sheet" class="hidden" role="dialog" aria-modal="true"><div id="sheet-handle"></div><div id="sheet-body"></div></div>
+  <div id="toast" class="hidden"></div>
+  <input type="file" id="filepicker" hidden multiple accept="audio/*,.mp3,.m4a,.m4b,.aac,.wav,.flac,.ogg,.oga,.opus,.aiff,.aif">
+  <input type="file" id="zippicker" hidden accept=".zip,application/zip,application/x-zip-compressed">
+  <div id="import-progress" class="hidden"><div id="ip-card"><div id="ip-title">Adding music…</div><div id="ip-bar"><div id="ip-fill"></div></div><div id="ip-count"></div></div></div>
+</div>
+<script src="js/vendor/mm.js"></script>
+  <script src="js/vendor/jszip.min.js"></script>
+<script src="js/icons.js"></script>
+<script src="js/db.js"></script>
+<script src="js/player.js"></script>
+<script src="js/import.js"></script>
+<script src="js/artist-stats.js"></script>
+<script src="js/custom-art/map.js"></script>
+<script src="js/custom-art/meta.js"></script>
+<script src="js/app.js"></script>
+<script src="js/plimport.js"></script>
+</body>
+</html>
