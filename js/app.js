@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v6.3';
+  const APP_VERSION = 'v6.4';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -818,6 +818,11 @@ const App = (() => {
     if (exporting) return;
     const tracks = S.tracks.filter(t => t.file);
     if (!tracks.length) { toast('No songs to export yet'); return; }
+    /* Claim the run up front: the resume confirm below blocks the main
+       thread, and without an early claim a second trigger (auto-resume timer)
+       could start a competing run. Released on early exits; finish() releases
+       on completion. */
+    exporting = true;
     tracks.sort((a, b) => String(a.album || '').localeCompare(String(b.album || '')) ||
       ((a.trackNo || 0) - (b.trackNo || 0)) || String(a.title).localeCompare(String(b.title)));
     /* Split into ~25 MB parts: small enough that a part actually finishes on
@@ -841,10 +846,16 @@ const App = (() => {
     let bin = null, done = null;
     if (saved && saved.fp === fp && saved.bin && Array.isArray(saved.done) && saved.done.length === batches.length) {
       const n = saved.done.filter(Boolean).length;
-      if (n > 0 && n < batches.length &&
-          (auto || confirm('Resume backup? ' + n + ' of ' + batches.length + ' parts are already uploaded.'))) {
-        bin = saved.bin; done = saved.done.slice();
-        if (saved.sess) sess = saved.sess;
+      if (n > 0 && n < batches.length) {
+        if (auto || confirm('Resume backup? ' + n + ' of ' + batches.length + ' parts are already uploaded.')) {
+          bin = saved.bin; done = saved.done.slice();
+          if (saved.sess) sess = saved.sess;
+        } else {
+          // Cancelled: back out and keep the saved progress for next time —
+          // never start fresh over it.
+          exporting = false;
+          return;
+        }
       } else if (n === batches.length) {
         try { localStorage.removeItem(SKEY); } catch (e) { /* ignore */ }
       }
@@ -854,6 +865,36 @@ const App = (() => {
       done = batches.map(() => false);
     }
     const save = () => { try { localStorage.setItem(SKEY, JSON.stringify({ fp, bin, done, sess, userPaused: exportUserPaused })); } catch (e) { /* ignore */ } };
+    /* Session unification (drive): the bridge may hold parts from a richer
+       interrupted session of this same backup (same part count) under a
+       different session tag. Adopt the richest one and continue under its tag
+       instead of re-uploading — the batch split is deterministic, so same
+       part numbers mean same contents. The per-part HEAD check below
+       re-validates every adopted part. */
+    if (toDrive) {
+      try {
+        const r = await fetch('https://filebin.net/' + BRIDGE_BIN, { headers: { 'Accept': 'application/json' } });
+        if (r.ok) {
+          const d = await r.json();
+          const bySess = {};
+          for (const f of (d.files || [])) {
+            const m = /^splotify-backup-([a-z0-9]+)-part(\d+)-of-(\d+)\.zip$/.exec(f.filename || '');
+            if (m && +m[3] === batches.length) (bySess[m[1]] = bySess[m[1]] || []).push(+m[2]);
+          }
+          let best = null, bestParts = [];
+          for (const s of Object.keys(bySess)) {
+            if (bySess[s].length > bestParts.length) { best = s; bestParts = bySess[s]; }
+          }
+          if (best && bestParts.length > done.filter(Boolean).length) {
+            sess = best;
+            const ndone = batches.map(() => false);
+            for (const p of bestParts) if (p >= 1 && p <= batches.length) ndone[p - 1] = true;
+            done = ndone;
+            dbUI.note = 'Picked up ' + bestParts.length + ' parts from the earlier run…';
+          }
+        }
+      } catch (e) { /* bridge unreachable: fall through to per-part checks */ }
+    }
     /* Verify the "done" parts are still on filebin (bins expire after 6 days);
        anything missing gets re-uploaded. */
     for (let b = 0; b < batches.length; b++) {
@@ -865,7 +906,7 @@ const App = (() => {
       } catch (e) { done[b] = false; }
     }
     save();
-    exporting = true; exportCancel = false; exportUserPaused = false;
+    exportCancel = false; exportUserPaused = false;
     const batchSizes = batches.map(ba => ba.reduce((a, t) => a + (t.file.size || 0), 0));
     const totalBytes = batchSizes.reduce((a, b) => a + b, 0);
     /* Live painter for the Drive Backup screen: updates the view's DOM in
