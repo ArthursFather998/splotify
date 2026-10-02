@@ -115,6 +115,10 @@ const Player = (() => {
       S.liked = new Set(liked);
       const sh = await DB.kvGet('pshuffle', false); S.shuffle = !!sh;
       const rp = await DB.kvGet('prepeat', 'off'); S.repeat = rp;
+      S.volume = Math.max(0, Math.min(1, (await DB.kvGet('pvolume', 1)) ?? 1));
+      S.muted = !!(await DB.kvGet('pmuted', false));
+      S.preMute = S.volume > 0 ? S.volume : 0.8;
+      audio.volume = S.muted ? 0 : S.volume;
       const now = await DB.kvGet('now', null);
       if (now && now.trackId) {
         S.ctx = now.ctx; S.list = now.list || [];
@@ -171,6 +175,29 @@ const Player = (() => {
       if (!S.track) return;
       const d = audio.duration || S.track.duration || 0;
       audio.currentTime = Math.max(0, Math.min(d, sec));
+    },
+    get volume() { return S.volume == null ? 1 : S.volume; },
+    get muted() { return !!S.muted; },
+    setVolume(v) {
+      S.volume = Math.max(0, Math.min(1, v));
+      if (S.volume > 0) { S.muted = false; S.preMute = S.volume; }
+      audio.volume = S.muted ? 0 : S.volume;
+      DB.kvSet('pvolume', S.volume).catch(() => {});
+      DB.kvSet('pmuted', S.muted).catch(() => {});
+      emit('volume', { volume: S.volume, muted: S.muted });
+    },
+    toggleMute() {
+      if (S.muted || S.volume === 0) {
+        S.muted = false;
+        if (!S.volume) S.volume = S.preMute || 0.8;
+      } else {
+        S.preMute = S.volume || 0.8;
+        S.muted = true;
+      }
+      audio.volume = S.muted ? 0 : S.volume;
+      DB.kvSet('pvolume', S.volume).catch(() => {});
+      DB.kvSet('pmuted', S.muted).catch(() => {});
+      emit('volume', { volume: S.volume, muted: S.muted });
     },
     async toggleShuffle() {
       S.shuffle = !S.shuffle;

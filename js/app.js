@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v6.0';
+  const APP_VERSION = 'v6.1';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -1969,6 +1969,29 @@ const App = (() => {
     bar.addEventListener('pointerdown', ev => { seeking = true; bar.setPointerCapture(ev.pointerId); setFromEvent(ev); });
     bar.addEventListener('pointermove', ev => { if (seeking) setFromEvent(ev); });
     bar.addEventListener('pointerup', ev => { if (seeking) { seeking = false; Player.seek(setFromEvent(ev)); } });
+    // volume slider + mute: the song keeps playing while muted (the keep-alive trick)
+    const paintVolume = () => {
+      const v = Player.muted ? 0 : Player.volume;
+      const fill = document.getElementById('np-volfill'), knob = document.getElementById('np-volknob'),
+        mute = document.getElementById('np-mute'), vb = document.getElementById('np-volbar');
+      if (fill) fill.style.width = (v * 100) + '%';
+      if (knob) knob.style.left = (v * 100) + '%';
+      if (mute) mute.innerHTML = icon(Player.muted || Player.volume === 0 ? 'volMute' : 'vol');
+      if (vb) vb.setAttribute('aria-valuenow', Math.round(v * 100));
+    };
+    const vbar = document.getElementById('np-volbar');
+    let volSeeking = false;
+    const setVolFromEvent = ev => {
+      const r = document.getElementById('np-voltrack').getBoundingClientRect();
+      const x = (ev.touches ? ev.touches[0].clientX : ev.clientX);
+      Player.setVolume(Math.max(0, Math.min(1, (x - r.left) / r.width)));
+    };
+    vbar.addEventListener('pointerdown', ev => { volSeeking = true; vbar.setPointerCapture(ev.pointerId); setVolFromEvent(ev); });
+    vbar.addEventListener('pointermove', ev => { if (volSeeking) setVolFromEvent(ev); });
+    vbar.addEventListener('pointerup', () => { volSeeking = false; });
+    document.getElementById('np-mute').addEventListener('click', () => Player.toggleMute());
+    Player.on('volume', paintVolume);
+    paintVolume();
     // Seamless swipe-down to minimize: the screen follows the finger, then
     // either finishes closing or springs back on release. The progress bar
     // keeps priority (seeking), horizontal swipes are ignored.
@@ -1979,7 +2002,7 @@ const App = (() => {
         bailed = dragging = false;
         if (!np.classList.contains('open')) { bailed = true; return; }
         const t = e.touches[0];
-        if (t.target.closest && t.target.closest('#np-bar')) { bailed = true; return; }
+        if (t.target.closest && (t.target.closest('#np-bar') || t.target.closest('#np-volbar'))) { bailed = true; return; }
         startY = t.clientY; startX = t.clientX; startT = performance.now();
       }, { passive: true });
       np.addEventListener('touchmove', e => {
