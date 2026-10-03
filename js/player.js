@@ -220,7 +220,9 @@ const Player = (() => {
     },
     isLiked(id) { return S.liked.has(id); },
     async toggleLike(id) {
-      if (S.liked.has(id)) S.liked.delete(id); else S.liked.add(id);
+      id = Number(id);
+      if (S.liked.has(id)) S.liked.delete(id);
+      else { S.liked.add(id); try { await App.libraryAdd(id); } catch (e) {} }
       await DB.kvSet('liked', [...S.liked]);
       emit('state', { playing: S.playing, track: S.track });
     },

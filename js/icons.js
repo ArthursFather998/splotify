@@ -24,6 +24,11 @@ queue:'<path d="M4 6.5h11M4 11h11M4 15.5h7" stroke="currentColor" stroke-width="
 plus:'<path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>',
 x:'<path d="M18 6 6 18M6 6l12 12" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>',
 dots:'<circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/>',
+/* v7.0 library chrome */
+grid:'<rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/>',
+listV:'<path d="M9 6h11M9 12h11M9 18h11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="4.8" cy="6" r="1.5" fill="currentColor"/><circle cx="4.8" cy="12" r="1.5" fill="currentColor"/><circle cx="4.8" cy="18" r="1.5" fill="currentColor"/>',
+sortArrows:'<path d="M7 4v12M4.5 13.5 7 16l2.5-2.5M17 20V8M14.5 10.5 17 8l2.5 2.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
+pin:'<path d="M9.5 3.5h5l-.8 6.2 2.8 2.8v1.5h-9v-1.5l2.8-2.8z"/><path d="M12 14v7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>',
 note:'<path d="M9 18.5V6l11-2.5V16" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><circle cx="6.5" cy="18.5" r="2.8" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="17.5" cy="16" r="2.8" fill="none" stroke="currentColor" stroke-width="2"/>',
 disc:'<circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="2" fill="none" stroke="currentColor" stroke-width="2"/>',
 person:'<circle cx="12" cy="8" r="4" fill="none" stroke="currentColor" stroke-width="2"/><path d="M4.5 20a7.5 7.5 0 0 1 15 0" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>',
@@ -40,7 +45,7 @@ vol:'<path d="M4 9.5v5h3.5L12 18.5v-13L7.5 9.5H4z"/><path d="M15 9a4.2 4.2 0 0 1
 volMute:'<path d="M4 9.5v5h3.5L12 18.5v-13L7.5 9.5H4z"/><path d="M16 9.5l5 5M21 9.5l-5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>',
 };
 function icon(name, style){
-  const filled = ['home','play','pause','prev','next','heartF','dots','eq'].includes(name);
+  const filled = ['home','play','pause','prev','next','heartF','dots','eq','grid','pin'].includes(name);
   const inner = ICONS[name] || '';
   return `<svg viewBox="0 0 24 24" ${filled?'fill="currentColor"':'fill="none"'} ${style?`style="${style}"`:''} aria-hidden="true">${inner}</svg>`;
 }

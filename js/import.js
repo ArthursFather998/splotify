@@ -641,22 +641,30 @@ const Importer = (() => {
   async function mbSearchRecording(title, artist) {
     const key = norm(title) + '|||' + norm(artist);
     if (mbCache.has(key)) return mbCache.get(key);
-    const wait = 1100 - (Date.now() - mbLastReq);
-    if (wait > 0) await new Promise(r => setTimeout(r, wait));
-    mbLastReq = Date.now();
-    let out = null;
-    try {
-      let q = 'recording:"' + String(title || '').replace(/"/g, '') + '"';
-      if (artist && artist !== 'Unknown Artist') q += ' AND artist:"' + String(artist).replace(/"/g, '') + '"';
-      const c = new AbortController(); const t = setTimeout(() => c.abort(), 15000);
-      const r = await fetch('https://musicbrainz.org/ws/2/recording/?query=' + encodeURIComponent(q) + '&fmt=json&limit=8', { signal: c.signal });
-      clearTimeout(t);
-      if (r.ok) {
-        const d = await r.json();
-        out = (d.recordings || []).filter(x => x && (x.score || 0) >= 60);
-      }
-    } catch (e) { /* offline or throttled: skip */ }
-    mbCache.set(key, out);
+    // v7.0: 1 req/sec politeness + 503 backoff (up to 3 tries). Failures are
+    // never cached — a throttled lookup must not poison later tracks.
+    let out = null, backoff = 2000;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const wait = 1100 - (Date.now() - mbLastReq);
+      if (wait > 0) await new Promise(r => setTimeout(r, wait));
+      mbLastReq = Date.now();
+      try {
+        let q = 'recording:"' + String(title || '').replace(/"/g, '') + '"';
+        if (artist && artist !== 'Unknown Artist') q += ' AND artist:"' + String(artist).replace(/"/g, '') + '"';
+        const c = new AbortController(); const t = setTimeout(() => c.abort(), 15000);
+        const r = await fetch('https://musicbrainz.org/ws/2/recording/?query=' + encodeURIComponent(q) + '&fmt=json&limit=8', {
+          signal: c.signal, headers: { 'User-Agent': 'Splotify/7.0 (personal music library)' },
+        });
+        clearTimeout(t);
+        if (r.status === 503) { await new Promise(rr => setTimeout(rr, backoff)); backoff *= 2; continue; }
+        if (r.ok) {
+          const d = await r.json();
+          out = (d.recordings || []).filter(x => x && (x.score || 0) >= 60);
+        }
+        break;
+      } catch (e) { break; /* offline: skip */ }
+    }
+    if (out) mbCache.set(key, out);
     return out;
   }
   function mbPick(recs, t) {
@@ -709,6 +717,143 @@ const Importer = (() => {
       leftovers.splice(i, 1);
     }
     return { fixed, matched };
+  }
+  /* v7.0 correction audit: identify AND correct wrong tags, not just fill
+     gaps. Sources in order: artist roster, Apple Music, MusicBrainz, his
+     discography. Confident proposals auto-apply; uncertain ones return in
+     the review queue for the user to approve. */
+  function strSim(a, b) {
+    a = (a || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    b = (b || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (!a || !b) return 0;
+    if (a === b) return 1;
+    const la = a.length, lb = b.length;
+    let prev = new Array(lb + 1), cur = new Array(lb + 1);
+    for (let j = 0; j <= lb; j++) prev[j] = j;
+    for (let i = 1; i <= la; i++) {
+      cur[0] = i;
+      const ca = a.charCodeAt(i - 1);
+      for (let j = 1; j <= lb; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca === b.charCodeAt(j - 1) ? 0 : 1));
+      const t = prev; prev = cur; cur = t;
+    }
+    return 1 - prev[lb] / Math.max(la, lb);
+  }
+  // Roster pass: the canonical artist list corrects misspelled artist tags.
+  function rosterProposal(t, roster) {
+    const ta = (t.artist || '').trim();
+    if (!ta || ta === 'Unknown Artist') return null;
+    const nta = ta.toLowerCase().replace(/[^a-z0-9]/g, '');
+    for (const r of roster) {
+      if ((r.name || '').toLowerCase().replace(/[^a-z0-9]/g, '') === nta) return null; // already canonical
+    }
+    let best = null, bestSim = 0;
+    for (const r of roster) {
+      const s = strSim(r.name, ta);
+      if (s > bestSim) { bestSim = s; best = r; }
+    }
+    if (best && bestSim >= 0.8 && bestSim < 1) {
+      return { field: 'artist', from: ta, to: best.name, confidence: 0.5 + bestSim * 0.45, source: 'artist roster' };
+    }
+    return null;
+  }
+  // Apple pass: search the catalog; when it confidently identifies the song
+  // but our tags differ, propose the correction.
+  async function appleProposal(t) {
+    const q = ((t.artist && t.artist !== 'Unknown Artist') ? t.artist + ' ' : '') + (t.title || '');
+    if (!q.trim()) return [];
+    const d = await fetchJSON('https://itunes.apple.com/search?term=' + encodeURIComponent(q) + '&media=music&entity=song&limit=8', 12000);
+    if (!d || !d.resultCount) return [];
+    let best = null, bestScore = 0;
+    for (const r of d.results) {
+      const ts = strSim(r.trackName, t.title);
+      const as = strSim(r.artistName, t.artist);
+      const score = ts * 0.6 + as * 0.4;
+      if (score > bestScore) { bestScore = score; best = r; }
+    }
+    if (!best || bestScore < 0.75) return [];
+    const out = [];
+    const conf = 0.55 + bestScore * 0.4; // 0.85..0.95 at high similarity
+    if (strSim(best.trackName, t.title) >= 0.9 && best.trackName !== t.title && norm(best.trackName) !== norm(t.title)) {
+      out.push({ field: 'title', from: t.title, to: best.trackName, confidence: Math.min(conf, 0.92), source: 'Apple Music' });
+    }
+    if (strSim(best.artistName, t.artist) >= 0.85 && best.artistName !== t.artist && norm(best.artistName) !== norm(t.artist)) {
+      out.push({ field: 'artist', from: t.artist, to: best.artistName, confidence: Math.min(conf, 0.9), source: 'Apple Music' });
+    }
+    if (best.collectionName && best.collectionName !== t.album && norm(best.collectionName) !== norm(t.album || '') && strSim(best.trackName, t.title) >= 0.9) {
+      out.push({ field: 'album', from: t.album || 'Unknown Album', to: best.collectionName, confidence: Math.min(conf - 0.05, 0.88), source: 'Apple Music' });
+    }
+    return out;
+  }
+  // MusicBrainz pass (rate-limited): same idea, open database.
+  async function mbProposal(t) {
+    let recs = null;
+    try { recs = await mbSearchRecording(t.title, t.artist); } catch (e) { return []; }
+    const pick = mbPick(recs, t);
+    if (!pick) return [];
+    const out = [];
+    const mbArtist = (pick['artist-credit'] || []).map(a => (a.name || '') + (a.joinphrase || '')).join('').trim();
+    const ts = strSim(pick.title, t.title), as = mbArtist ? strSim(mbArtist, t.artist) : 0;
+    if (ts < 0.8 || (mbArtist && as < 0.7)) return [];
+    const conf = 0.5 + (ts * 0.6 + as * 0.4) * 0.35; // caps ~0.85 → review tier
+    if (pick.title && pick.title !== t.title && norm(pick.title) !== norm(t.title) && ts >= 0.9) {
+      out.push({ field: 'title', from: t.title, to: pick.title, confidence: conf, source: 'MusicBrainz' });
+    }
+    if (mbArtist && mbArtist !== t.artist && norm(mbArtist) !== norm(t.artist) && as >= 0.85) {
+      out.push({ field: 'artist', from: t.artist, to: mbArtist, confidence: conf, source: 'MusicBrainz' });
+    }
+    const rel = (pick.releases || [])[0];
+    if (rel && rel.title && rel.title !== t.album && norm(rel.title) !== norm(t.album || '') && ts >= 0.9) {
+      out.push({ field: 'album', from: t.album || 'Unknown Album', to: rel.title, confidence: conf - 0.05, source: 'MusicBrainz' });
+    }
+    return out;
+  }
+  async function auditTrack(t, roster) {
+    const proposals = [];
+    try {
+      const rp = rosterProposal(t, roster || []);
+      if (rp) proposals.push(rp);
+    } catch (e) {}
+    // Only consult the network when the roster didn't already settle it and
+    // the track has something to search with.
+    if (t.title && t.title !== 'Unknown Title') {
+      try { proposals.push(...await appleProposal(t)); } catch (e) {}
+      if (!proposals.length) { try { proposals.push(...await mbProposal(t)); } catch (e) {} }
+    }
+    // One proposal per field: keep the most confident.
+    const byField = new Map();
+    for (const p of proposals) {
+      const cur = byField.get(p.field);
+      if (!cur || p.confidence > cur.confidence) byField.set(p.field, p);
+    }
+    return [...byField.values()];
+  }
+  async function applyAuditProposal(t, p) {
+    const tr = { ...t, [p.field]: p.to };
+    tr.tagsVia = (t.tagsVia ? t.tagsVia + '+' : '') + 'audit(' + p.source + ')';
+    tr.tagged = true;
+    await persistFix(t.id, tr);
+    Object.assign(t, { [p.field]: p.to, tagsVia: tr.tagsVia, tagged: true });
+  }
+  // Full-library audit. Confident corrections auto-apply; the rest return
+  // for the review screen. Re-verifies previously tagged tracks too.
+  async function auditLibrary(roster, onProgress) {
+    const tracks = await DB.allTracks();
+    const review = [];
+    let fixed = 0, scanned = 0, autoCount = 0;
+    for (const t of tracks) {
+      scanned++;
+      if (onProgress) { try { onProgress(scanned, tracks.length, t); } catch (e) {} }
+      let proposals = [];
+      try { proposals = await auditTrack(t, roster); } catch (e) { continue; }
+      for (const p of proposals) {
+        if (p.confidence >= 0.88) {
+          try { await applyAuditProposal(t, p); fixed++; autoCount++; } catch (e) {}
+        } else if (p.confidence >= 0.55) {
+          review.push({ trackId: t.id, title: t.title, artist: t.artist, proposal: p });
+        }
+      }
+    }
+    return { scanned, fixed, auto: autoCount, review };
   }
   // Remember single releases on the track record. The bundled discography is
   // the complete source of truth, so this recomputes from scratch (replacing
@@ -958,5 +1103,5 @@ const Importer = (() => {
     } catch (e) { console.warn('healLibrary failed', e); }
     return { fixed, changed: fixed + touched };
   }
-  return { bind, open: () => { if (!busy) picker().click(); }, openZip: () => { if (!busy) zippicker().click(); }, fmtDur, healLibrary, fixAlbum, recordSingles, singleOrder, singleArt, parseOne };
+  return { bind, open: () => { if (!busy) picker().click(); }, openZip: () => { if (!busy) zippicker().click(); }, fmtDur, healLibrary, fixAlbum, recordSingles, singleOrder, singleArt, parseOne, auditLibrary };
 })();

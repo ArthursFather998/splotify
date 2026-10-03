@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v6.9';
+  const APP_VERSION = 'v7.0';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -11,8 +11,80 @@ const App = (() => {
     editRecent: false,
     artistFor: '', artistTab: 'music', artistExpanded: false, artistReleasesExpanded: false,
     artistFilter: 'all', followedArtists: new Set(),
+    // v7.0: S.tracks/S.byId is the SDB (every song known). S.library is the
+    // user's library: an ordered array of saved SDB track IDs (membership
+    // list, not a copy). S.artists is the artist roster table cache.
+    library: [], artists: new Map(),
+    // v7.0 library view state (Spotify-style)
+    libChip: 'all', libSort: 'recent', libGrid: false, libSearching: false, libQ: '',
+    // v7.0 Spotify transfer state
+    spReview: [], spMissed: [], spSummary: null, spBusy: false,
+    // v7.0 utag audit state
+    tagReview: [], tagAuditRunning: false,
   };
   const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+  /* ---------- SDB (Song DataBase) ---------- */
+  // The SDB is every track Splotify knows. S.tracks/S.byId is the in-memory
+  // SDB cache and the DB tracks store is its persistence. The library
+  // (S.library) is a separate membership list of saved track IDs.
+  // New code reads the catalog through SDB.* — when Skyler's SDB server
+  // lands, these become its client and the UI does not change.
+  const SDB = {
+    all: () => S.tracks,
+    get: id => S.byId.get(Number(id)),
+    has: id => S.byId.has(Number(id)),
+    ids: () => S.tracks.map(t => t.id),
+  };
+  /* ---------- artist roster ---------- */
+  // Canonical artist table (v7.0). Seeded from js/placeholder-artists.json;
+  // uploads matching a placeholder activate it; the utag fixer treats this
+  // as the canonical roster. Follow state lives here (not in kv).
+  const artistIdFor = name => 'a_' + normTitle(name);
+  async function upsertArtist(name, patch = {}) {
+    name = String(name || '').trim();
+    if (!name || name === 'Unknown Artist') return null;
+    const id = artistIdFor(name);
+    if (id === 'a_') return null;
+    let rec = S.artists.get(id) || await DB.getArtist(id).catch(() => null);
+    if (!rec) rec = { id, name, isPlaceholder: true, followed: false, followedAt: 0, art: null, bio: null, stats: null };
+    Object.assign(rec, patch);
+    // Never clobber a real display name with a normalized variant.
+    if (patch.name) rec.name = patch.name;
+    S.artists.set(id, rec);
+    try { await DB.putArtist(rec); } catch (e) {}
+    return rec;
+  }
+  async function setArtistFollowed(name, followed) {
+    const rec = await upsertArtist(name, {});
+    if (!rec) return false;
+    rec.followed = !!followed;
+    rec.followedAt = followed ? Date.now() : 0;
+    S.artists.set(rec.id, rec);
+    try { await DB.putArtist(rec); } catch (e) {}
+    const k = artistKey(name);
+    if (followed) S.followedArtists.add(k); else S.followedArtists.delete(k);
+    return followed;
+  }
+  /* ---------- library membership (v7.0) ---------- */
+  // The library is an ordered array of saved SDB track IDs. Uploads never
+  // touch it; only explicit saves (+ / heart flows / Spotify transfer) do.
+  const libraryHas = id => S.library.includes(Number(id));
+  async function libraryAdd(id) {
+    id = Number(id);
+    if (!id || !S.byId.has(id) || S.library.includes(id)) return false;
+    S.library.push(id);
+    try { await DB.kvSet('library', S.library); } catch (e) {}
+    return true;
+  }
+  async function libraryRemove(id) {
+    id = Number(id);
+    const i = S.library.indexOf(id);
+    if (i === -1) return false;
+    S.library.splice(i, 1);
+    try { await DB.kvSet('library', S.library); } catch (e) {}
+    return true;
+  }
 
   /* ---------- artwork ---------- */
   // Curated cover-art overrides (v3.9+): proper art for unreleased tracks that
@@ -232,6 +304,16 @@ const App = (() => {
   }
   const albumByKey = k => albums().find(a => a.key === k);
   const artistByName = n => artists().find(a => a.name === n);
+  /* v7.0: unified artist view-model. Derived artists (with SDB songs) first;
+     roster placeholders (no songs yet) resolve from the artist table so they
+     get real pages with follow buttons. */
+  function artistViewModel(name) {
+    const derived = artistByName(name);
+    if (derived) return derived;
+    const rec = S.artists.get(artistIdFor(name));
+    if (rec) return { name: rec.name, tracks: [], art: null, forms: {}, placeholder: true };
+    return null;
+  }
 
   /* ---------- Spotify-style artist pages ---------- */
   const ARTIST_ART = { d4vd: 'js/artist-art/d4vd.jpg' };
@@ -406,13 +488,30 @@ const App = (() => {
       <div class="empty">${icon('note', 'width:64px;height:64px;color:var(--pink)')}
       <h3>Your music lives here</h3><p>Import audio files from your iPhone and they'll play here, offline, anytime.</p>
       <button class="bigbtn pink" data-act="import">Add music</button></div>`;
+    // v7.0: the SDB is not the library. Empty library gets its own state.
+    const libCount = S.library.length + S._pls.length + S.followedArtists.size + Player.state.liked.size;
+    if (!libCount) return `<div class="home-top"><h1>${greeting()}</h1><div class="home-icons">${hicons()}</div></div>
+      <div class="empty">${icon('heart', 'width:64px;height:64px;color:var(--pink)')}
+      <h3>Your library is empty</h3><p>Your songs are in the SDB. Save the ones you love, or pull in your Spotify collection.</p>
+      <div style="display:flex;gap:10px;justify-content:center;margin-top:14px;flex-wrap:wrap"><button class="bigbtn pink" data-act="tab" data-tab="search">Search the SDB</button><button class="bigbtn" data-act="open-create-sheet">Create a playlist</button></div></div>`;
     const cards = recentCards();
-    const grid = cards.length ? cards : albums().slice(0, 8).map(a => ({ name: a.name, t: a.art, act: `data-act="open-album" data-id="${esc(a.key)}"` }));
-    // more-like: top artist by play count → fallback most tracks
+    // Library-first fallbacks (never the raw SDB).
+    const libTracks = S.library.map(id => S.byId.get(id)).filter(Boolean);
+    const libAlbumCards = albums()
+      .map(a => ({ a, inLib: a.tracks.filter(t => libraryHas(t.id)) }))
+      .filter(x => x.inLib.length)
+      .slice(0, 8)
+      .map(x => ({ name: x.a.name, t: x.a.art, act: `data-act="open-album" data-id="${esc(x.a.key)}"` }));
+    const grid = cards.length ? cards : libAlbumCards.length ? libAlbumCards : S._pls.slice(0, 8).map(p => {
+      const t = p.trackIds.map(id => S.byId.get(Number(id))).find(x => x && x.art);
+      return { name: p.name, t, act: `data-act="open-playlist" data-id="${p.id}"` };
+    });
+    // more-like: top artist by library song count, else first followed artist.
     const counts = {};
-    S.tracks.forEach(t => { trackArtistKeys(t).forEach(k => { counts[k] = (counts[k] || 0) + 1; }); });
-    const topKey = Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0];
-    const ta = topKey ? artists().find(a => artistKey(a.name) === topKey) : null;
+    libTracks.forEach(t => { trackArtistKeys(t).forEach(k => { counts[k] = (counts[k] || 0) + 1; }); });
+    const topKey = Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0]
+      || [...S.followedArtists][0];
+    const ta = topKey ? (artists().find(a => artistKey(a.name) === topKey) || artistViewModel(topKey)) : null;
     const taAlbums = ta ? albums().filter(a => splitArtists(a.artist).some(p => artistKey(p) === topKey)).slice(0, 10) : [];
     return `
     <div class="home-top"><h1>${greeting()}</h1><div class="home-icons">${hicons()}</div></div>
@@ -445,15 +544,37 @@ const App = (() => {
       const colors = ['#8d67ab', '#e13300', '#1e3264', '#e8115b', '#148a08', '#b49bc8', '#dc148c', '#477d95'];
       body = `<div class="browse-title">Browse all</div><div class="genre-grid">${top.map(([g, n], i) =>
         `<div class="genre" style="background:${colors[i % colors.length]}" data-act="open-genre" data-id="${esc(g)}"><span>${esc(g)}</span>${icon('note')}</div>`).join('')}</div>
+        <div class="browse-title" style="margin-top:18px">The SDB</div>
+        <div class="trow" data-act="open-songs"><span style="display:flex;color:var(--sub)">${icon('note', 'width:30px;height:30px')}</span><div class="tmeta"><div class="ttitle">All songs</div><div class="tsub">${S.tracks.length} songs in the Song DataBase</div></div><span style="color:var(--sub);display:flex">${icon('chevR')}</span></div>
+        <div class="trow" data-act="open-artists"><span style="display:flex;color:var(--sub)">${icon('person', 'width:30px;height:30px')}</span><div class="tmeta"><div class="ttitle">All artists</div><div class="tsub">Every artist in the SDB</div></div><span style="color:var(--sub);display:flex">${icon('chevR')}</span></div>
+        <div class="trow" data-act="open-albums"><span style="display:flex;color:var(--sub)">${icon('disc', 'width:30px;height:30px')}</span><div class="tmeta"><div class="ttitle">All albums</div><div class="tsub">Every album in the SDB</div></div><span style="color:var(--sub);display:flex">${icon('chevR')}</span></div>
         ${S.tracks.length ? '' : `<div class="empty"><h3>Search your music</h3><p>Import songs first, then find them here.</p><button class="bigbtn" data-act="import">Add music</button></div>`}`;
     } else {
       const ts = S.tracks.filter(t => (t.title + ' ' + t.artist + ' ' + t.album).toLowerCase().includes(q)).slice(0, 20);
       const as = artists().filter(a => a.name.toLowerCase().includes(q)).slice(0, 8);
+      // v7.0: roster artists (incl. placeholders with no SDB songs yet) are
+      // searchable too, with follow buttons. Deduped against derived hits.
+      const rosterHits = [];
+      try {
+        S.artists.forEach(a => {
+          if (!a.name.toLowerCase().includes(q)) return;
+          if (as.some(x => artistKey(x.name) === artistKey(a.name))) return;
+          if (rosterHits.some(x => artistKey(x.name) === artistKey(a.name))) return;
+          rosterHits.push(a);
+        });
+      } catch (e) {}
+      const rosterShown = rosterHits.slice(0, Math.max(0, 8 - as.length));
       const als = albums().filter(a => (a.name + ' ' + a.artist).toLowerCase().includes(q)).slice(0, 8);
       const ps = S._pls.filter(p => p.name.toLowerCase().includes(q));
       const row = (name, sub, t, act) => `<div class="trow" ${act}>${artImg(t, 'art')}<div class="tmeta"><div class="ttitle">${esc(name)}</div><div class="tsub">${esc(sub)}</div></div></div>`;
+      const rosterRow = a => {
+        const t = S.tracks.find(t => t.art && trackArtistKeys(t).includes(artistKey(a.name)));
+        const following = S.followedArtists.has(artistKey(a.name));
+        const art = t ? artImg(t, 'art') : `<div class="lib-thumb lib-ph round">${icon('person', 'width:26px;height:26px')}</div>`;
+        return `<div class="trow" data-act="open-artist" data-id="${esc(a.name)}">${art}<div class="tmeta"><div class="ttitle">${esc(a.name)}</div><div class="tsub">Artist${a.isPlaceholder && !following ? ' \u2022 No songs in the SDB yet' : ''}</div></div><button class="iconbtn" data-act="artist-follow" data-id="${esc(a.name)}" aria-label="${following ? 'Unfollow' : 'Follow'}">${icon(following ? 'check' : 'plus')}</button></div>`;
+      };
       body = `${ts.length ? `<div class="sectionhead"><h2>Songs</h2></div>${ts.map(t => trackRow(t)).join('')}` : ''}
-      ${as.length ? `<div class="sectionhead"><h2>Artists</h2></div>${as.map(a => row(a.name, 'Artist', a.art, `data-act="open-artist" data-id="${esc(a.name)}"`)).join('')}` : ''}
+      ${(as.length || rosterShown.length) ? `<div class="sectionhead"><h2>Artists</h2></div>${as.map(a => row(a.name, 'Artist', a.art, `data-act="open-artist" data-id="${esc(a.name)}"`)).join('')}${rosterShown.map(rosterRow).join('')}` : ''}
       ${als.length ? `<div class="sectionhead"><h2>Albums</h2></div>${als.map(a => row(a.name, 'Album • ' + a.artist, a.art, `data-act="open-album" data-id="${esc(a.key)}"`)).join('')}` : ''}
       ${ps.length ? `<div class="sectionhead"><h2>Playlists</h2></div>${ps.map(p => { const t = p.trackIds.map(id => S.byId.get(id)).find(x => x); return row(p.name, `Playlist • ${p.trackIds.length} songs`, t, `data-act="open-playlist" data-id="${p.id}"`); }).join('')}` : ''}
       ${(!ts.length && !as.length && !als.length && !ps.length) ? `<div class="empty"><h3>No results for "${esc(S.query)}"</h3><p>Check the spelling, or try an artist or song title.</p></div>` : ''}`;
@@ -461,39 +582,86 @@ const App = (() => {
     return `<div class="searchbox">${icon('search')}<input id="q" placeholder="What do you want to listen to?" value="${esc(S.query)}" autocomplete="off"></div>${body}`;
   }
 
+  /* v7.0 library: Spotify-style. Header (avatar/title/search/+), filter
+     chips, sort + grid toggle, pinned Liked Songs, then the library's
+     playlists, followed artists, and albums. The SDB never appears here. */
+  function libItems() {
+    const items = [];
+    const q = (S.libQ || '').trim().toLowerCase();
+    const match = name => !q || String(name || '').toLowerCase().includes(q);
+    const chip = S.libChip || 'all';
+    const likedN = Player.state.liked.size;
+    if (match('liked songs')) items.push({ kind: 'liked', id: 'liked', name: 'Liked Songs', sub: 'Playlist \u2022 ' + likedN + ' song' + (likedN === 1 ? '' : 's'), pinned: true, ts: Infinity, act: 'data-act="open-liked"' });
+    if (chip === 'all' || chip === 'playlists') {
+      for (const p of S._pls) {
+        if (!match(p.name)) continue;
+        const n = (p.trackIds || []).length;
+        items.push({ kind: 'playlist', id: p.id, name: p.name, sub: 'Playlist \u2022 ' + n + ' song' + (n === 1 ? '' : 's'), ts: p.created || 0, act: 'data-act="open-playlist" data-id="' + p.id + '"', pl: p });
+      }
+    }
+    if (chip === 'all' || chip === 'artists') {
+      S.artists.forEach(a => {
+        if (!a.followed || !match(a.name)) return;
+        items.push({ kind: 'artist', id: a.name, name: a.name, sub: 'Artist', ts: a.followedAt || 0, act: 'data-act="open-artist" data-id="' + esc(a.name) + '"', artist: a });
+      });
+    }
+    if (chip === 'all' || chip === 'albums') {
+      for (const al of albums()) {
+        const inLib = al.tracks.filter(t => libraryHas(t.id));
+        if (!inLib.length || !match(al.name)) continue;
+        items.push({ kind: 'album', id: al.key, name: al.name, sub: 'Album \u2022 ' + al.artist, ts: Math.max.apply(null, inLib.map(t => t.dateAdded || 0)), act: 'data-act="open-album" data-id="' + esc(al.key) + '"', albumTracks: inLib });
+      }
+    }
+    const pinned = items.filter(i => i.pinned);
+    const rest = items.filter(i => !i.pinned);
+    if (S.libSort === 'az') rest.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+    else rest.sort((a, b) => (b.ts || 0) - (a.ts || 0));
+    return pinned.concat(rest);
+  }
+  function libThumb(it) {
+    if (it.kind === 'liked') return '<div class="liked-heart-tile lib-liked">' + icon('heartF') + '</div>';
+    let arts = [];
+    if (it.kind === 'playlist' && it.pl) arts = it.pl.trackIds.map(id => S.byId.get(Number(id))).filter(t => t && t.art);
+    else if (it.kind === 'album' && it.albumTracks) arts = it.albumTracks.filter(t => t.art);
+    else if (it.kind === 'artist') { const t = S.tracks.find(t => t.art && trackArtistKeys(t).includes(artistKey(it.name))); if (t) arts = [t]; }
+    const round = it.kind === 'artist' ? ' round' : '';
+    if (arts.length >= 4) return '<div class="lib-mosaic' + round + '">' + arts.slice(0, 4).map(t => '<img src="' + artURL(t) + '" alt="" onerror="App.artErr(this)">').join('') + '</div>';
+    if (arts.length) return '<img class="lib-thumb' + round + '" src="' + artURL(arts[0]) + '" alt="" onerror="App.artErr(this)">';
+    return '<div class="lib-thumb lib-ph' + round + '">' + icon(it.kind === 'artist' ? 'person' : 'note', 'width:26px;height:26px') + '</div>';
+  }
+  function libRow(it) {
+    const pin = it.pinned ? '<span class="lib-pin">' + icon('pin') + '</span>' : '';
+    return '<div class="trow" ' + it.act + '>' + libThumb(it) + '<div class="tmeta"><div class="ttitle">' + esc(it.name) + '</div><div class="tsub">' + pin + esc(it.sub) + '</div></div></div>';
+  }
+  function libCard(it) {
+    return '<div class="lib-card" ' + it.act + '>' + libThumb(it) + '<div class="tmeta"><div class="ttitle">' + esc(it.name) + '</div><div class="tsub">' + esc(it.sub) + '</div></div></div>';
+  }
   function vLibrary() {
     S.viewCtx = null;
-    const n = S.tracks.length;
-    const rows = [
-      ['sun', 'Made For You', 'open-madeforyou'],
-      ['note', 'Playlists', 'open-playlists'],
-      ['radio', 'Stations', 'open-stations'],
-      ['note', 'Songs', 'open-songs'],
-      ['disc', 'Albums', 'open-albums'],
-      ['person', 'Artists', 'open-artists'],
-      ['radio', 'Podcasts', 'open-podcasts'],
-      ['playRect', 'Videos', 'open-videos'],
-    ];
-    const rec = S.recent.slice(0, 6).map(r => {
-      let name = '', sub = '', t = null, act = '';
-      if (r.kind === 'playlist') { const p = S._pls.find(x => x.id === r.id); if (!p) return ''; name = p.name; sub = 'Playlist'; t = S.byId.get(p.trackIds[0]); act = `data-act="open-playlist" data-id="${p.id}"`; }
-      else if (r.kind === 'album') { const a = albumByKey(r.id); if (!a) return ''; name = a.name; sub = 'Album • by ' + a.artist; t = a.art; act = `data-act="open-album" data-id="${esc(r.id)}"`; }
-      else if (r.kind === 'artist') { const a = artistByName(r.id); if (!a) return ''; name = a.name; sub = 'Artist'; t = a.art; act = `data-act="open-artist" data-id="${esc(r.id)}"`; }
-      else if (r.kind === 'liked') { name = 'Liked Songs'; sub = 'Playlist • ' + Player.state.liked.size + ' songs'; t = { id: 'liked', art: null }; act = `data-act="open-liked"`; }
-      else if (r.kind === 'songs') { name = 'Songs'; sub = n + ' songs'; t = S.tracks.find(x => x.art) || S.tracks[0]; act = `data-act="open-songs"`; }
-      else return '';
-      const art = (r.kind === 'liked') ? `<div class="liked-heart-tile" style="width:62px;height:62px">${icon('heartF')}</div>` : artImg(t, '');
-      return `<div class="trow" ${act}>${art}<div class="tmeta"><div class="ttitle" style="font-size:16px">${esc(name)}</div><div class="tsub">${esc(sub)}</div></div><span style="color:var(--sub);display:flex">${icon('chevR')}</span></div>`;
-    }).join('');
-    return `
-    <div class="lib-head"><div style="width:38px;height:38px;border-radius:50%;background:linear-gradient(135deg,var(--pink),var(--pink-deep));display:flex;align-items:center;justify-content:center;color:#111">${icon('note', 'width:22px;height:22px')}</div><h1>Your Library</h1>
-    <button class="iconbtn" data-act="import" aria-label="Add music">${icon('plus')}</button>
-    <button class="iconbtn" data-act="open-settings" aria-label="Settings">${icon('gear')}</button></div>
-    ${rows.map(([ic, lbl, act]) => `<div class="librow" data-act="${act}">${icon(ic)}<span class="lbl">${lbl}</span><span class="chev">${icon('chevR')}</span></div>`).join('')}
-    <div class="lib-recent">
-      <div class="sectionhead"><h2>Recently Played</h2><button data-act="toggle-edit-recent">${S.editRecent ? 'DONE' : 'EDIT'}</button></div>
-      ${rec || `<div class="empty" style="padding:24px"><p>Plays you make will show up here.</p></div>`}
-    </div>`;
+    const items = libItems();
+    const chips = [['playlists', 'Playlists'], ['artists', 'Artists'], ['albums', 'Albums']];
+    const body = !items.length
+      ? '<div class="empty" style="padding:36px 24px"><h3>Your library is empty</h3><p>Save songs from the SDB, or create your first playlist.</p><div style="display:flex;gap:10px;justify-content:center;margin-top:14px;flex-wrap:wrap"><button class="bigbtn pink" data-act="open-create-sheet">Create a playlist</button><button class="bigbtn" data-act="tab" data-tab="search">Search the SDB</button></div></div>'
+      : (S.libGrid ? '<div class="lib-grid">' + items.map(libCard).join('') + '</div>' : items.map(libRow).join(''));
+    return '<div class="lib-head"><div class="lib-avatar">' + icon('person', 'width:22px;height:22px') + '</div><h1 style="text-align:left">Your Library</h1>'
+      + '<button class="iconbtn" data-act="lib-search" aria-label="Search library">' + icon('search') + '</button>'
+      + '<button class="iconbtn" data-act="open-create-sheet" aria-label="Create">' + icon('plus') + '</button></div>'
+      + (S.libSearching ? '<div class="lib-filter"><input id="lib-q" placeholder="Search your library" value="' + esc(S.libQ) + '" autocomplete="off" autocapitalize="off" spellcheck="false"></div>' : '')
+      + '<div class="lib-chips">' + chips.map(c => '<button class="lib-chip' + (S.libChip === c[0] ? ' on' : '') + '" data-act="lib-chip" data-id="' + c[0] + '">' + c[1] + '</button>').join('') + '</div>'
+      + '<div class="lib-sortrow"><button class="lib-sortbtn" data-act="lib-sort">' + icon('sortArrows') + '<span>' + (S.libSort === 'az' ? 'A to Z' : 'Recents') + '</span></button><span style="flex:1"></span>'
+      + '<button class="iconbtn" data-act="lib-view" aria-label="Toggle view">' + icon(S.libGrid ? 'listV' : 'grid', 'width:22px;height:22px') + '</button></div>'
+      + body;
+  }
+  /* Create sheet (v7.0): shared by the library + button and the Create tab. */
+  function openCreateSheet() {
+    openSheet('<div style="padding:10px 4px 24px"><h3 style="margin:4px 20px 12px;font-size:17px">Create</h3>'
+      + '<div class="sheet-item" data-act="create-playlist"><img src="icons/create-tile.svg" style="width:46px;height:46px;border-radius:10px;flex:none" alt=""><span><b>Playlist</b><div class="sub">Create a new playlist</div></span></div></div>');
+  }
+  function openPlaylistNameSheet() {
+    openSheet('<div style="padding:6px 20px 24px"><h3 style="margin:8px 0 14px;font-size:17px">Name your playlist</h3>'
+      + '<input id="newpl-name" placeholder="My playlist" maxlength="60" autocomplete="off" autocapitalize="off" spellcheck="false" style="width:100%;box-sizing:border-box;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:13px 14px;color:var(--txt);font-size:16px" />'
+      + '<button class="bigbtn pink" data-act="do-create-playlist" style="width:100%;margin-top:16px">Create</button></div>');
+    setTimeout(() => { const i = document.getElementById('newpl-name'); if (i) i.focus(); }, 60);
   }
 
   function heroArt(t, round) {
@@ -532,7 +700,7 @@ const App = (() => {
       + (S.fixing === key ? skelTrow().repeat(Math.max(a.tracks.length, 4)) : a.tracks.map(t => trackRow(t)).join(''));
   }
   function vArtist(name) {
-    const a = artistByName(name);
+    const a = artistViewModel(name);
     if (!a) return vLibrary();
     S.viewCtx = { kicker: 'PLAYING FROM ARTIST', name: a.name, kind: 'artist', id: a.name };
     const akey = artistKey(a.name);
@@ -548,7 +716,7 @@ const App = (() => {
     const playIcon = isCurrent && Player.isPlaying ? 'pause' : 'play';
     const featPlaylists = (S._pls || []).filter(p => p.trackIds.some(tid => { const t = S.byId.get(tid); return t && trackArtistKeys(t).includes(akey); }));
     const fans = artists().filter(x => artistKey(x.name) !== akey).sort((x, y) => y.tracks.length - x.tracks.length).slice(0, 8);
-    const statLine = stats ? fmtListeners(stats.listeners) : `${a.tracks.length} song${a.tracks.length === 1 ? '' : 's'} in your library`;
+    const statLine = stats ? fmtListeners(stats.listeners) : `${a.tracks.length} song${a.tracks.length === 1 ? '' : 's'} in the SDB`;
     const music = `
       <div class="sectionhead ax-section"><h2>Popular</h2></div>
       ${shownTop.map((t, i) => artistTrackRow(t, i)).join('')}
@@ -590,7 +758,7 @@ const App = (() => {
     </div>`;
   }
   function vArtistReleases(name) {
-    const a = artistByName(name);
+    const a = artistViewModel(name);
     if (!a) return vLibrary();
     S.viewCtx = { kicker: 'PLAYING FROM ARTIST', name: a.name, kind: 'artist', id: a.name };
     const rels = artistReleases(a);
@@ -621,9 +789,10 @@ const App = (() => {
   }
   function vSongs() {
     const ts = [...S.tracks].sort((a, b) => a.title.localeCompare(b.title));
-    S.viewCtx = { kicker: 'PLAYING FROM SONGS', name: 'Songs', kind: 'songs', id: 'songs' };
+    S.viewCtx = { kicker: 'PLAYING FROM SDB', name: 'Songs', kind: 'songs', id: 'songs' };
+    // v7.0: no play-all/shuffle-all here — the SDB is browsable, never a play context.
     return `<div class="pagehead"><button class="iconbtn" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><h1>Songs</h1><button class="iconbtn" data-act="import" aria-label="Add music">${icon('plus')}</button></div>`
-      + (ts.length ? playRow(ts.map(t => t.id)) + ts.map(t => trackRow(t)).join('') : `<div class="empty"><h3>No songs yet</h3><button class="bigbtn pink" data-act="import">Add music</button></div>`);
+      + (ts.length ? `<div class="sdb-note">Browsing the Song DataBase \u2014 tap a song to play it, or save it to your library from \u22ef</div>` + ts.map(t => trackRow(t)).join('') : `<div class="empty"><h3>No songs yet</h3><button class="bigbtn pink" data-act="import">Add music</button></div>`);
   }
   function vPlaylists() {
     const likedN = Player.state.liked.size;
@@ -658,10 +827,11 @@ const App = (() => {
     const n = S.tracks.length;
     return `<div class="pagehead"><button class="iconbtn" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><h1>Settings</h1><span style="width:44px"></span></div>
     <div class="setgroup"><h2>Music</h2>
-      <div class="setrow" data-act="import"><div>Add music to library<div class="sub">Import audio files from the Files app</div></div><span style="color:var(--sub)">${icon('plus')}</span></div>
+      <div class="setrow" data-act="import"><div>Add music to the SDB<div class="sub">Import audio files from the Files app</div></div><span style="color:var(--sub)">${icon('plus')}</span></div>
       <div class="setrow" data-act="import-zip"><div>Import ZIP<div class="sub">Pull the songs out of a zip file</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
       <div class="setrow" data-act="export-hub"><div>Export music<div class="sub">Back up your songs to a link or Google Drive</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
-      <div class="setrow" data-act="open-plimport"><div>Import Spotify playlist<div class="sub" id="plimport-sub">Turn a playlist into library downloads</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
+      <div class="setrow" data-act="open-spotify-import"><div>Import from Spotify<div class="sub" id="spimport-sub">Playlists, Liked Songs &amp; followed artists</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
+      <div class="setrow" data-act="open-plimport"><div>Download Spotify playlist<div class="sub" id="plimport-sub">Turn a playlist into SDB downloads</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
       <div class="setrow" data-act="fix-all-tags"><div>utag fixer<div class="sub">Retag your library, watch it work, edit tags by hand</div></div><span style="color:var(--sub)">${icon('tag')}</span></div>
       <div class="setrow"><div>Songs in library<div class="sub" id="set-storage">Counting…</div></div><span style="color:var(--sub)">${n}</span></div>
     </div>
@@ -1227,9 +1397,137 @@ const App = (() => {
     return detailHead('go-back', heroArt(ts.find(t => t.art)), g, `${ts.length} songs`) + playRow(ts.map(t => t.id)) + ts.map(t => trackRow(t)).join('');
   }
 
-  /* Spotify playlist import: paste a link, songs land in the library one by
-     one as the converter finishes them. The live job UI is painted by
-     PlImport (js/plimport.js) into #plimport-body. */
+  /* Spotify transfer (v7.0): pull playlists, Liked Songs, and followed
+     artists from Spotify, matched against the SDB. No audio ever moves. */
+  function vSpotifyImport() {
+    S.viewCtx = null;
+    let savedId = '';
+    try { savedId = localStorage.getItem('sp-clientid') || ''; } catch (e) {}
+    return `<div class="pagehead"><button class="iconbtn" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><h1>Import from Spotify</h1><span style="width:44px"></span></div>
+    <div style="padding:8px 16px 48px">
+      <p class="sub" style="margin:0 0 16px">Bring your playlists, Liked Songs, and followed artists into Splotify. Songs are matched against your SDB \u2014 nothing downloads, and you can run this again anytime; anything already imported is skipped.</p>
+      <div class="setgroup"><h2>Connect Spotify</h2>
+        <p class="sub" style="margin:0 0 10px">One-tap import straight from your account. If Spotify blocks the app, use the data export below instead.</p>
+        <input id="sp-clientid" placeholder="Spotify client ID" value="${esc(savedId)}" autocomplete="off" autocapitalize="off" spellcheck="false" style="width:100%;box-sizing:border-box;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:13px 14px;color:var(--txt);font-size:16px;margin-bottom:10px" />
+        <p class="sub" style="margin:0 0 10px">In your Spotify dashboard, add this redirect URI:<br><b style="color:var(--txt)">${esc(SpImport.redirectUri())}</b></p>
+        <button class="bigbtn pink" data-act="sp-oauth" style="width:100%">Connect Spotify</button>
+      </div>
+      <div class="setgroup"><h2>Data export</h2>
+        <p class="sub" style="margin:0 0 10px">Upload the ZIP from Spotify's \u201cDownload your data\u201d (Privacy Settings). It's parsed on this iPhone \u2014 nothing uploads anywhere.</p>
+        <button class="bigbtn" data-act="sp-pick-zip" style="width:100%">Choose export ZIP</button>
+        <input type="file" id="sp-zip" accept=".zip,application/zip" style="display:none">
+      </div>
+      ${S.spBusy ? `<p class="sub">Working\u2026</p>` : ''}
+    </div>`;
+  }
+  function vSpReview() {
+    S.viewCtx = null;
+    const items = S.spReview;
+    return `<div class="pagehead"><button class="iconbtn" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><h1>Review matches</h1><span style="width:44px"></span></div>
+    <div style="padding:8px 16px 48px">
+      <p class="sub" style="margin:0 0 12px">These Spotify songs matched your SDB, but not confidently. Approve the right ones, skip the rest.</p>
+      ${items.length ? `<button class="bigbtn pink" data-act="sp-review-approve-all" style="width:100%;margin-bottom:14px">Approve all ${items.length}</button>` : ''}
+      ${items.length ? items.map((it, i) => {
+        const t = it.sdb;
+        const where = it.context.type === 'liked' ? 'Liked Songs' : ('Playlist: ' + it.context.name);
+        return `<div class="sp-review-row">
+          <div class="sp-review-sp"><div class="ttitle">${esc(it.sp.title)}</div><div class="tsub">${esc(it.sp.artist)} \u2022 ${esc(where)}</div></div>
+          <div class="sp-review-arrow">\u2192</div>
+          <div class="sp-review-sdb">${t ? `<div class="ttitle">${esc(t.title)}</div><div class="tsub">${esc(t.artist)}</div>` : `<div class="tsub">No match</div>`}</div>
+          <div class="sp-review-btns"><button class="bigbtn pink" data-act="sp-review-approve" data-idx="${i}">Approve</button><button class="bigbtn" data-act="sp-review-skip" data-idx="${i}">Skip</button></div>
+        </div>`;
+      }).join('') : `<div class="empty"><h3>All reviewed</h3><p>Nothing left to check.</p><button class="bigbtn" data-act="sp-report">See the report</button></div>`}
+    </div>`;
+  }
+  function vSpReport() {
+    S.viewCtx = null;
+    const s = S.spSummary || {};
+    const missed = S.spMissed;
+    return `<div class="pagehead"><button class="iconbtn" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><h1>Import report</h1><span style="width:44px"></span></div>
+    <div style="padding:8px 16px 48px">
+      <div class="setgroup"><h2>Imported</h2>
+        <div class="setrow"><div>Playlists created<div class="sub">Matched songs added automatically</div></div><span>${s.playlistsCreated || 0}</span></div>
+        <div class="setrow"><div>Liked Songs added</div><span>${s.likedAdded || 0}</span></div>
+        <div class="setrow"><div>Artists followed</div><span>${s.artistsFollowed || 0}</span></div>
+      </div>
+      <div class="setgroup"><h2>Skipped (${missed.length})</h2>
+        <p class="sub" style="margin:0 0 10px">These Spotify songs aren't in your SDB, so they were left out.</p>
+        ${missed.slice(0, 100).map(it => `<div class="trow" style="min-height:48px"><div class="tmeta"><div class="ttitle" style="font-size:14px">${esc(it.sp.title)}</div><div class="tsub">${esc(it.sp.artist)}${it.context && it.context.name ? ' \u2022 ' + esc(it.context.name) : ''}</div></div></div>`).join('') || '<p class="sub">Nothing skipped.</p>'}
+        ${missed.length > 100 ? `<p class="sub">\u2026and ${missed.length - 100} more.</p>` : ''}
+      </div>
+      <button class="bigbtn pink" data-act="tab" data-tab="library" style="width:100%">Open your library</button>
+    </div>`;
+  }
+  /* Run matched Spotify data through the transfer engine. */
+  async function runSpImportData(data) {
+    S.spBusy = true; render();
+    try {
+      const summary = await SpImport.applyImport(data, S.tracks);
+      S.spReview = summary.review; S.spMissed = summary.missed; S.spSummary = summary;
+      S.spBusy = false;
+      await refreshTracks(); render();
+      toast(`Imported ${summary.playlistsCreated} playlists, ${summary.likedAdded} liked songs, ${summary.artistsFollowed} artists`);
+      if (summary.review.length) nav('spReview');
+      else nav('spReport');
+    } catch (e) {
+      S.spBusy = false; render();
+      toast('Import failed: ' + (e && e.message ? e.message : e));
+    }
+  }
+  async function runSpExport(file) {
+    try {
+      const data = await SpImport.parseExportZip(file);
+      data.source = 'export';
+      if (!data.playlists.length && !data.liked.length && !data.artists.length) {
+        toast('No playlists, liked songs, or artists found' + (data.found.length ? ' (saw: ' + data.found.join('; ') + ')' : ''));
+        return;
+      }
+      await runSpImportData(data);
+    } catch (e) {
+      toast('Could not read that ZIP: ' + (e && e.message ? e.message : e));
+    }
+  }
+  /* v7.0 utag review: uncertain corrections, before/after, approve or skip. */
+  function vTagReview() {
+    S.viewCtx = null;
+    const items = S.tagReview;
+    return `<div class="pagehead"><button class="iconbtn" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><h1>Review corrections</h1><span style="width:44px"></span></div>
+    <div style="padding:8px 16px 48px">
+      <p class="sub" style="margin:0 0 12px">The audit wasn't sure about these. Approve the right ones, skip the rest.</p>
+      ${items.length ? `<button class="bigbtn pink" data-act="tag-review-approve-all" style="width:100%;margin-bottom:14px">Approve all ${items.length}</button>` : ''}
+      ${items.length ? items.map((it, i) => `
+        <div class="sp-review-row">
+          <div class="sp-review-sp"><div class="ttitle">${esc(it.title)}</div><div class="tsub">${esc(it.artist)}</div></div>
+          <div class="sp-review-sdb" style="margin-top:8px">
+            <div class="tsub" style="margin-bottom:4px">${esc(it.proposal.field)} \u2022 ${esc(it.proposal.source)} \u2022 ${Math.round(it.proposal.confidence * 100)}% confident</div>
+            <div class="ttitle" style="font-size:14px"><s style="color:var(--sub)">${esc(it.proposal.from)}</s></div>
+            <div class="ttitle" style="font-size:14px;color:var(--pink)">${esc(it.proposal.to)}</div>
+          </div>
+          <div class="sp-review-btns"><button class="bigbtn pink" data-act="tag-review-approve" data-idx="${i}">Approve</button><button class="bigbtn" data-act="tag-review-skip" data-idx="${i}">Skip</button></div>
+          <div style="margin-top:8px"><button class="bigbtn" data-act="tag-edit" data-id="${it.trackId}" style="width:100%">Edit by hand instead</button></div>
+        </div>`).join('') : `<div class="empty"><h3>All reviewed</h3><p>Nothing left to check.</p></div>`}
+    </div>`;
+  }
+  async function runTagAudit() {
+    if (S.tagAuditRunning) return;
+    S.tagAuditRunning = true;
+    const status = () => document.getElementById('fix-status');
+    try {
+      const roster = [...S.artists.values()];
+      const res = await Importer.auditLibrary(roster, (done, total, t) => {
+        const el = status();
+        if (el) el.textContent = `Auditing ${done}/${total}: ${t.title}`;
+      });
+      await refreshTracks(); render();
+      S.tagReview = res.review;
+      toast(`Audit done: ${res.fixed} auto-fixed, ${res.review.length} to review`);
+      if (res.review.length) nav('tagReview');
+    } catch (e) {
+      toast('Audit failed: ' + (e && e.message ? e.message : e));
+    }
+    S.tagAuditRunning = false;
+    render();
+  }
   function vPlImport() {
     return `<div class="pagehead"><button class="iconbtn" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><h1>Playlist import</h1><span style="width:44px"></span></div>
     <div id="plimport-body" style="padding:0 16px 32px"></div>`;
@@ -1247,6 +1545,10 @@ const App = (() => {
     podcasts: () => vStub('Podcasts', 'radio', 'No podcasts here yet.'),
     videos: () => vStub('Videos', 'playRect', 'No videos here yet.'),
     plimport: () => vPlImport(),
+    tagReview: () => vTagReview(),
+    spotifyImport: () => vSpotifyImport(),
+    spReview: () => vSpReview(),
+    spReport: () => vSpReport(),
     driveBackup: () => vDriveBackup(),
     exportHub: () => vExportHub(),
     deviceExport: () => vDeviceExport(),
@@ -1267,12 +1569,22 @@ const App = (() => {
     document.querySelectorAll('.tab').forEach(b => {
       const on = b.dataset.tab === S.tab;
       b.classList.toggle('active', on);
-      b.querySelector('.tabicon').innerHTML = icon(b.dataset.tab === 'home' ? (on ? 'home' : 'homeO') : b.dataset.tab, b.dataset.tab === 'search' ? 'width:27px;height:27px' : '');
+      const nm = b.dataset.tab === 'home' ? (on ? 'home' : 'homeO') : b.dataset.tab === 'create' ? 'plus' : b.dataset.tab;
+      b.querySelector('.tabicon').innerHTML = icon(nm, b.dataset.tab === 'search' ? 'width:27px;height:27px' : '');
     });
     const q = document.getElementById('q');
     if (q) {
       q.addEventListener('input', () => { S.query = q.value; const pos = q.selectionStart; render(); const nq = document.getElementById('q'); nq.focus(); nq.setSelectionRange(pos, pos); });
       if (qHadFocus) { q.focus(); q.setSelectionRange(q.value.length, q.value.length); }
+    }
+    const lq = document.getElementById('lib-q');
+    if (lq) {
+      lq.addEventListener('input', () => { S.libQ = lq.value; const pos = lq.selectionStart; render(); const nlq = document.getElementById('lib-q'); if (nlq) { nlq.focus(); nlq.setSelectionRange(pos, pos); } });
+    }
+    const sz = document.getElementById('sp-zip');
+    if (sz && !sz.dataset.bound) {
+      sz.dataset.bound = '1';
+      sz.addEventListener('change', () => { const f = sz.files && sz.files[0]; sz.value = ''; if (f) runSpExport(f); });
     }
     const tq = document.getElementById('tagfix-q');
     if (tq) tq.addEventListener('input', paintTagFixResults);
@@ -1392,9 +1704,10 @@ const App = (() => {
     like.innerHTML = icon(liked ? 'heartF' : 'heart');
     like.classList.toggle('liked', liked);
     const sh = document.getElementById('np-shuffle');
-    sh.innerHTML = icon('shuffle'); sh.classList.toggle('on', Player.state.shuffle);
+    sh.innerHTML = `<img src="icons/shuffle-pink.png" class="sprite${Player.state.shuffle ? '' : ' sprite-off'}" alt="Shuffle">`;
+    sh.classList.toggle('on', Player.state.shuffle);
     const rp = document.getElementById('np-repeat');
-    rp.innerHTML = icon(Player.state.repeat === 'one' ? 'repeat1' : 'repeat');
+    rp.innerHTML = `<img src="icons/${Player.state.repeat === 'one' ? 'repeat-one-pink' : 'repeat-all-pink'}.png" class="sprite${Player.state.repeat !== 'off' ? '' : ' sprite-off'}" alt="Repeat">`;
     rp.classList.toggle('on', Player.state.repeat !== 'off');
     const pp = document.getElementById('np-play');
     pp.innerHTML = icon(Player.isPlaying ? 'pause' : 'play');
@@ -1427,16 +1740,18 @@ const App = (() => {
   function trackSheet(id) {
     const t = S.byId.get(id); if (!t) return;
     const liked = Player.isLiked(id);
+    const inLib = libraryHas(id);
     const noAlbum = !t.album || t.album === 'Unknown Album';
     openSheet(`<div class="sheet-title">${esc(t.title)}</div>
       <div class="sheet-item" data-act="sheet-like" data-id="${id}">${icon(liked ? 'heartF' : 'heart')}${liked ? 'Unlike' : 'Like'}</div>
+      <div class="sheet-item" data-act="sheet-library-toggle" data-id="${id}">${icon(inLib ? 'check' : 'plus')}${inLib ? 'In your library' : 'Save to library'}</div>
       <div class="sheet-item" data-act="sheet-addto" data-id="${id}">${icon('plus')}Add to playlist</div>
       ${noAlbum ? '' : `<div class="sheet-item" data-act="sheet-album" data-id="${id}">${icon('disc')}Go to album</div>`}
       <div class="sheet-item" data-act="sheet-artist" data-id="${id}">${icon('person')}Go to artist</div>
       <div class="sheet-item" data-act="sheet-info" data-id="${id}">${icon('info')}Track info</div>
       <div class="sheet-item" data-act="sheet-fixtags" data-id="${id}">${icon('tag')}utag</div>
       <div class="sheet-item" data-act="sheet-download" data-id="${id}">${icon('download')}Download to this iPhone</div>
-      <div class="sheet-item danger" data-act="sheet-delete" data-id="${id}">${icon('trash')}Delete from library</div>`);
+      <div class="sheet-item danger" data-act="sheet-delete" data-id="${id}">${icon('trash')}Delete from SDB</div>`);
   }
   function artistSheet(name) {
     const a = artistByName(name); if (!a) return;
@@ -1571,6 +1886,8 @@ const App = (() => {
       </div>
       <div id="fix-sources" style="color:var(--sub);font-size:13px;margin-top:10px"></div>
       <div style="text-align:center"><button id="fix-run-btn" class="bigbtn pink" data-act="fix-run" style="margin:20px 0 8px">Fix all albums</button></div>
+      <div style="text-align:center"><button class="bigbtn" data-act="tag-audit" style="margin:0 0 8px">Deep audit: correct wrong tags</button>
+      <p class="sub" style="margin:0 0 8px">Checks every song against the artist roster, Apple Music, and MusicBrainz. Confident fixes apply on their own; the rest come to you for review.</p></div>
       <h2 style="font-size:16px;margin:22px 0 6px">Fixed in this run</h2>
       <div id="fix-log"></div>
       <h2 style="font-size:16px;margin:26px 0 6px">Edit by hand</h2>
@@ -1595,7 +1912,8 @@ const App = (() => {
   /* Manual tag editor: a sheet with the song's fields, saved straight to
      the library. Opened from the fixer log or the manual search. */
   function openTagEditor(id) {
-    const t = S.byId.get(id) || S.tracks.find(x => x.id === id);
+    id = Number(id);
+    const t = S.byId.get(id);
     if (!t) { toast('Song not found'); return; }
     const inp = (fid, label, val, half) =>
       '<label style="display:block;margin:10px 0;' + (half ? 'flex:1;min-width:0' : '') + '">' +
@@ -1712,7 +2030,28 @@ const App = (() => {
   async function handleAct(el) {
     const act = el.dataset.act, id = el.dataset.id;
     switch (act) {
-      case 'tab': nav(el.dataset.tab); break;
+      case 'tab': if (el.dataset.tab === 'create') { openCreateSheet(); break; } nav(el.dataset.tab); break;
+      /* v7.0 library chrome */
+      case 'lib-chip': S.libChip = (S.libChip === id ? 'all' : id); render(); break;
+      case 'lib-sort': S.libSort = S.libSort === 'az' ? 'recent' : 'az'; render(); break;
+      case 'lib-view': S.libGrid = !S.libGrid; render(); break;
+      case 'lib-search':
+        S.libSearching = !S.libSearching;
+        if (!S.libSearching) S.libQ = '';
+        render();
+        if (S.libSearching) setTimeout(() => { const i = document.getElementById('lib-q'); if (i) i.focus(); }, 40);
+        break;
+      case 'open-create-sheet': openCreateSheet(); break;
+      case 'create-playlist': openPlaylistNameSheet(); break;
+      case 'do-create-playlist': {
+        const inp = document.getElementById('newpl-name');
+        const name = inp ? inp.value.trim().slice(0, 60) : '';
+        if (!name) { toast('Give your playlist a name'); break; }
+        const pl = { id: 'pl' + Date.now(), name, trackIds: [], created: Date.now() };
+        try { await DB.putPlaylist(pl); } catch (e) { toast('Could not create playlist'); break; }
+        S._pls.push(pl); closeSheet(); nav('playlist', pl.id);
+        break;
+      }
       case 'pill': S.pill = id; render(); break;
       case 'import': Importer.open(); break;
       case 'import-zip': Importer.openZip(); break;
@@ -1727,6 +2066,29 @@ const App = (() => {
       case 'db-pause': exportUserPaused = true; exportCancel = true; { const el = document.getElementById('db-note'); if (el) el.textContent = 'Finishing this part, then pausing…'; } break;
       case 'db-done': nav('settings'); break;
       case 'open-plimport': nav('plimport'); break;
+      /* v7.0 Spotify transfer */
+      case 'open-spotify-import': nav('spotifyImport'); break;
+      case 'sp-oauth': SpImport.oauthStart(); break;
+      case 'sp-pick-zip': { const zi = document.getElementById('sp-zip'); if (zi) zi.click(); break; }
+      case 'sp-review-approve': {
+        const i = Number(el.dataset.idx);
+        const it = S.spReview[i];
+        if (it) { try { await SpImport.approveReviewItem(it); } catch (e) {} S.spReview.splice(i, 1); }
+        await refreshTracks(); render();
+        if (!S.spReview.length) nav('spReport');
+        break;
+      }
+      case 'sp-review-skip': {
+        S.spReview.splice(Number(el.dataset.idx), 1); render();
+        if (!S.spReview.length) nav('spReport');
+        break;
+      }
+      case 'sp-review-approve-all': {
+        for (const it of S.spReview) { try { await SpImport.approveReviewItem(it); } catch (e) {} }
+        S.spReview = [];
+        await refreshTracks(); nav('spReport');
+        break;
+      }
       case 'plimport-start': PlImport.startFromUI(); break;
       case 'plimport-cancel': PlImport.cancel(); break;
       case 'plimport-resume': PlImport.resumeStopped(); break;
@@ -1743,12 +2105,10 @@ const App = (() => {
       case 'artist-filter': S.artistFilter = id; render(); break;
       case 'artist-menu': artistSheet(id); break;
       case 'artist-follow': {
-        const a = artistByName(id); closeSheet();
+        const a = artistViewModel(id); closeSheet();
         if (a) {
-          const k = artistKey(a.name);
-          if (S.followedArtists.has(k)) { S.followedArtists.delete(k); toast(`Unfollowed ${a.name}`); }
-          else { S.followedArtists.add(k); toast(`Following ${a.name}`); }
-          await DB.kvSet('followedArtists', [...S.followedArtists]);
+          const following = await setArtistFollowed(a.name, !S.followedArtists.has(artistKey(a.name)));
+          toast((following ? 'Following ' : 'Unfollowed ') + a.name);
           render();
         }
         break;
@@ -1808,16 +2168,57 @@ const App = (() => {
       case 'fix-album': await fixAlbumByKey(id); break;
       case 'fix-all-tags': nav('tagFixer'); break;
       case 'fix-run': fixAllTags(); break;
+      /* v7.0 utag deep audit */
+      case 'tag-audit': runTagAudit(); break;
+      case 'tag-review-approve': {
+        const i = Number(el.dataset.idx);
+        const it = S.tagReview[i];
+        if (it) {
+          try {
+            const t = S.byId.get(it.trackId);
+            if (t) {
+              const tr = { ...t, [it.proposal.field]: it.proposal.to };
+              tr.tagsVia = (t.tagsVia ? t.tagsVia + '+' : '') + 'audit(' + it.proposal.source + ')';
+              await DB.updateTrack(t.id, { [it.proposal.field]: it.proposal.to, tagsVia: tr.tagsVia, tagged: true });
+              Object.assign(t, { [it.proposal.field]: it.proposal.to, tagsVia: tr.tagsVia, tagged: true });
+            }
+          } catch (e) {}
+          S.tagReview.splice(i, 1);
+        }
+        render();
+        break;
+      }
+      case 'tag-review-skip': {
+        S.tagReview.splice(Number(el.dataset.idx), 1); render();
+        break;
+      }
+      case 'tag-review-approve-all': {
+        for (const it of S.tagReview) {
+          try {
+            const t = S.byId.get(it.trackId);
+            if (t) {
+              const tagsVia = (t.tagsVia ? t.tagsVia + '+' : '') + 'audit(' + it.proposal.source + ')';
+              await DB.updateTrack(t.id, { [it.proposal.field]: it.proposal.to, tagsVia, tagged: true });
+              Object.assign(t, { [it.proposal.field]: it.proposal.to, tagsVia, tagged: true });
+            }
+          } catch (e) {}
+        }
+        S.tagReview = [];
+        await refreshTracks(); render();
+        toast('All corrections applied');
+        break;
+      }
       case 'tag-edit': openTagEditor(id); break;
       case 'tag-save': {
+        const tid = Number(id);
         const val = fid => { const i = document.getElementById('tagedit-' + fid); return i ? i.value.trim() : ''; };
         const patch = { title: val('title'), artist: val('artist'), album: val('album'), albumArtist: val('albumArtist'), genre: val('genre') };
         const year = parseInt(val('year'), 10); if (year) patch.year = year;
         const trackNo = parseInt(val('trackNo'), 10); if (trackNo) patch.trackNo = trackNo;
         if (!patch.title) { toast('Title can\u2019t be empty'); break; }
         try {
-          await DB.updateTrack(id, patch);
-          const t = S.byId.get(id); if (t) Object.assign(t, patch);
+          await DB.updateTrack(tid, patch);
+          const t = S.byId.get(tid); if (t) Object.assign(t, patch);
           closeSheet(); await refreshTracks(); render(); paintMini();
           paintFixUI();
           toast('Tags saved');
@@ -1852,8 +2253,12 @@ const App = (() => {
         break;
       }
       case 'play-track': {
-        const ids = [...el.closest('#view').querySelectorAll('.trow[data-id]')].map(r => Number(r.dataset.id));
         const ctx = ctxOf();
+        // v7.0: the SDB is never a play context. Tapping a song while
+        // browsing the SDB plays just that song; library contexts
+        // (playlist/album/artist/liked) keep full-list queues.
+        const sdbBrowse = ['songs', 'search', 'genre'].includes(ctx.kind);
+        const ids = sdbBrowse ? [Number(id)] : [...el.closest('#view').querySelectorAll('.trow[data-id]')].map(r => Number(r.dataset.id));
         const sameCtx = Player.state.ctx && Player.state.ctx.kind === ctx.kind && String(Player.state.ctx.id) === String(ctx.id);
         if (sameCtx && Player.state.list.join() === ids.join()) await Player.playId(Number(id));
         else await Player.playContext(ctx, ids, Number(id));
@@ -1882,22 +2287,33 @@ const App = (() => {
       case 'sheet-album': { const t = S.byId.get(Number(id)); closeSheet(); if (t) nav('album', albumKeyForTrack(t)); break; }
       case 'sheet-artist': { const t = S.byId.get(Number(id)); closeSheet(); if (t) { const ea = artists().find(x => x.tracks.includes(t)); if (ea) nav('artist', ea.name); } break; }
       case 'sheet-info': infoSheet(Number(id)); break;
+      case 'sheet-library-toggle': {
+        const tid = Number(id); closeSheet();
+        if (libraryHas(tid)) { await libraryRemove(tid); toast('Removed from your library'); }
+        else if (await libraryAdd(tid)) { toast('Saved to your library'); }
+        render();
+        break;
+      }
       case 'sheet-delete': {
         const tid = Number(id); closeSheet();
-        if (confirm('Delete this song from your library?')) {
+        // v7.0: in a playlist, delete removes the song from the playlist.
+        // Elsewhere it permanently deletes the song file from the SDB.
+        const ctx = S.viewCtx;
+        if (ctx && ctx.kind === 'playlist') {
+          const pl = S._pls.find(x => x.id === ctx.id);
+          if (pl && pl.trackIds.includes(tid)) {
+            pl.trackIds = pl.trackIds.filter(x => x !== tid);
+            await DB.putPlaylist(pl); render(); toast('Removed from playlist');
+          }
+          break;
+        }
+        if (confirm('Permanently delete this song file from the SDB? This cannot be undone.')) {
           await DB.delTrack(tid);
           Player.forgetTrack(tid);
+          await libraryRemove(tid);
           S._pls.forEach(p => { p.trackIds = p.trackIds.filter(x => x !== tid); DB.putPlaylist(p); });
           await refreshTracks(); paintMini(); render();
           toast('Song deleted');
-        }
-        break;
-      }
-      case 'create-playlist': {
-        const name = prompt('Name your playlist:');
-        if (name && name.trim()) {
-          const pl = { id: 'pl' + Date.now(), name: name.trim().slice(0, 60), trackIds: [], created: Date.now() };
-          await DB.putPlaylist(pl); S._pls.push(pl); render();
         }
         break;
       }
@@ -1918,6 +2334,51 @@ const App = (() => {
   }
 
   /* ================= boot ================= */
+  /* v7.0 one-time migration: SDB/library split.
+     - Every existing track becomes SDB-only (tracks stay untouched).
+     - Library, liked songs, and playlists start EMPTY (clean state).
+     - The artist roster table is seeded from the bundled placeholder list.
+     - Legacy followedArtists (kv) move into the roster table, then the kv is dropped.
+     Runs once; stamped in localStorage. Never breaks boot. */
+  async function migrateV7() {
+    try {
+      if (localStorage.getItem('splotify-v7-migrated')) return;
+      // 1. Seed the artist roster from the bundled placeholder list.
+      let seed = [];
+      try {
+        const r = await fetch('js/placeholder-artists.json', { cache: 'no-store' });
+        if (r.ok) seed = await r.json();
+      } catch (e) {}
+      const seen = new Set((await DB.allArtists().catch(() => [])).map(a => a.id));
+      const batch = [];
+      for (const name of (Array.isArray(seed) ? seed : [])) {
+        const nm = String(name || '').trim();
+        if (!nm) continue;
+        const id = artistIdFor(nm);
+        if (id === 'a_' || seen.has(id)) continue;
+        seen.add(id);
+        batch.push({ id, name: nm, isPlaceholder: true, followed: false, followedAt: 0, art: null, bio: null, stats: null });
+      }
+      // 2. Legacy follows (kv) become followed roster entries.
+      let legacy = [];
+      try { legacy = await DB.kvGet('followedArtists', []); } catch (e) {}
+      for (const key of (Array.isArray(legacy) ? legacy : [])) {
+        const id = artistIdFor(key);
+        if (id === 'a_' || seen.has(id)) continue;
+        seen.add(id);
+        batch.push({ id, name: String(key), isPlaceholder: true, followed: true, followedAt: Date.now(), art: null, bio: null, stats: null });
+      }
+      if (batch.length) { try { await DB.putArtists(batch); } catch (e) {} }
+      try { await DB.kvSet('followedArtists', []); } catch (e) {}
+      // 3. Clean state: library, liked, playlists start empty.
+      try {
+        for (const p of await DB.allPlaylists()) { try { await DB.delPlaylist(p.id); } catch (e) {} }
+      } catch (e) {}
+      try { await DB.kvSet('liked', []); } catch (e) {}
+      try { await DB.kvSet('library', []); } catch (e) {}
+      try { localStorage.setItem('splotify-v7-migrated', '1'); } catch (e) {}
+    } catch (e) { /* never break boot */ }
+  }
   /* One-time library dedupe (v6.9): the retired Drive import could double-add
      songs already pulled from the ZIP. Exact match on file name + byte size
      (identical bytes from the same source files); keeps the earliest-added
@@ -1975,6 +2436,17 @@ const App = (() => {
     S.tracks = await DB.allTracks();
     S.byId = new Map(S.tracks.map(t => [t.id, t]));
     S._pls = await DB.allPlaylists();
+    // v7.0: roster table + library membership ride along with the SDB cache.
+    try { S.artists = new Map((await DB.allArtists()).map(a => [a.id, a])); } catch (e) { S.artists = new Map(); }
+    try {
+      const lib = await DB.kvGet('library', []);
+      S.library = (Array.isArray(lib) ? lib : []).map(Number).filter(id => S.byId.has(id));
+    } catch (e) { S.library = []; }
+  }
+  // v7.0: keep the in-memory playlist list in sync after external writes.
+  function notePlaylist(pl) {
+    const i = S._pls.findIndex(x => x.id === pl.id);
+    if (i >= 0) S._pls[i] = pl; else S._pls.push(pl);
   }
   async function boot() {
     // Show skeleton content immediately: IndexedDB + the player take a moment,
@@ -1983,8 +2455,13 @@ const App = (() => {
     await DB.open();
     try { if (navigator.storage && navigator.storage.persist) await navigator.storage.persist(); } catch (e) {}
     await dedupeLibraryOnce();
+    await migrateV7();
     await refreshTracks();
-    try { S.followedArtists = new Set(await DB.kvGet('followedArtists', [])); } catch (e) {}
+    try {
+      // v7.0: follow state lives in the roster table; rebuild the in-memory set.
+      S.followedArtists = new Set();
+      S.artists.forEach(a => { if (a.followed) S.followedArtists.add(artistKey(a.name)); });
+    } catch (e) {}
     await loadRecent();
     Importer.bind();
     // Warm the singles discography early so the first render orders the
@@ -2123,6 +2600,20 @@ const App = (() => {
     paintMini();
     // Resume any unfinished Spotify playlist import.
     try { if (typeof PlImport !== 'undefined') PlImport.resume(); } catch (e) {}
+    // v7.0: complete the Spotify OAuth round-trip after redirect.
+    try {
+      const cb = await SpImport.handleCallback();
+      if (cb === 'ok') {
+        const data = SpImport.takeCallbackData();
+        if (data) { toast('Spotify connected \u2014 matching your SDB\u2026'); await runSpImportData(data); }
+      } else if (cb === 'blocked') {
+        toast('Spotify blocked the app \u2014 use the data export instead');
+        nav('spotifyImport');
+      } else if (cb === 'error') {
+        toast('Spotify connect failed \u2014 try the data export');
+        nav('spotifyImport');
+      }
+    } catch (e) {}
     if ('serviceWorker' in navigator) {
       const updReg = () => navigator.serviceWorker.register('sw.js').then(r => { try { r.update(); } catch (e) {} }).catch(() => {});
       window.addEventListener('load', updReg);
@@ -2142,6 +2633,8 @@ const App = (() => {
   return {
     boot, nav, toast, logRecent,
     artURL, artImg, artErr,
+    libraryAdd, libraryRemove, libraryHas,
+    upsertArtist, setArtistFollowed, notePlaylist,
     onLibraryChanged: async () => {
       await refreshTracks();
       if (await Importer.recordSingles([...S.tracks]) > 0) await refreshTracks();

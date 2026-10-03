@@ -339,3 +339,46 @@ input{font:inherit}
 .ax-chips button.on{background:var(--pink);color:#171217}
 .ax-bottom{height:26px}
 @media (max-width:360px){.ax-hero-text h1{font-size:44px}.ax-hero{height:380px}}
+
+/* v7.0 Spotify-style library */
+.lib-avatar{width:38px;height:38px;border-radius:50%;background:linear-gradient(135deg,var(--pink),var(--pink-deep));display:flex;align-items:center;justify-content:center;color:#171217;flex:none}
+.lib-chips{display:flex;gap:8px;padding:6px 16px 10px;overflow-x:auto;scrollbar-width:none}
+.lib-chips::-webkit-scrollbar{display:none}
+.lib-chip{flex:none;height:36px;padding:0 16px;border-radius:999px;background:#2c2c2c;color:#fff;font-size:14px;font-weight:600;border:0}
+.lib-chip.on{background:var(--pink);color:#171217}
+.lib-sortrow{display:flex;align-items:center;gap:8px;padding:0 16px 6px}
+.lib-sortbtn{display:flex;align-items:center;gap:6px;background:none;border:0;color:#fff;font-size:13px;font-weight:600;padding:6px 0}
+.lib-sortbtn svg{width:18px;height:18px}
+.lib-filter{padding:0 16px 10px}
+.lib-filter input{width:100%;box-sizing:border-box;background:#2c2c2c;border:0;border-radius:10px;padding:11px 14px;color:#fff;font-size:15px}
+.lib-thumb{width:56px;height:56px;flex:none;object-fit:cover;background:#2c2c2c;border-radius:4px}
+.lib-thumb.round{border-radius:50%}
+.lib-ph{display:flex;align-items:center;justify-content:center;color:var(--sub)}
+.lib-mosaic{width:56px;height:56px;flex:none;display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;overflow:hidden;background:#2c2c2c;border-radius:4px}
+.lib-mosaic img{width:100%;height:100%;object-fit:cover}
+.lib-pin{display:inline-flex;vertical-align:-3px;margin-right:5px;color:var(--pink)}
+.lib-pin svg{width:14px;height:14px}
+.lib-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px 14px;padding:6px 16px 40px}
+.lib-card .lib-thumb{width:100%;height:auto;aspect-ratio:1}
+.lib-card .lib-mosaic{width:100%;height:auto;aspect-ratio:1}
+.lib-card .tmeta{padding:8px 2px 0}
+.lib-card .ttitle{font-size:14px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lib-card .tsub{font-size:12px;color:var(--sub);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.liked-heart-tile.lib-liked{width:56px;height:56px;flex:none;border-radius:4px}
+.liked-heart-tile.lib-liked svg{width:30px;height:30px}
+.lib-card .liked-heart-tile.lib-liked{width:100%;height:auto;aspect-ratio:1}
+.lib-card .liked-heart-tile.lib-liked svg{width:34%;height:34%}
+
+/* v7.0 player sprites (Sakura recolors of Skyler's art) */
+#np-shuffle .sprite, #np-repeat .sprite { width: 30px; height: 30px; object-fit: contain; display: block; }
+#np-shuffle .sprite-off, #np-repeat .sprite-off { opacity: .32; filter: grayscale(1); }
+.sdb-note{padding:10px 16px 4px;color:var(--sub);font-size:13px}
+
+/* v7.0 Spotify transfer review */
+.sp-review-row{border:1px solid var(--line);border-radius:14px;padding:14px;margin-bottom:12px;background:var(--card)}
+.sp-review-sp .ttitle,.sp-review-sdb .ttitle{font-size:15px;font-weight:600}
+.sp-review-sp .tsub,.sp-review-sdb .tsub{font-size:13px;color:var(--sub);margin-top:2px}
+.sp-review-arrow{text-align:center;color:var(--pink);font-size:18px;margin:8px 0}
+.sp-review-sdb{border-top:1px dashed var(--line);padding-top:8px}
+.sp-review-btns{display:flex;gap:10px;margin-top:12px}
+.sp-review-btns .bigbtn{flex:1}

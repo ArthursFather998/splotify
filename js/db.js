@@ -1,6 +1,6 @@
-/* Splotify local database — IndexedDB. Audio files + library live on-device only. */
+/* Splotify local database — IndexedDB. The SDB (tracks) + library live on-device only. */
 const DB = (() => {
-  const NAME = 'splotify', VER = 1;
+  const NAME = 'splotify', VER = 2;
   let db = null;
 
   function open() {
@@ -17,6 +17,9 @@ const DB = (() => {
         }
         if (!d.objectStoreNames.contains('playlists')) d.createObjectStore('playlists', { keyPath: 'id' });
         if (!d.objectStoreNames.contains('kv')) d.createObjectStore('kv', { keyPath: 'k' });
+        // v7.0: artist roster table (placeholder artists + follow state).
+        // The SDB is the tracks store; the library is a membership list in kv.
+        if (!d.objectStoreNames.contains('artists')) d.createObjectStore('artists', { keyPath: 'id' });
       };
       req.onsuccess = () => { db = req.result; resolve(db); };
       req.onerror = () => reject(req.error);
@@ -59,6 +62,18 @@ const DB = (() => {
     putPlaylist(pl) { return tx('playlists', 'readwrite', s => { s.put(pl); }); },
     delPlaylist(id) { return tx('playlists', 'readwrite', s => { s.delete(id); }); },
 
+    allArtists() { return tx('artists', 'readonly', s => req2p(s.getAll())); },
+    getArtist(id) { return tx('artists', 'readonly', s => req2p(s.get(id))); },
+    putArtist(a) { return tx('artists', 'readwrite', s => { s.put(a); }); },
+    putArtists(list) {
+      return new Promise((resolve, reject) => {
+        const t = db.transaction('artists', 'readwrite');
+        const s = t.objectStore('artists');
+        (list || []).forEach(a => { try { s.put(a); } catch (e) {} });
+        t.oncomplete = resolve; t.onerror = () => reject(t.error);
+      });
+    },
+
     kvGet(k, def) {
       return tx('kv', 'readonly', s => req2p(s.get(k))).then(r => (r ? r.v : def));
     },
@@ -70,10 +85,11 @@ const DB = (() => {
     },
     clearAll() {
       return new Promise((resolve, reject) => {
-        const t = db.transaction(['tracks', 'playlists', 'kv'], 'readwrite');
+        const t = db.transaction(['tracks', 'playlists', 'kv', 'artists'], 'readwrite');
         t.objectStore('tracks').clear();
         t.objectStore('playlists').clear();
         t.objectStore('kv').clear();
+        if (t.objectStoreNames.contains('artists')) t.objectStore('artists').clear();
         t.oncomplete = resolve; t.onerror = () => reject(t.error);
       });
     }
