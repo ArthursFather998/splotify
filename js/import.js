@@ -828,19 +828,24 @@ const Importer = (() => {
   // Callers must run this after titles are fixed.
   let discoCache = null, discoOrderMap = null, discoArtMap = null, discoData = null;
   async function loadDiscography() {
-    if (!discoCache) discoCache = fetch('js/discography.json')
-      .then(r => (r.ok ? r.json() : null))
-      .then(d => {
-        discoOrderMap = {};
-        discoArtMap = {};
-        ((d && d.singles) || []).forEach((s, i) => {
-          discoOrderMap[s.name] = i;
-          if (s.art) discoArtMap[s.name] = s.art;
-        });
-        discoData = d;
-        return d;
-      })
-      .catch(() => null);
+    // v8.4: the bare fetch could stall forever (and the cache would wedge
+    // every later caller) — bound it; a timeout retries fresh next call.
+    if (!discoCache) discoCache = withTimeout(
+      fetch('js/discography.json')
+        .then(r => (r.ok ? r.json() : null))
+        .then(d => {
+          discoOrderMap = {};
+          discoArtMap = {};
+          ((d && d.singles) || []).forEach((s, i) => {
+            discoOrderMap[s.name] = i;
+            if (s.art) discoArtMap[s.name] = s.art;
+          });
+          discoData = d;
+          return d;
+        })
+        .catch(() => null),
+      15000, 'discography'
+    ).catch(() => { discoCache = null; return null; });
     return discoCache;
   }
   // Bundled cover path for a single release (e.g. 'js/disco-art/Harlot.jpg'),
@@ -1421,6 +1426,31 @@ const Importer = (() => {
       return (rec && rec.fix) || null;
     } catch (e) { return null; }
   }
+  // v8.4 manual skip: a song the user never wants the auto fixer to touch.
+  // Stored on the same tagMemory record as learned fixes (flag only), so a
+  // skip survives app restarts and a later unskip keeps any learned fix.
+  const skipKeyFor = t => memKeyFile(t);
+  async function recallSkip(t) {
+    try {
+      const rec = await dbOp(DB.memGet(memKeyFile(t)), 10000, 'skip-get');
+      return !!(rec && rec.skip);
+    } catch (e) { return false; }
+  }
+  async function skipTrack(t) {
+    try {
+      const k = memKeyFile(t);
+      const rec = (await dbOp(DB.memGet(k), 10000, 'skip-read')) || {};
+      rec.key = k; rec.skip = true; rec.when = Date.now();
+      await dbOp(DB.memPut(rec), 10000, 'skip-put');
+    } catch (e) {}
+  }
+  async function unskipTrack(t) {
+    try {
+      const k = memKeyFile(t);
+      const rec = await dbOp(DB.memGet(k), 10000, 'unskip-read');
+      if (rec && rec.skip) { delete rec.skip; await dbOp(DB.memPut(rec), 10000, 'unskip-put'); }
+    } catch (e) {}
+  }
   async function memCount() {
     try { return await DB.memCount(); } catch (e) { return 0; }
   }
@@ -1611,6 +1641,8 @@ const Importer = (() => {
     const queued = [];
     let verified = false;
     const before = memFixOf(t);
+    // v8.4: manually skipped songs resolve instantly, no network, no writes.
+    try { if (await recallSkip(t)) return { fixed: 0, queued: [], verified: true, note: 'skipped', status: 'skipped' }; } catch (e) {}
     // v7.8: per-source adaptive auto-apply thresholds, cached for the run.
     const thrCache = new Map();
     const thrFor = async (source) => {
@@ -2006,6 +2038,9 @@ const Importer = (() => {
       const rest = [];
       for (const t of members) {
         paint(t, 'scanning');
+        let skipped = false;
+        try { skipped = await recallSkip(t); } catch (e) {}
+        if (skipped) { resolved.add(t.id); paint(t, 'skipped', 'skipped'); continue; }
         let recalled = false;
         try {
           const rec = await recallFix(t);
@@ -2043,6 +2078,18 @@ const Importer = (() => {
     opts = opts || {};
     const list = tracks || [];
     const n = Math.max(1, Math.min(opts.concurrency || 5, 6));
+    // v8.4: per-track skip signal. The Skip button rejects a track's race
+    // immediately — even mid-flight through a hung await — instead of
+    // waiting out its timeouts. Late completions are harmless (idempotent
+    // writes) and the persistent skip record keeps it skipped next run.
+    const skipRejectors = new Map();
+    const armSkip = (id) => new Promise((_, rej) => { skipRejectors.set(id, rej); });
+    const disarmSkip = (id) => { skipRejectors.delete(id); };
+    const skipNow = (id) => {
+      const r = skipRejectors.get(id);
+      if (r) { skipRejectors.delete(id); r(new Error('skipped')); }
+    };
+    if (opts.skipHandle && typeof opts.skipHandle === 'object') opts.skipHandle.now = skipNow;
     let next = 0;
     const worker = async () => {
       for (;;) {
@@ -2051,7 +2098,14 @@ const Importer = (() => {
         const t = list[i];
         if (opts.onStart) { try { opts.onStart(t); } catch (e) {} }
         let res = null;
-        try { res = await fixTrack(t, roster, opts); } catch (e) { res = null; }
+        try { res = await Promise.race([fixTrack(t, roster, opts), armSkip(t.id)]); }
+        catch (e) {
+          const wasSkip = (e && e.message === 'skipped') || (opts.isSkipped && opts.isSkipped(t.id));
+          res = wasSkip
+            ? { fixed: 0, queued: [], verified: false, note: 'skipped', status: 'skipped' }
+            : null;
+        }
+        finally { disarmSkip(t.id); }
         if (opts.onDone) { try { opts.onDone(t, res); } catch (e) {} }
       }
     };
@@ -2118,5 +2172,5 @@ const Importer = (() => {
   const deezerAuditQuery = (qq, t) => catalogGate(() => deezerAuditQueryUngated(qq, t));
   // AcoustID shares the 3-in-flight gate: polite under the parallel pool.
   const acoustidQuery = (fp, dur) => catalogGate(() => acoustidLookupUngated(fp, dur));
-  return { bind, open: () => { if (!busy) picker().click(); }, openZip: () => { if (!busy) zippicker().click(); }, fmtDur, healLibrary, fixAlbum, recordSingles, singleOrder, singleArt, mySingleArt, parseOne, auditLibrary, fixTrack, fingerprintTrack, learnFix, memCount, logCalib, artChainExtra, fixAlbumClusters, fixTrackPool, fileNameCandidates, autoThresholdFor, needsFix };
+  return { bind, open: () => { if (!busy) picker().click(); }, openZip: () => { if (!busy) zippicker().click(); }, fmtDur, healLibrary, fixAlbum, recordSingles, singleOrder, singleArt, mySingleArt, parseOne, auditLibrary, fixTrack, fingerprintTrack, learnFix, memCount, logCalib, artChainExtra, fixAlbumClusters, fixTrackPool, fileNameCandidates, autoThresholdFor, needsFix, memAll: () => DB.memAll(), skipKeyFor, recallSkip, skipTrack, unskipTrack };
 })();

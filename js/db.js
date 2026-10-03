@@ -88,6 +88,7 @@ const DB = (() => {
     memGet(key) { return tx('tagMemory', 'readonly', s => req2p(s.get(key))); },
     memPut(rec) { return tx('tagMemory', 'readwrite', s => { s.put(rec); }); },
     memCount() { return tx('tagMemory', 'readonly', s => req2p(s.count())); },
+    memAll() { return tx('tagMemory', 'readonly', s => req2p(s.getAll())); },
 
     usage() {
       if (navigator.storage && navigator.storage.estimate) return navigator.storage.estimate();

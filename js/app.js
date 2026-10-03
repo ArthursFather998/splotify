@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v8.3';
+  const APP_VERSION = 'v8.4';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -1812,7 +1812,14 @@ const App = (() => {
     view().onscroll = null;
     if (cur.v === 'artist') bindArtistScroll();
     if (cur.v === 'driveBackup') paintDbBgMode();
-    if (cur.v === 'tagFixer') { buildFixList(); paintFixUI(); paintTagFixResults(); }
+    if (cur.v === 'tagFixer') {
+      paintTagFixResults();
+      // v8.4: skip buttons need the skip set; render immediately, then again
+      // once it's loaded (bounded wait so a slow DB can't blank the list).
+      buildFixList(); paintFixUI();
+      Promise.race([ensureSkipIds(), new Promise(r => setTimeout(r, 4000))])
+        .then(() => { buildFixList(); paintFixUI(); }).catch(() => {});
+    }
     if (cur.v === 'settings') {
       // fanart.tv key lives only on this device (kv store) — never in the repo.
       try {
@@ -2392,10 +2399,16 @@ const App = (() => {
     // Phase 2 — parallel fix pool for everything the album pass left over.
     // v8.1: inside the run try/finally so a throw can never leave the
     // button wedged on "Fixing…".
+    // v8.4: skipHandle lets the Skip button interrupt a track mid-flight.
+    const skipHandle = {};
+    fixUI.skipNow = null;
     await Importer.fixTrackPool(leftover, roster, {
       concurrency: 5,
+      skipHandle,
+      isSkipped: (tid) => { const tr = S.byId.get(tid); return tr ? isTrackSkipped(tr) : false },
       onStart: (t) => {
         markProgress();
+        if (!fixUI.skipNow && skipHandle.now) fixUI.skipNow = skipHandle.now;
         fixUI.album = t.title || 'Unknown Title';
         paintFixRow(t.id, 'scanning');
         paintFixUI();
@@ -2434,7 +2447,7 @@ const App = (() => {
       : 'utag fixer: tags already look good');
     } finally {
       // v8.1: the run can never wedge the button on "Fixing…" again.
-      fixUI.running = false; fixUI.album = '';
+      fixUI.running = false; fixUI.album = ''; fixUI.skipNow = null;
       try { paintFixUI(); } catch (e) {}
     }
   }
@@ -2446,6 +2459,22 @@ const App = (() => {
     try { if (window.Importer && Importer.needsFix) return Importer.needsFix(t); } catch (e) {}
     return true;
   }
+  // v8.4 manual skip: songs the user never wants the auto fixer to touch.
+  // Persisted on the tagMemory record; S.skipIds mirrors it in memory.
+  async function ensureSkipIds() {
+    if (S.skipIds) return S.skipIds;
+    S.skipIds = new Set();
+    try {
+      const all = (window.Importer && Importer.memAll) ? await Importer.memAll() : [];
+      (all || []).forEach(r => { if (r && r.skip && r.key) S.skipIds.add(r.key); });
+    } catch (e) {}
+    return S.skipIds;
+  }
+  function trackSkipKey(t) {
+    try { if (window.Importer && Importer.skipKeyFor) return Importer.skipKeyFor(t); } catch (e) {}
+    return 'f:' + (t.fileName || '') + '::' + (t.fileSize || 0);
+  }
+  function isTrackSkipped(t) { return !!(S.skipIds && S.skipIds.has(trackSkipKey(t))); }
   function fixListTracks() {
     return [...S.tracks].filter(trackNeedsFix).sort((a, b) => String(a.title || '').localeCompare(String(b.title || '')));
   }
@@ -2459,7 +2488,8 @@ const App = (() => {
       '<div class="fx-meta"><div class="fx-title">' + esc(t.title || 'Unknown Title') + '</div>' +
       '<div class="fx-sub">' + esc(t.artist || 'Unknown Artist') + ' · ' + esc(t.album || 'Unknown Album') + '</div>' +
       '<div class="fx-note" id="fxn-' + t.id + '"></div></div>' +
-      '<div class="fx-status" id="fxs-' + t.id + '"></div></div>'
+      '<div class="fx-status" id="fxs-' + t.id + '"></div>' +
+      '<button class="fx-skipbtn" data-act="fix-skip" data-id="' + t.id + '" style="flex:none;background:none;border:1px solid var(--line);border-radius:10px;color:var(--sub);font-size:12px;padding:6px 10px;margin-left:8px">' + (isTrackSkipped(t) ? 'Unskip' : 'Skip') + '</button></div>'
     ).join('');
     applyFixFilter();
   }
@@ -2470,6 +2500,7 @@ const App = (() => {
     review: ['→ Review', 'review'],
     ok: ['✓ Checked', 'ok'],
     nomatch: ['No match', 'nomatch'],
+    skipped: ['Skipped', 'skipped'],
   };
   function paintFixRow(id, status, note) {
     const el = document.getElementById('fxs-' + id);
@@ -2636,6 +2667,27 @@ const App = (() => {
       case 'fix-album': await fixAlbumByKey(id); break;
       case 'fix-all-tags': nav('tagFixer'); break;
       case 'fix-run': fixAllSongs(); break;
+      case 'fix-skip': {
+        const t = S.byId.get(Number(id));
+        if (!t) break;
+        await ensureSkipIds();
+        const k = trackSkipKey(t);
+        if (S.skipIds.has(k)) {
+          S.skipIds.delete(k);
+          try { await Importer.unskipTrack(t); } catch (e) {}
+          toast('Will fix this song next run');
+        } else {
+          S.skipIds.add(k);
+          try { await Importer.skipTrack(t); } catch (e) {}
+          // Interrupt it mid-run if it's being processed right now.
+          try { if (fixUI.skipNow) fixUI.skipNow(t.id); } catch (e) {}
+          paintFixRow(t.id, 'skipped', 'skipped');
+          toast('Skipped');
+        }
+        const btn = document.querySelector('[data-act="fix-skip"][data-id="' + id + '"]');
+        if (btn) btn.textContent = S.skipIds.has(k) ? 'Unskip' : 'Skip';
+        break;
+      }
       case 'tag-review-open': nav('tagReview'); break;
       case 'tag-review-approve': {
         const i = Number(el.dataset.idx);

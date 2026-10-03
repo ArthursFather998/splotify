@@ -424,6 +424,7 @@ input{font:inherit}
 .fx-status.review{color:#f5c318}
 .fx-status.ok{color:var(--sub);font-weight:500}
 .fx-status.nomatch{color:var(--sub);font-weight:500}
+.fx-status.skipped{color:var(--sub);font-weight:500;font-style:italic}
 .fx-status.scanning{color:var(--pink)}
 .fx-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--pink);margin-right:6px;animation:fxpulse 1s infinite}
 @keyframes fxpulse{50%{opacity:.25}}
