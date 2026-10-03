@@ -92,7 +92,8 @@ const Importer = (() => {
     if (!tr.trackNo) tr.trackNo = best.trackNumber || tr.trackNo;
     tr.tagsVia = tr.tagsVia || 'Apple Music';
     const au = (best.artworkUrl100 || '').replace('100x100bb', '600x600bb');
-    if (au && !tr.art) {
+    // Never overwrite hand-set artwork.
+    if (au && !tr.art && !tr.artManual) {
       try {
         const c = new AbortController(); const t = setTimeout(() => c.abort(), 12000);
         const rr = await fetch(au, { signal: c.signal }); clearTimeout(t);
@@ -426,6 +427,9 @@ const Importer = (() => {
       title: tr.title, artist: tr.artist, album: tr.album, albumArtist: tr.albumArtist,
       genre: tr.genre, year: tr.year, trackNo: tr.trackNo, discNo: tr.discNo,
       art: tr.art, tagged: tr.tagged, tagsVia: tr.tagsVia, diag: tr.diag,
+      // Hand-set artwork flag: only written when explicitly present, so a
+      // fixer pass never accidentally clears it with an undefined write.
+      ...(tr.artManual !== undefined ? { artManual: tr.artManual } : {}),
     });
   }
   // Manual album fix: look up the whole album, apply proper tags + track order.
@@ -532,7 +536,7 @@ const Importer = (() => {
   // most of his singles). A local track appears under a single when its title
   // resembles the single's track title and the 8s duration veto passes.
   // Callers must run this after titles are fixed.
-  let discoCache = null, discoOrderMap = null, discoArtMap = null;
+  let discoCache = null, discoOrderMap = null, discoArtMap = null, discoData = null;
   async function loadDiscography() {
     if (!discoCache) discoCache = fetch('js/discography.json')
       .then(r => (r.ok ? r.json() : null))
@@ -543,6 +547,7 @@ const Importer = (() => {
           discoOrderMap[s.name] = i;
           if (s.art) discoArtMap[s.name] = s.art;
         });
+        discoData = d;
         return d;
       })
       .catch(() => null);
@@ -553,6 +558,124 @@ const Importer = (() => {
   // album's rose is never used for a single.
   function singleArt(name) {
     return (discoArtMap && discoArtMap[name]) || null;
+  }
+  // Sync lookup of his bundled single art by song title (for the artwork
+  // fallback and his-song repair). Null until the discography has loaded.
+  function mySingleArt(title) {
+    if (!discoData || !title) return null;
+    for (const s of (discoData.singles || [])) {
+      for (const st of (s.tracks || [])) {
+        if (titleSimilar(title, st.title)) return singleArt(s.name);
+      }
+    }
+    return null;
+  }
+  // Best discography single/track for one of his songs (ordinal hint from
+  // the file name, duration tiebreak). Null when nothing matches.
+  function matchMySingle(t, disco) {
+    if (!disco || !disco.singles) return null;
+    const bySingle = new Map();
+    for (const s of disco.singles) {
+      (s.tracks || []).forEach((st, idx) => {
+        if (!titleSimilar(t.title, st.title)) return;
+        if (!bySingle.has(s.name)) bySingle.set(s.name, { s, cands: [] });
+        bySingle.get(s.name).cands.push({ st, idx });
+      });
+    }
+    if (!bySingle.size) return null;
+    const { s, cands } = bySingle.values().next().value;
+    const tracks = s.tracks || [];
+    let pick = cands[0];
+    // "TimeBSideSkylerGreen" resembles "Time" but means "Time II": an
+    // a-side/b-side (or part 1/2) hint names the position in the single.
+    const hint = ordinalHint(t.fileName || t.title);
+    if (hint != null && hint < tracks.length) {
+      pick = { st: tracks[hint], idx: hint };
+    } else if (cands.length > 1) {
+      const dur = t.duration || 0;
+      let best = null, bestD = 61;
+      for (const c of cands) {
+        const sd = (c.st.duration_ms || 0) / 1000;
+        const d = dur > 0 && sd > 0 ? Math.abs(dur - sd) : 61;
+        if (d < bestD) { bestD = d; best = c; }
+      }
+      if (best) pick = best;
+    }
+    return { s, st: pick.st, idx: pick.idx };
+  }
+  // Does the named artist's catalog actually contain this title? Tells his
+  // mislabeled songs apart from genuinely other-artist songs.
+  async function artistHasSong(artist, title) {
+    try {
+      if (!artist || !title || title === 'Unknown Title') return false;
+      const d = await fetchJSON('https://itunes.apple.com/search?term=' + encodeURIComponent(artist + ' ' + title) + '&media=music&entity=song&limit=8', 12000);
+      if (!d || !d.resultCount) return false;
+      for (const r of d.results) {
+        if (strSim(r.trackName, title) * 0.6 + strSim(r.artistName, artist) * 0.4 >= 0.8) return true;
+      }
+    } catch (e) {}
+    return false;
+  }
+  // Is this a real catalog artist at all? An unknown-to-Apple artist proves
+  // nothing either way, so the ambiguous-claim below requires a known one.
+  async function artistKnown(artist) {
+    try {
+      if (!artist || artist === 'Unknown Artist') return false;
+      const d = await fetchJSON('https://itunes.apple.com/search?term=' + encodeURIComponent(artist) + '&media=music&entity=musicArtist&limit=5', 12000);
+      if (!d || !d.resultCount) return false;
+      for (const r of d.results) {
+        if (strSim(r.artistName || '', artist) >= 0.8) return true;
+      }
+    } catch (e) {}
+    return false;
+  }
+  // His songs, fully repaired from the bundled discography (ground truth —
+  // the store catalogs never carry his unreleased music, and must not get
+  // a chance to misidentify them). Repairs tags AND artwork, even when a
+  // wrong cover is already present. Never touches hand-set artwork.
+  // Returns a fixTrack-style result, or null when this isn't his song.
+  async function fixMyTrack(t) {
+    const disco = await loadDiscography();
+    const a = norm(t.artist || '');
+    const saysHim = a.indexOf('skyler green') !== -1;
+    const noArtist = !a || a === 'unknown artist';
+    const m = matchMySingle(t, disco);
+    let mine = saysHim || (noArtist && !!m);
+    if (!mine && m && a) {
+      // Title matches his discography but the artist tag names someone else
+      // (a past fixer run mislabeled some of his songs as d4vd). Claim it
+      // only when the named artist is catalog-known yet has no such song —
+      // an obscure artist proves nothing either way, so those stay manual.
+      try { mine = (await artistKnown(t.artist)) && !(await artistHasSong(t.artist, t.title)); } catch (e) {}
+    }
+    if (!mine) return null;
+    const artistName = (disco && disco.artist) || 'Skyler Green';
+    const tr = { ...t };
+    const notes = [];
+    if (tr.artist !== artistName) { notes.push('Artist: ' + (tr.artist || '—') + ' → ' + artistName); tr.artist = artistName; }
+    if (m) {
+      if (tr.title !== m.st.title) { notes.push('Title: ' + (tr.title || '—') + ' → ' + m.st.title); tr.title = m.st.title; }
+      if (tr.album !== m.s.name) { notes.push('Album: ' + (tr.album || '—') + ' → ' + m.s.name); tr.album = m.s.name; }
+      tr.albumArtist = artistName;
+      if (!tr.year) tr.year = (m.s.date || '').slice(0, 4) || tr.year;
+      tr.trackNo = m.idx + 1; tr.discNo = 1;
+      if (!tr.artManual) {
+        const want = singleArt(m.s.name);
+        if (want && tr.art !== want) { tr.art = want; notes.push('artwork restored'); }
+      }
+    }
+    tr.tagged = true;
+    tr.tagsVia = 'Spotify';
+    if (!notes.length) return { fixed: 0, queued: [], verified: true, note: '', status: 'ok' };
+    try {
+      await persistFix(t.id, tr);
+      Object.assign(t, {
+        title: tr.title, artist: tr.artist, album: tr.album, albumArtist: tr.albumArtist,
+        genre: tr.genre, year: tr.year, trackNo: tr.trackNo, discNo: tr.discNo,
+        art: tr.art, tagged: tr.tagged, tagsVia: tr.tagsVia,
+      });
+    } catch (e) { return { fixed: 0, queued: [], verified: false, note: '', status: 'nomatch' }; }
+    return { fixed: 1, queued: [], verified: true, note: notes.join('; '), status: 'fixed' };
   }
   // Newest-first position of a single release (for shelf ordering); unknown
   // names sort last.
@@ -594,33 +717,9 @@ const Importer = (() => {
     let fixed = 0;
     for (let i = leftovers.length - 1; i >= 0; i--) {
       const t = leftovers[i];
-      const bySingle = new Map();
-      for (const s of disco.singles) {
-        (s.tracks || []).forEach((st, idx) => {
-          if (!titleSimilar(t.title, st.title)) return;
-          if (!bySingle.has(s.name)) bySingle.set(s.name, { s, cands: [] });
-          bySingle.get(s.name).cands.push({ st, idx });
-        });
-      }
-      if (!bySingle.size) continue;
-      const { s, cands } = bySingle.values().next().value;
-      const tracks = s.tracks || [];
-      let pick = cands[0];
-      // "TimeBSideSkylerGreen" resembles "Time" but means "Time II": an
-      // a-side/b-side (or part 1/2) hint names the position in the single.
-      const hint = ordinalHint(t.fileName || t.title);
-      if (hint != null && hint < tracks.length) {
-        pick = { st: tracks[hint], idx: hint };
-      } else if (cands.length > 1) {
-        const dur = t.duration || 0;
-        let best = null, bestD = 61;
-        for (const c of cands) {
-          const sd = (c.st.duration_ms || 0) / 1000;
-          const d = dur > 0 && sd > 0 ? Math.abs(dur - sd) : 61;
-          if (d < bestD) { bestD = d; best = c; }
-        }
-        if (best) pick = best;
-      }
+      const m = matchMySingle(t, disco);
+      if (!m) continue;
+      const { s } = m, pick = { st: m.st, idx: m.idx };
       const tr = { ...t };
       const before = [tr.title, tr.artist, tr.album, tr.albumArtist, tr.trackNo].join('|');
       tr.title = pick.st.title || tr.title;
@@ -639,7 +738,7 @@ const Importer = (() => {
       // round-trip that produced the broken-image art in v2.1. The album's
       // rose is never used here: it belongs to the album alone.
       let artSet = false;
-      if (!tr.art) {
+      if (!tr.art && !tr.artManual) {
         const p = singleArt(s.name);
         if (p) { tr.art = p; artSet = true; }
       }
@@ -834,7 +933,10 @@ const Importer = (() => {
       out.push({ field: 'artist', from: t.artist, to: best.artistName, confidence: Math.min(conf, 0.9), source: 'Apple Music' });
     }
     if (best.collectionName && best.collectionName !== t.album && norm(best.collectionName) !== norm(t.album || '') && strSim(best.trackName, qq.t) >= 0.9) {
-      out.push({ field: 'album', from: t.album || 'Unknown Album', to: best.collectionName, confidence: Math.min(conf - 0.05, 0.88), source: 'Apple Music' });
+      // Title-only matches can't tell which artist's song this is, so an
+      // album change from one always goes to review, never auto-applies.
+      const albumConf = qq.a ? Math.min(conf - 0.05, 0.88) : Math.min(conf - 0.05, 0.87);
+      out.push({ field: 'album', from: t.album || 'Unknown Album', to: best.collectionName, confidence: albumConf, source: 'Apple Music' });
     }
     return { proposals: out, verified: bestScore >= (qq.a ? 0.85 : 0.92) };
   }
@@ -905,6 +1007,13 @@ const Importer = (() => {
      return queued for the review screen. Never touches correct tags. */
   const FIX_LABEL = { title: 'Title', artist: 'Artist', album: 'Album', albumArtist: 'Album artist', genre: 'Genre' };
   async function fixTrack(t, roster) {
+    // His own songs are claimed FIRST: the bundled discography is ground
+    // truth, and the store catalogs must never get a chance to misidentify
+    // them (or plaster another artist's artwork on them).
+    try {
+      const my = await fixMyTrack(t);
+      if (my) return my;
+    } catch (e) {}
     let fixed = 0;
     const queued = [];
     const notes = [];
@@ -924,8 +1033,9 @@ const Importer = (() => {
         }
       }
     } catch (e) {}
-    // Fill pass: anything still missing gets the Apple fill (art, album…).
-    // autoTag is fill-only, so present-but-wrong fields are never clobbered.
+    // Fill pass for anything still missing.
+    // autoTag is fill-only, so present-but-wrong fields are never clobbered,
+    // and hand-set artwork is never overwritten.
     if (needsFix(t)) {
       const tr = { ...t };
       try {
@@ -944,13 +1054,6 @@ const Importer = (() => {
             if (filledNames.length) notes.push('filled ' + filledNames.join(', '));
           }
         }
-      } catch (e) {}
-    }
-    // Last resort: his own discography for his tracks (singles Apple lacks).
-    if (needsFix(t)) {
-      try {
-        const r = await discoFixTracks([t]);
-        if (r && r.fixed) { fixed += r.fixed; notes.push('matched his discography'); }
       } catch (e) {}
     }
     const note = notes.join('; ');
@@ -1053,7 +1156,8 @@ const Importer = (() => {
     tr.tagsVia = 'Apple Music';
     // Take the listing's artwork: listings are tried albums-first, so an
     // album track gets the album art (like Spotify), not a stale single cover.
-    if (art) tr.art = art;
+    // Hand-set artwork is never overwritten.
+    if (art && !tr.artManual) tr.art = art;
     tr.tagged = true;
     if ((tr.diag || '').indexOf('fix v') === 0) tr.diag = 'reader-ok';
     return [tr.title, tr.artist, tr.album, tr.albumArtist, tr.genre, tr.year, tr.trackNo, tr.discNo, !!tr.art].join('|') !== before;
@@ -1207,7 +1311,7 @@ const Importer = (() => {
           // v2.1 wrote via the fetch->blob->IndexedDB round-trip: the path
           // renders exactly like the working Singles shelf.
           const want = singleArt(t.album);
-          if (want && t.art !== want) {
+          if (want && t.art !== want && !t.artManual) {
             try { await DB.updateTrack(t.id, { art: want }); t.art = want; touched++; } catch (e) {}
           }
         }
@@ -1225,5 +1329,5 @@ const Importer = (() => {
     } catch (e) { console.warn('healLibrary failed', e); }
     return { fixed, changed: fixed + touched };
   }
-  return { bind, open: () => { if (!busy) picker().click(); }, openZip: () => { if (!busy) zippicker().click(); }, fmtDur, healLibrary, fixAlbum, recordSingles, singleOrder, singleArt, parseOne, auditLibrary, fixTrack };
+  return { bind, open: () => { if (!busy) picker().click(); }, openZip: () => { if (!busy) zippicker().click(); }, fmtDur, healLibrary, fixAlbum, recordSingles, singleOrder, singleArt, mySingleArt, parseOne, auditLibrary, fixTrack };
 })();

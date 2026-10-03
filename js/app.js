@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v7.2';
+  const APP_VERSION = 'v7.3';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -129,11 +129,21 @@ const App = (() => {
       if (!u) { u = URL.createObjectURL(t.art); S.artURLs.set(t.id, u); }
       return u;
     }
-    // No art at all: unreleased d4vd tracks (or untagged files) fall back to
-    // the deluxe cover instead of a blank. Anything with a real artist tag
-    // that isn't d4vd is left alone.
+    // No art at all: unreleased d4vd tracks fall back to the deluxe cover
+    // instead of a blank. His own songs never wear d4vd's cover: they get
+    // their bundled single art when the title matches his discography,
+    // otherwise a blank placeholder.
     const ta = normTitle(t.artist);
-    if (!ta || ta === 'unknownartist' || ta.indexOf('d4vd') !== -1) return 'js/custom-art/marcescence.jpg';
+    if (!ta || ta === 'unknownartist' || ta.indexOf('d4vd') !== -1) {
+      if (ta.indexOf('d4vd') === -1) {
+        try {
+          const myArt = (typeof Importer !== 'undefined' && Importer.mySingleArt) ? Importer.mySingleArt(t.title) : null;
+          if (myArt) return myArt;
+        } catch (e) {}
+        return null;
+      }
+      return 'js/custom-art/marcescence.jpg';
+    }
     return null;
   }
   function artImg(t, cls = '', alt = '') {
@@ -466,6 +476,9 @@ const App = (() => {
   function closeSheet() {
     document.getElementById('sheet').classList.add('hidden');
     document.getElementById('sheet-scrim').classList.add('hidden');
+    // Drop any staged artwork that was never saved.
+    if (S._stagedArt) { try { URL.revokeObjectURL(S._stagedArt.url); } catch (e) {} S._stagedArt = null; }
+    S._artRemoved = false;
   }
 
   /* ---------- track rows ---------- */
@@ -2096,6 +2109,7 @@ const App = (() => {
     id = Number(id);
     const t = S.byId.get(id);
     if (!t) { toast('Song not found'); return; }
+    S._stagedArt = null; S._artRemoved = false;
     const inp = (fid, label, val, half) =>
       '<label style="display:block;margin:10px 0;' + (half ? 'flex:1;min-width:0' : '') + '">' +
       '<div style="color:var(--sub);font-size:12px;margin-bottom:6px">' + label + '</div>' +
@@ -2103,11 +2117,59 @@ const App = (() => {
       'style="width:100%;box-sizing:border-box;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;color:var(--txt);font-size:15px" /></label>';
     openSheet('<div style="padding:6px 4px 20px"><h3 style="margin:4px 0 2px;font-size:17px">' + esc(t.title) + '</h3>' +
       '<div style="color:var(--sub);font-size:13px;margin-bottom:6px">' + esc(t.artist) + ' — edit tags</div>' +
+      '<div style="display:flex;gap:14px;align-items:center;margin:10px 0 4px">' +
+      '<div id="tagedit-artprev" style="width:96px;height:96px;border-radius:12px;overflow:hidden;background:var(--card);flex:none;display:flex;align-items:center;justify-content:center"></div>' +
+      '<div style="flex:1"><button class="bigbtn" data-act="tag-art-upload" style="width:100%">Upload artwork</button>' +
+      '<button class="bigbtn" data-act="tag-art-remove" data-id="' + t.id + '" style="width:100%;margin-top:8px">Remove artwork</button>' +
+      '<div class="sub" style="margin-top:6px">Hand-set artwork is never touched by the fixer.</div></div></div>' +
+      '<input type="file" id="tagedit-artfile" accept="image/*" style="display:none" />' +
       inp('title', 'Title', t.title) + inp('artist', 'Artist', t.artist) +
       inp('album', 'Album', t.album) + inp('albumArtist', 'Album artist', t.albumArtist) +
       inp('genre', 'Genre', t.genre) +
       '<div style="display:flex;gap:10px">' + inp('year', 'Year', t.year, true) + inp('trackNo', 'Track #', t.trackNo, true) + '</div>' +
       '<button class="bigbtn pink" data-act="tag-save" data-id="' + t.id + '" style="width:100%;margin-top:14px">Save tags</button></div>');
+    paintTagArtPreview(t);
+    const fi = document.getElementById('tagedit-artfile');
+    if (fi) fi.addEventListener('change', () => { const f = fi.files && fi.files[0]; fi.value = ''; if (f) stageArtwork(f, t); });
+  }
+  // Artwork preview inside the tag editor: staged upload, else current art,
+  // else the placeholder.
+  function paintTagArtPreview(t) {
+    const box = document.getElementById('tagedit-artprev');
+    if (!box) return;
+    if (S._stagedArt) {
+      box.innerHTML = '<img src="' + S._stagedArt.url + '" style="width:96px;height:96px;object-fit:cover;display:block" alt="" />';
+    } else if (S._artRemoved) {
+      box.innerHTML = '<span style="color:var(--sub)">' + icon('note') + '</span>';
+    } else {
+      const u = artURL(t);
+      box.innerHTML = u
+        ? '<img src="' + u + '" style="width:96px;height:96px;object-fit:cover;display:block" alt="" onerror="App.artErr(this)" />'
+        : '<span style="color:var(--sub)">' + icon('note') + '</span>';
+    }
+  }
+  // Stage an uploaded image as the track's artwork: downscaled to max
+  // 1000px JPEG so the library stays lean, previewed instantly.
+  async function stageArtwork(file, t) {
+    try {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = url; });
+      const max = 1000;
+      const sc = Math.min(1, max / Math.max(img.naturalWidth || 1, img.naturalHeight || 1));
+      const w = Math.max(1, Math.round((img.naturalWidth || max) * sc));
+      const h = Math.max(1, Math.round((img.naturalHeight || max) * sc));
+      const cv = document.createElement('canvas');
+      cv.width = w; cv.height = h;
+      cv.getContext('2d').drawImage(img, 0, 0, w, h);
+      URL.revokeObjectURL(url);
+      const blob = await new Promise(res => cv.toBlob(res, 'image/jpeg', 0.85));
+      if (!blob) { toast('Could not read that image'); return; }
+      if (S._stagedArt) URL.revokeObjectURL(S._stagedArt.url);
+      S._stagedArt = { blob, url: URL.createObjectURL(blob) };
+      S._artRemoved = false;
+      paintTagArtPreview(t);
+    } catch (e) { toast('Could not read that image'); }
   }
   // Shared album-tag fixer: used by the album page button and the track •••
   // sheet. Quiet mode skips per-album toasts and view jumps. Returns the raw result.
@@ -2450,13 +2512,36 @@ const App = (() => {
         const year = parseInt(val('year'), 10); if (year) patch.year = year;
         const trackNo = parseInt(val('trackNo'), 10); if (trackNo) patch.trackNo = trackNo;
         if (!patch.title) { toast('Title can\u2019t be empty'); break; }
+        if (S._stagedArt) {
+          patch.art = S._stagedArt.blob;
+          patch.artManual = true;
+          URL.revokeObjectURL(S._stagedArt.url);
+          S._stagedArt = null;
+        } else if (S._artRemoved) {
+          patch.art = null;
+          patch.artManual = true;
+          S._artRemoved = false;
+        }
         try {
           await DB.updateTrack(tid, patch);
           const t = S.byId.get(tid); if (t) Object.assign(t, patch);
+          try { S.artURLs.delete(tid); } catch (e) {}
           closeSheet(); await refreshTracks(); render(); paintMini();
           paintFixUI();
           toast('Tags saved');
         } catch (e) { toast('Could not save tags'); }
+        break;
+      }
+      case 'tag-art-upload': {
+        const fi = document.getElementById('tagedit-artfile');
+        if (fi) fi.click();
+        break;
+      }
+      case 'tag-art-remove': {
+        if (S._stagedArt) { URL.revokeObjectURL(S._stagedArt.url); S._stagedArt = null; }
+        S._artRemoved = true;
+        const t = S.byId.get(Number(id));
+        paintTagArtPreview(t);
         break;
       }
       case 'sheet-fixtags': {
