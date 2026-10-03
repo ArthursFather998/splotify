@@ -15,10 +15,71 @@ const Importer = (() => {
     return name.replace(/\.[a-z0-9]{2,5}$/i, '');
   }
   function splitArtistTitle(name) {
-    const b = baseTitle(name);
+    const c = fileNameCandidates(name).list[0];
+    if (c) return { artist: c.artist, title: c.title };
+    const b = baseTitle(name || '').trim();
+    return { artist: 'Unknown Artist', title: b || 'Unknown Title' };
+  }
+  // v7.8 filename parser rewrite: real-world file names are feral, so the
+  // old single "Artist - Title" regex misread most of them. This builds
+  // scored parse candidates instead of one guess:
+  //   "01. Artist - Title", "Artist_-_Title", "[SPOTIFY-DOWNLOADER] A - T",
+  //   "Title - Artist" (reversed — wins only when tag hints agree),
+  //   folder paths (".../Withered Deluxe/02 - Title.flac" → album),
+  //   leading track numbers, feat. artists.
+  // Audio qualifiers ("(Sped Up)", "(Remix)", "(Live)") are PRESERVED in
+  // titles — only downloader/video junk is stripped, so a stripped query
+  // can never propose dropping a qualifier the v7.2 gates protect.
+  // A candidate seeds an audit query only when it carries BOTH artist and
+  // title (v7.2 safety rule): an artist-less file name ("Track 01.mp3")
+  // must never seed a query.
+  const FOLDER_JUNK = /^(downloads?|music|audio|mp3s?|flacs?|m4as?|songs?|tracks?|new folder|untitled|various( artists)?|my music|itunes|library)$/i;
+  function stripFileJunk(s) {
+    return (s || '')
+      .replace(/\[[^\]]*(spotify.downloader|downloader|free download|320\s?kbps|\bmp3\b|\bflac\b|\bm4a\b)[^\]]*\]/gi, '')
+      .replace(/[\[\(]\s*(official\s+(audio|video|music\s+video)|lyrics?|audio|video|hd|4k|hq|mv)\s*[\]\)]/gi, '')
+      .replace(/[\[\(]\s*(19|20)\d{2}\s*[\]\)]/g, '')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+  }
+  function parseFeat(title) {
+    const m = (title || '').match(/[\[\(]\s*(?:feat\.?|ft\.?|featuring)\s+([^)\]]+)[\]\)]/i);
+    return m ? m[1].trim() : '';
+  }
+  function fileNameCandidates(name, folderPath, hints) {
+    const out = { list: [], album: null, trackNo: 0 };
+    let b = baseTitle(name || '').replace(/_+/g, ' ').replace(/\.{2,}/g, ' ');
+    b = stripFileJunk(b);
+    const ln = b.match(/^\s*0*(\d{1,3})\s*[.\-–—)\]:]\s+/);
+    if (ln && b.slice(ln[0].length).trim()) { out.trackNo = parseInt(ln[1], 10); b = b.slice(ln[0].length).trim(); }
+    if (folderPath) {
+      const parts = String(folderPath).split(/[\\/]/).filter(p => p && p.trim());
+      const folder = (parts[parts.length - 1] || '').trim();
+      const fm = folder.match(/^\s*(.+?)\s*[-–—]\s*(.+?)\s*$/);
+      const alb = (fm ? fm[2] : folder).trim();
+      if (alb && alb.length >= 2 && !FOLDER_JUNK.test(alb)) out.album = alb;
+    }
+    const ha = hints && hints.artist && hints.artist !== 'Unknown Artist' ? hints.artist : '';
+    const ht = hints && hints.title && hints.title !== 'Unknown Title' ? hints.title : '';
+    const seen = new Set();
+    const push = (artist, title, score) => {
+      artist = (artist || '').replace(/\s+/g, ' ').trim();
+      title = (title || '').replace(/\s+/g, ' ').trim();
+      if (!artist || !title || /^unknown (artist|title)$/i.test(artist) || /^unknown (artist|title)$/i.test(title)) return;
+      const k = artist.toLowerCase() + '|||' + title.toLowerCase();
+      if (seen.has(k)) return;
+      seen.add(k);
+      let s = score;
+      if (ha || ht) s += 0.5 * strSim(artist, ha) + 0.5 * strSim(title, ht);
+      out.list.push({ artist, title, score: s, feat: parseFeat(title), trackNo: out.trackNo, album: out.album });
+    };
     const m = b.match(/^\s*(.+?)\s*[-–—]\s*(.+?)\s*$/);
-    if (m) return { artist: m[1].trim(), title: m[2].trim() };
-    return { artist: 'Unknown Artist', title: b.trim() || 'Unknown Title' };
+    if (m) {
+      push(m[1], m[2], 1.0);  // forward
+      push(m[2], m[1], 0.55); // reversed — wins only when tag hints agree
+    }
+    out.list.sort((x, y) => y.score - x.score);
+    return out;
   }
   function fmtDur(s) {
     if (!s || !isFinite(s)) return '';
@@ -42,6 +103,33 @@ const Importer = (() => {
     try { const r = await fetch(url, { signal: c.signal }); if (!r.ok) return null; return await r.json(); }
     catch (e) { return null; } finally { clearTimeout(t); }
   }
+  // v7.8 polite concurrency: the parallel fix pool fires many fixes at once.
+  // MusicBrainz keeps its own strict 1 req/sec pacing (mbSearchRecording);
+  // Apple/Deezer catalog + artwork queries share this 3-in-flight gate so
+  // the pool can't hammer the APIs. No gated call nests inside another.
+  function makeGate(max) {
+    let inFlight = 0;
+    const waiters = [];
+    const pump = () => {
+      while (inFlight < max && waiters.length) {
+        const w = waiters.shift();
+        inFlight++;
+        w();
+      }
+    };
+    return function gate(fn) {
+      return new Promise((resolve, reject) => {
+        waiters.push(() => {
+          Promise.resolve().then(fn).then(
+            v => { inFlight--; pump(); resolve(v); },
+            e => { inFlight--; pump(); reject(e); }
+          );
+        });
+        pump();
+      });
+    };
+  }
+  const catalogGate = makeGate(3);
   function needsFix(tr) {
     return tr.album === 'Unknown Album' || !tr.art || tr.artist === 'Unknown Artist' || !tr.title || tr.title === 'Unknown Title';
   }
@@ -60,11 +148,18 @@ const Importer = (() => {
       queries.push({ a: tr.artist && tr.artist !== 'Unknown Artist' ? tr.artist : '', t: tr.title });
     }
     try {
-      const fb = splitArtistTitle(tr.fileName || '');
-      if (fb.title && fb.title !== 'Unknown Title') {
-        const q = { a: fb.artist && fb.artist !== 'Unknown Artist' ? fb.artist : '', t: fb.title };
+      // v7.8: every scored filename candidate seeds its own query — more
+      // candidates, better recall. The parser only emits candidates with
+      // both artist and title, so the v7.2 artist-less safety rule holds.
+      const pc = fileNameCandidates(tr.fileName || '', tr.filePath || '', { artist: tr.artist, title: tr.title });
+      for (const c of pc.list.slice(0, 4)) {
+        const q = { a: c.artist, t: c.title };
         if (!queries.some(x => x.a === q.a && x.t === q.t)) queries.push(q);
       }
+      // Fill-only extras from the filename: folder album and leading track
+      // number. Never overwrite anything present.
+      if (TAG_MISSING(tr.album) && pc.album) tr.album = pc.album;
+      if (!tr.trackNo && pc.trackNo) tr.trackNo = pc.trackNo;
     } catch (e) {}
     let filled = false;
     for (const q of queries) {
@@ -86,7 +181,7 @@ const Importer = (() => {
   }
   // Deezer artwork fill (v7.6): when Apple had no art, Deezer's cover_xl
   // gets its turn. Blob first (works offline); the URL string as fallback.
-  async function autoTagDeezerArt(tr, q) {
+  async function autoTagDeezerArtUngated(tr, q) {
     const qs = ((q.a ? q.a + ' ' : '') + q.t).trim();
     if (!qs || tr.art || tr.artManual) return false;
     const d = await fetchJSON('https://api.deezer.com/search?q=' + encodeURIComponent(qs) + '&limit=6', 12000);
@@ -189,14 +284,41 @@ const Importer = (() => {
   async function logCalib(source, confidence, approved) {
     try {
       const bucket = Math.round((confidence || 0) * 20) / 20; // 0.05 steps
-      const key = 'calib:' + (source || 'unknown') + ':' + bucket.toFixed(2);
+      const src = source || 'unknown';
+      const key = 'calib:' + src + ':' + bucket.toFixed(2);
       const rec = (await DB.memGet(key)) || { key, approved: 0, total: 0 };
       rec.approved += approved ? 1 : 0;
       rec.total += 1;
       await DB.memPut(rec);
+      // v7.8: per-source bucket index so the adaptive thresholds can
+      // enumerate buckets without scanning the whole tagMemory store.
+      const ik = 'calibidx:' + src;
+      const idx = (await DB.memGet(ik)) || { key: ik, buckets: {} };
+      idx.buckets[bucket.toFixed(2)] = true;
+      await DB.memPut(idx);
     } catch (e) {}
   }
-  async function autoTagQuery(tr, q) {
+  // v7.8 adaptive confidence thresholds. Per source, the auto-apply
+  // threshold becomes the lowest confidence bucket with approval rate ≥ 95%
+  // and at least 10 samples. Clamped: never auto below 0.60, never above
+  // the 0.88 default. With insufficient data the fixed 0.88 behavior holds
+  // exactly. The review floor (0.55) is unchanged, and the title-only album
+  // cap stays a hard safety rule outside this.
+  async function autoThresholdFor(source) {
+    const DEF = 0.88, FLOOR = 0.60;
+    try {
+      const src = source || 'unknown';
+      const idx = await DB.memGet('calibidx:' + src);
+      const buckets = idx && idx.buckets ? Object.keys(idx.buckets).map(Number).sort((a, b) => a - b) : [];
+      let thr = DEF;
+      for (const b of buckets) {
+        const rec = await DB.memGet('calib:' + src + ':' + b.toFixed(2));
+        if (rec && rec.total >= 10 && rec.approved / rec.total >= 0.95) { thr = b; break; }
+      }
+      return Math.min(DEF, Math.max(FLOOR, thr));
+    } catch (e) { return DEF; }
+  }
+  async function autoTagQueryUngated(tr, q) {
     const qs = ((q.a ? q.a + ' ' : '') + q.t).trim();
     if (!qs) return false;
     const d = await fetchJSON('https://itunes.apple.com/search?term=' + encodeURIComponent(qs) + '&media=music&entity=song&limit=6', 12000);
@@ -959,9 +1081,27 @@ const Importer = (() => {
   // cache so a repeated title/artist costs nothing.
   const mbCache = new Map();
   let mbLastReq = 0;
+  // v7.8: strict 1/sec pacing, serialized across concurrent callers (the
+  // parallel fix pool). Each call waits for the previous call's slot, so
+  // MusicBrainz never sees concurrent requests no matter the pool size.
+  let mbPace = Promise.resolve();
   async function mbSearchRecording(title, artist) {
     const key = norm(title) + '|||' + norm(artist);
     if (mbCache.has(key)) return mbCache.get(key);
+    let release;
+    const slot = new Promise(res => { release = res; });
+    const prev = mbPace;
+    mbPace = slot;
+    await prev;
+    try {
+      return await mbSearchRecordingInner(title, artist);
+    } finally {
+      release();
+    }
+  }
+  async function mbSearchRecordingInner(title, artist) {
+    const key = norm(title) + '|||' + norm(artist);
+    if (mbCache.has(key)) return mbCache.get(key); // re-check after the wait
     // v7.0: 1 req/sec politeness + 503 backoff (up to 3 tries). Failures are
     // never cached — a throttled lookup must not poison later tracks.
     let out = null, backoff = 2000;
@@ -1080,23 +1220,28 @@ const Importer = (() => {
   // Apple pass: search the catalog; when it confidently identifies the song
   // but our tags differ, propose the correction. Returns {proposals, verified}:
   // verified means Apple confidently identified the song even if nothing
-  // needed changing (so callers can skip slower sources). Tries the tag
-  // query first, then the file-name query — mangled tags poison the first,
-  // but the file name often still holds "Artist - Title".
-  async function appleAudit(t) {
+  // needed changing (so callers can skip slower sources).
+  // v7.8: tag query first, then every scored filename candidate (best
+  // first, reversed included — the gates compare each catalog hit against
+  // its own query text, so a wrong-order candidate can't propose bogus
+  // corrections). Candidates always carry both artist and title (v7.2 rule).
+  // 'Unknown Artist' is cleaned to '' so the title-only path (stricter bar,
+  // never-auto album cap) works as designed instead of being poisoned.
+  function auditQueries(t) {
     const queries = [];
     const tagQ = ((t.artist && t.artist !== 'Unknown Artist') ? t.artist + ' ' : '') + (t.title || '');
-    if (tagQ.trim()) queries.push({ qs: tagQ.trim(), a: t.artist || '', t: t.title || '' });
+    if (tagQ.trim()) queries.push({ qs: tagQ.trim(), a: (t.artist && t.artist !== 'Unknown Artist') ? t.artist : '', t: t.title || '' });
     try {
-      const fb = splitArtistTitle(t.fileName || '');
-      // Filename query only when it carries BOTH artist and title: an
-      // artist-less file name ("Track 01.mp3") would match random catalog
-      // tracks and cause bogus corrections.
-      if (fb.artist && fb.artist !== 'Unknown Artist' && fb.title && fb.title !== 'Unknown Title') {
-        const fbQ = fb.artist + ' ' + fb.title;
-        if (fbQ.trim() !== tagQ.trim()) queries.push({ qs: fbQ.trim(), a: fb.artist, t: fb.title });
+      const pc = fileNameCandidates(t.fileName || '', t.filePath || '', { artist: t.artist, title: t.title });
+      for (const c of pc.list.slice(0, 4)) {
+        const qs = (c.artist + ' ' + c.title).trim();
+        if (qs && !queries.some(q => q.qs === qs)) queries.push({ qs, a: c.artist, t: c.title });
       }
     } catch (e) {}
+    return queries;
+  }
+  async function appleAudit(t) {
+    const queries = auditQueries(t);
     for (const qq of queries) {
       try {
         const r = await appleAuditQuery(qq, t);
@@ -1105,7 +1250,7 @@ const Importer = (() => {
     }
     return { proposals: [], verified: false };
   }
-  async function appleAuditQuery(qq, t) {
+  async function appleAuditQueryUngated(qq, t) {
     const d = await fetchJSON('https://itunes.apple.com/search?term=' + encodeURIComponent(qq.qs) + '&media=music&entity=song&limit=8', 12000);
     if (!d || !d.resultCount) return null;
     let best = null, bestScore = 0;
@@ -1133,8 +1278,10 @@ const Importer = (() => {
     if (best.collectionName && best.collectionName !== t.album && norm(best.collectionName) !== norm(t.album || '') && strSim(best.trackName, qq.t) >= 0.9) {
       // Title-only matches can't tell which artist's song this is, so an
       // album change from one always goes to review, never auto-applies.
+      // (Explicit flag now — v7.8's adaptive thresholds could otherwise
+      // auto-apply it. This is a safety rule, not a threshold.)
       const albumConf = qq.a ? Math.min(conf - 0.05, 0.88) : Math.min(conf - 0.05, 0.87);
-      out.push({ field: 'album', from: t.album || 'Unknown Album', to: best.collectionName, confidence: albumConf, source: 'Apple Music' });
+      out.push({ field: 'album', from: t.album || 'Unknown Album', to: best.collectionName, confidence: albumConf, source: 'Apple Music', ...(qq.a ? {} : { titleOnlyAlbum: true }) });
     }
     return { proposals: out, verified: bestScore >= (qq.a ? 0.85 : 0.92) };
   }
@@ -1144,16 +1291,7 @@ const Importer = (() => {
   // carries artwork (cover_xl) — consulted when Apple Music doesn't
   // recognize the song. Same scoring and gates as the Apple pass.
   async function deezerAudit(t) {
-    const queries = [];
-    const tagQ = ((t.artist && t.artist !== 'Unknown Artist') ? t.artist + ' ' : '') + (t.title || '');
-    if (tagQ.trim()) queries.push({ qs: tagQ.trim(), a: t.artist || '', t: t.title || '' });
-    try {
-      const fb = splitArtistTitle(t.fileName || '');
-      if (fb.artist && fb.artist !== 'Unknown Artist' && fb.title && fb.title !== 'Unknown Title') {
-        const fbQ = fb.artist + ' ' + fb.title;
-        if (fbQ.trim() !== tagQ.trim()) queries.push({ qs: fbQ.trim(), a: fb.artist, t: fb.title });
-      }
-    } catch (e) {}
+    const queries = auditQueries(t);
     for (const qq of queries) {
       try {
         const r = await deezerAuditQuery(qq, t);
@@ -1162,7 +1300,7 @@ const Importer = (() => {
     }
     return { proposals: [], verified: false };
   }
-  async function deezerAuditQuery(qq, t) {
+  async function deezerAuditQueryUngated(qq, t) {
     const d = await fetchJSON('https://api.deezer.com/search?q=' + encodeURIComponent(qq.qs) + '&limit=8', 12000);
     if (!d || !d.total || !d.data || !d.data.length) return null;
     let best = null, bestScore = 0;
@@ -1185,8 +1323,10 @@ const Importer = (() => {
       out.push({ field: 'artist', from: t.artist, to: bArtist, confidence: Math.min(conf, 0.9), source: 'Deezer' });
     }
     if (bAlbum && bAlbum !== t.album && norm(bAlbum) !== norm(t.album || '') && strSim(bTitle, qq.t) >= 0.9) {
+      // Same title-only album safety rule as the Apple pass (explicit flag —
+      // v7.8's adaptive thresholds could otherwise auto-apply it).
       const albumConf = qq.a ? Math.min(conf - 0.05, 0.88) : Math.min(conf - 0.05, 0.87);
-      out.push({ field: 'album', from: t.album || 'Unknown Album', to: bAlbum, confidence: albumConf, source: 'Deezer' });
+      out.push({ field: 'album', from: t.album || 'Unknown Album', to: bAlbum, confidence: albumConf, source: 'Deezer', ...(qq.a ? {} : { titleOnlyAlbum: true }) });
     }
     return { proposals: out, verified: bestScore >= (qq.a ? 0.85 : 0.92) };
   }
@@ -1325,8 +1465,10 @@ const Importer = (() => {
      1. Scored corrections (roster → Apple → MusicBrainz, filename fallback).
      2. Fill for anything still missing (Apple, fill-only).
      3. His discography as the last resort for his own tracks.
-     Confident corrections (≥0.88) auto-apply; uncertain ones (0.55–0.88)
-     return queued for the review screen. Never touches correct tags. */
+     Confident corrections auto-apply (v7.8: per-source adaptive threshold,
+     default 0.88); uncertain ones (0.55–threshold) return queued for the
+     review screen. Title-only album changes never auto-apply (safety rule).
+     Never touches correct tags. */
   const FIX_LABEL = { title: 'Title', artist: 'Artist', album: 'Album', albumArtist: 'Album artist', genre: 'Genre' };
   async function fixTrack(t, roster) {
     const notes = [];
@@ -1361,8 +1503,17 @@ const Importer = (() => {
     try {
       const ar = await auditTrack(t, roster);
       verified = ar.verified;
+      // v7.8: per-source adaptive auto-apply thresholds, cached for the run.
+      const thrCache = new Map();
+      const thrFor = async (source) => {
+        if (!thrCache.has(source)) thrCache.set(source, await autoThresholdFor(source));
+        return thrCache.get(source);
+      };
       for (const p of ar.proposals) {
-        if (p.confidence >= 0.88) {
+        const thr = await thrFor(p.source);
+        // Title-only album changes never auto-apply: a safety rule, not a
+        // threshold — the album-first pass is what disambiguates those.
+        if (p.confidence >= thr && !(p.field === 'album' && p.titleOnlyAlbum)) {
           try {
             await applyAuditProposal(t, p);
             fixed++;
@@ -1401,25 +1552,34 @@ const Importer = (() => {
     if (fixed > 0) { try { await learnFix(before, t); } catch (e) {} }
     return { fixed, queued, verified, note, status: fixed ? 'fixed' : queued.length ? 'review' : verified ? 'ok' : 'nomatch' };
   }
-  // Full-library audit. Confident corrections auto-apply; the rest return
-  // for the review screen. Re-verifies previously tagged tracks too.
+  // Full-library audit. Confident corrections auto-apply (v7.8 adaptive
+  // per-source thresholds); the rest return for the review screen.
+  // Re-verifies previously tagged tracks too.
   async function auditLibrary(roster, onProgress) {
     const tracks = await DB.allTracks();
     const review = [];
     let fixed = 0, scanned = 0, autoCount = 0;
+    const thrCache = new Map();
+    const thrFor = async (source) => {
+      if (!thrCache.has(source)) thrCache.set(source, await autoThresholdFor(source));
+      return thrCache.get(source);
+    };
     for (const t of tracks) {
       scanned++;
       if (onProgress) { try { onProgress(scanned, tracks.length, t); } catch (e) {} }
       let ar = { proposals: [], verified: false };
       try { ar = await auditTrack(t, roster); } catch (e) { continue; }
       for (const p of ar.proposals) {
-        if (p.confidence >= 0.88) {
+        const thr = await thrFor(p.source);
+        if (p.confidence >= thr && !(p.field === 'album' && p.titleOnlyAlbum)) {
           try { await applyAuditProposal(t, p); fixed++; autoCount++; } catch (e) {}
         } else if (p.confidence >= 0.55) {
           review.push({ trackId: t.id, title: t.title, artist: t.artist, proposal: p });
         }
       }
     }
+    // v7.8 review triage: highest confidence first.
+    review.sort((a, b) => ((b.proposal || {}).confidence || 0) - ((a.proposal || {}).confidence || 0));
     return { scanned, fixed, auto: autoCount, review };
   }
   // Remember single releases on the track record. The bundled discography is
@@ -1603,6 +1763,7 @@ const Importer = (() => {
     if (!ordered.length) return { fixed: 0, total: tracks.length, matched: 0, found: false, notFound: true, via: { apple: 0, musicbrainz: 0, spotify: 0 } };
     const usedBy = new Map();
     let fixed = 0, matched = 0;
+    const matchedIds = []; // v7.8: lets the album-first pass tell matched-but-correct from unmatched
     const via = { apple: 0, musicbrainz: 0, spotify: 0 };
     for (const t of tracks) {
       let best = null, bestListing = null;
@@ -1614,6 +1775,7 @@ const Importer = (() => {
       }
       if (!best) continue;
       matched++;
+      matchedIds.push(t.id);
       const tr = { ...t };
       const changed = applyListing(tr, best, bestListing.col, bestListing.art);
       try { await persistFix(t.id, tr); Object.assign(t, tr); if (changed) { fixed++; via.apple++; } } catch (e) {}
@@ -1621,7 +1783,88 @@ const Importer = (() => {
     await recordSingles(tracks);
     const albumLabel = primary ? primary.col.collectionName
       : (ordered[0] && ordered[0].col ? ordered[0].col.collectionName : '');
-    return { fixed, total: tracks.length, matched, found: true, album: albumLabel, via };
+    return { fixed, total: tracks.length, matched, matchedIds, found: true, album: albumLabel, via };
+  }
+  // v7.8 album-first pass: cluster named-album tracks and resolve each
+  // cluster with one album-listing lookup (the existing fixAlbum machinery),
+  // instead of auditing every song individually. One listing lookup
+  // identifies the whole album, which also kills most "title-only match
+  // can't tell which artist's song this is" review items — inside a listing
+  // there is no ambiguity. Memory-known tracks skip the network entirely.
+  // Returns whatever the album pass didn't resolve for the per-song path.
+  // onTrack(t, status, note) paints rows as they resolve: 'scanning' is
+  // transient; every track gets exactly one terminal status.
+  const FP_FIELDS = ['title', 'artist', 'album', 'albumArtist', 'genre', 'year', 'trackNo', 'discNo'];
+  const fpOf = t => FP_FIELDS.map(f => t[f]).join('|') + '|' + (!!t.art) + '|' + (t.artSource || '');
+  async function fixAlbumClusters(tracks, knownAlbums, knownArtists, onTrack) {
+    const list = tracks || [];
+    const clusters = new Map();
+    const leftover0 = [];
+    for (const t of list) {
+      const alb = t.album;
+      if (!alb || alb === 'Unknown Album') { leftover0.push(t); continue; }
+      const aa = t.albumArtist && t.albumArtist !== 'Unknown Artist' ? t.albumArtist
+        : (t.artist && t.artist !== 'Unknown Artist' ? t.artist : '');
+      const k = alb + '|||' + aa;
+      if (!clusters.has(k)) clusters.set(k, []);
+      clusters.get(k).push(t);
+    }
+    const resolved = new Set();
+    const paint = (t, status, note) => { try { if (onTrack) onTrack(t, status, note); } catch (e) {} };
+    for (const members of clusters.values()) {
+      const rest = [];
+      for (const t of members) {
+        paint(t, 'scanning');
+        let recalled = false;
+        try {
+          const rec = await recallFix(t);
+          if (rec && await applyMemFix(t, rec)) recalled = true;
+        } catch (e) {}
+        if (recalled) { resolved.add(t.id); paint(t, 'fixed', 'remembered fix'); }
+        else rest.push(t);
+      }
+      if (!rest.length) continue;
+      const before = new Map(rest.map(t => [t.id, fpOf(t)]));
+      let res = null;
+      try { res = await fixAlbum(rest, knownAlbums || [], knownArtists || []); } catch (e) {}
+      const matched = res && res.matchedIds ? new Set(res.matchedIds) : new Set();
+      for (const t of rest) {
+        if (fpOf(t) !== before.get(t.id)) {
+          resolved.add(t.id);
+          paint(t, 'fixed', 'album: ' + (t.album || ''));
+        } else if (matched.has(t.id)) {
+          resolved.add(t.id);
+          paint(t, 'ok', 'album tags already correct');
+        }
+        // Unmatched tracks stay unresolved → fall through to per-song fix.
+      }
+    }
+    return { leftover: list.filter(t => !resolved.has(t.id)), resolved: resolved.size };
+  }
+  // v7.8 parallel fix pool for the per-song path: N concurrent fixTrack
+  // calls (default 5, hard cap 6). MusicBrainz keeps its own 1/sec pacing;
+  // Apple/Deezer share the 3-slot catalog gate. DB writes stay per-track.
+  // onStart/onDone paint rows — each track fires exactly one terminal onDone.
+  async function fixTrackPool(tracks, roster, opts) {
+    opts = opts || {};
+    const list = tracks || [];
+    const n = Math.max(1, Math.min(opts.concurrency || 5, 6));
+    let next = 0;
+    const worker = async () => {
+      for (;;) {
+        const i = next++;
+        if (i >= list.length) return;
+        const t = list[i];
+        if (opts.onStart) { try { opts.onStart(t); } catch (e) {} }
+        let res = null;
+        try { res = await fixTrack(t, roster); } catch (e) { res = null; }
+        if (opts.onDone) { try { opts.onDone(t, res); } catch (e) {} }
+      }
+    };
+    const ws = [];
+    for (let k = 0; k < Math.min(n, list.length); k++) ws.push(worker());
+    await Promise.all(ws);
+    return { total: list.length };
   }
   // Fix tags on tracks already in the library (runs quietly on launch).
   async function healLibrary() {
@@ -1672,5 +1915,12 @@ const Importer = (() => {
     } catch (e) { console.warn('healLibrary failed', e); }
     return { fixed, changed: fixed + touched };
   }
-  return { bind, open: () => { if (!busy) picker().click(); }, openZip: () => { if (!busy) zippicker().click(); }, fmtDur, healLibrary, fixAlbum, recordSingles, singleOrder, singleArt, mySingleArt, parseOne, auditLibrary, fixTrack, learnFix, memCount, logCalib, artChainExtra };
+  // v7.8: the parallel fix pool shares one 3-in-flight gate across every
+  // Apple/Deezer catalog + artwork query. MusicBrainz keeps its own 1/sec
+  // pacing inside mbSearchRecording.
+  const autoTagDeezerArt = (tr, q) => catalogGate(() => autoTagDeezerArtUngated(tr, q));
+  const autoTagQuery = (tr, q) => catalogGate(() => autoTagQueryUngated(tr, q));
+  const appleAuditQuery = (qq, t) => catalogGate(() => appleAuditQueryUngated(qq, t));
+  const deezerAuditQuery = (qq, t) => catalogGate(() => deezerAuditQueryUngated(qq, t));
+  return { bind, open: () => { if (!busy) picker().click(); }, openZip: () => { if (!busy) zippicker().click(); }, fmtDur, healLibrary, fixAlbum, recordSingles, singleOrder, singleArt, mySingleArt, parseOne, auditLibrary, fixTrack, learnFix, memCount, logCalib, artChainExtra, fixAlbumClusters, fixTrackPool, fileNameCandidates, autoThresholdFor };
 })();

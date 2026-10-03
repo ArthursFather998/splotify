@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v7.7';
+  const APP_VERSION = 'v7.8';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -1695,7 +1695,8 @@ const App = (() => {
   /* v7.0 utag review: uncertain corrections, before/after, approve or skip. */
   function vTagReview() {
     S.viewCtx = null;
-    const items = S.tagReview || [];
+    // v7.8 review triage: highest confidence first.
+    const items = [...(S.tagReview || [])].sort((a, b) => ((b.proposal || {}).confidence || 0) - ((a.proposal || {}).confidence || 0));
     return `<div class="pagehead"><button class="iconbtn" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><h1>Review corrections</h1><span style="width:44px"></span></div>
     <div style="padding:8px 16px 48px">
       <p class="sub" style="margin:0 0 12px">The audit wasn't sure about these. Approve the right ones, skip the rest.</p>
@@ -2239,10 +2240,12 @@ const App = (() => {
     } catch (e) { console.warn('fix-album render failed', e); }
     return res;
   }
-  // utag fixer: one pass over every song, live per-row painting. Each song
-  // goes through the unified fixTrack engine (scored corrections via the
-  // artist roster, Apple Music, and MusicBrainz with a file-name fallback,
-  // then a fill pass for anything still missing, then his discography).
+  // utag fixer: album-first pass, then a parallel per-song pool, with live
+  // per-row painting. The album pass clusters named-album tracks and
+  // resolves each cluster with one listing lookup; whatever it leaves over
+  // (unknown albums, unmatched tracks) goes through the unified fixTrack
+  // engine 5 at a time. Confident fixes apply on their own; the rest come
+  // to you for review, highest confidence first.
   async function fixAllSongs() {
     if (S.fixing || fixUI.running) return;
     const list = [...S.tracks].sort((a, b) => String(a.title || '').localeCompare(String(b.title || '')));
@@ -2252,42 +2255,70 @@ const App = (() => {
     Object.assign(fixUI, { running: true, album: '', albumIdx: 0, albumCount: list.length, scanned: 0, matched: 0, fixed: 0, notFound: 0, log: [], via: { apple: 0, deezer: 0, musicbrainz: 0, spotify: 0, memory: 0 } });
     buildFixList(list);
     paintFixUI();
-    for (let i = 0; i < list.length; i++) {
-      const t = list[i];
-      fixUI.album = t.title || 'Unknown Title'; fixUI.albumIdx = i + 1;
-      paintFixRow(t.id, 'scanning');
-      paintFixUI();
-      let res = null;
-      try {
-        res = await Importer.fixTrack(t, roster);
-      } catch (e) { console.warn('utag fixer failed on', t.id, e); }
-      fixUI.scanned++;
-      if (res) {
-        if (res.fixed) { fixUI.fixed += res.fixed; fixUI.matched++; }
-        (res.queued || []).forEach(q => {
-          if (!S.tagReview.some(x => x.trackId === q.trackId && x.proposal.field === q.proposal.field && x.proposal.to === q.proposal.to)) {
-            S.tagReview.push(q);
-          }
-        });
-        paintFixRow(t.id, res.status, res.note);
-        if (res.fixed && res.note) {
-          fixUI.log.unshift({ id: t.id, title: t.title, artist: t.artist, changes: res.note });
-          if (fixUI.log.length > 60) fixUI.log.pop();
-          const tv = t.tagsVia || '';
-          if (tv.includes('memory')) fixUI.via.memory++;
-          else if (tv.includes('Deezer')) fixUI.via.deezer++;
-          else if (tv.includes('Apple')) fixUI.via.apple++;
-          else if (tv.includes('MusicBrainz')) fixUI.via.musicbrainz++;
-          else if (tv.includes('Spotify')) fixUI.via.spotify++;
+    const queueReview = (queued) => {
+      (queued || []).forEach(q => {
+        if (!S.tagReview.some(x => x.trackId === q.trackId && x.proposal.field === q.proposal.field && x.proposal.to === q.proposal.to)) {
+          S.tagReview.push(q);
         }
-      } else {
-        paintFixRow(t.id, 'nomatch');
-      }
-      paintFixUI();
-      // Yield to the UI thread so rows paint as the run moves.
-      await new Promise(r => setTimeout(r, 0));
-    }
+      });
+    };
+    const countVia = (t) => {
+      const tv = t.tagsVia || '';
+      if (tv.includes('memory')) fixUI.via.memory++;
+      else if (tv.includes('Deezer')) fixUI.via.deezer++;
+      else if (tv.includes('Apple')) fixUI.via.apple++;
+      else if (tv.includes('MusicBrainz')) fixUI.via.musicbrainz++;
+      else if (tv.includes('Spotify')) fixUI.via.spotify++;
+    };
+    const logFixed = (t, note) => {
+      fixUI.log.unshift({ id: t.id, title: t.title, artist: t.artist, changes: note });
+      if (fixUI.log.length > 60) fixUI.log.pop();
+      countVia(t);
+    };
+    const knownAlbums = albums()
+      .filter(x => x.name && x.name !== 'Unknown Album')
+      .map(x => ({ name: x.name, artist: x.artist }));
+    const rosterNames = roster.map(r => r.name).filter(x => x && x !== 'Unknown Artist');
+    // Phase 1 — album-first: named-album clusters resolve from one listing
+    // lookup each; memory-known tracks skip the network entirely.
+    fixUI.album = 'albums';
+    paintFixUI();
+    let leftover = list;
+    try {
+      const cr = await Importer.fixAlbumClusters(list, knownAlbums, rosterNames, (t, status, note) => {
+        if (status === 'scanning') { paintFixRow(t.id, 'scanning'); return; }
+        fixUI.scanned++; fixUI.albumIdx++;
+        if (status === 'fixed') { fixUI.fixed++; fixUI.matched++; logFixed(t, note); }
+        else if (status === 'ok') { fixUI.matched++; }
+        paintFixRow(t.id, status, note);
+        paintFixUI();
+      });
+      leftover = cr.leftover;
+    } catch (e) { console.warn('album-first pass failed', e); }
+    // Phase 2 — parallel fix pool for everything the album pass left over.
+    await Importer.fixTrackPool(leftover, roster, {
+      concurrency: 5,
+      onStart: (t) => {
+        fixUI.album = t.title || 'Unknown Title';
+        paintFixRow(t.id, 'scanning');
+        paintFixUI();
+      },
+      onDone: (t, res) => {
+        fixUI.scanned++; fixUI.albumIdx++;
+        if (res) {
+          if (res.fixed) { fixUI.fixed += res.fixed; fixUI.matched++; }
+          queueReview(res.queued);
+          paintFixRow(t.id, res.status, res.note);
+          if (res.fixed && res.note) logFixed(t, res.note);
+        } else {
+          paintFixRow(t.id, 'nomatch');
+        }
+        paintFixUI();
+      },
+    });
     fixUI.running = false; fixUI.album = '';
+    // v7.8 review triage: highest confidence first, in the queue and on screen.
+    S.tagReview.sort((a, b) => ((b.proposal || {}).confidence || 0) - ((a.proposal || {}).confidence || 0));
     try {
       localStorage.setItem('splotify-tagfix-last', JSON.stringify({
         when: Date.now(), scanned: fixUI.scanned, matched: fixUI.matched,
