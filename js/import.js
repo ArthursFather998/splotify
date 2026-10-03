@@ -92,13 +92,16 @@ const Importer = (() => {
     if (!tr.trackNo) tr.trackNo = best.trackNumber || tr.trackNo;
     tr.tagsVia = tr.tagsVia || 'Apple Music';
     const au = (best.artworkUrl100 || '').replace('100x100bb', '600x600bb');
-    // Never overwrite hand-set artwork.
+    // Never overwrite hand-set artwork. Blob first (works offline); the URL
+    // string as fallback so art still displays if the download flakes.
     if (au && !tr.art && !tr.artManual) {
+      let blob = null;
       try {
-        const c = new AbortController(); const t = setTimeout(() => c.abort(), 12000);
-        const rr = await fetch(au, { signal: c.signal }); clearTimeout(t);
-        if (rr.ok) { const b = await rr.blob(); if (b && b.size > 1000) tr.art = b; }
+        const c = new AbortController(); const tm = setTimeout(() => c.abort(), 6000);
+        const rr = await fetch(au, { signal: c.signal }); clearTimeout(tm);
+        if (rr.ok) { const b = await rr.blob(); if (b && b.size > 1000) blob = b; }
       } catch (e) {}
+      tr.art = blob || au;
     }
     tr.tagged = true;
     return true;
@@ -458,10 +461,12 @@ const Importer = (() => {
       const au = (col.artworkUrl100 || '').replace('100x100bb', '600x600bb');
       if (au) {
         try {
-          const c = new AbortController(); const tm = setTimeout(() => c.abort(), 12000);
+          const c = new AbortController(); const tm = setTimeout(() => c.abort(), 6000);
           const rr = await fetch(au, { signal: c.signal }); clearTimeout(tm);
           if (rr.ok) { const b = await rr.blob(); if (b && b.size > 1000) art = b; }
         } catch (e) {}
+        // Blob for offline use; the URL still displays if the download fails.
+        if (!art) art = au;
       }
       return { col, songs, art };
     } catch (e) { return null; }
@@ -629,6 +634,9 @@ const Importer = (() => {
     } catch (e) {}
     return false;
   }
+  // His album cover ("I Left The Roses Out Too Long"): every one of his
+  // album tracks wears it, like Spotify.
+  const MY_ALBUM_ART = 'js/disco-art/roses-album.jpg';
   // His songs, fully repaired from the bundled discography (ground truth —
   // the store catalogs never carry his unreleased music, and must not get
   // a chance to misidentify them). Repairs tags AND artwork, even when a
@@ -663,6 +671,10 @@ const Importer = (() => {
         const want = singleArt(m.s.name);
         if (want && tr.art !== want) { tr.art = want; notes.push('artwork restored'); }
       }
+    } else if (!tr.art && !tr.artManual) {
+      // His album track (not a single): wears the album cover.
+      tr.art = MY_ALBUM_ART;
+      notes.push('artwork restored');
     }
     tr.tagged = true;
     tr.tagsVia = 'Spotify';

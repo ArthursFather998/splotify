@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v7.3';
+  const APP_VERSION = 'v7.4';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -2056,7 +2056,8 @@ const App = (() => {
     if (rcta) {
       const nq = (S.tagReview || []).length;
       rcta.innerHTML = (!fixUI.running && nq)
-        ? '<button class="bigbtn pink" data-act="tag-review-open" style="width:100%">Review ' + nq + ' suggested correction' + (nq === 1 ? '' : 's') + '</button>'
+        ? '<button class="bigbtn pink" data-act="tag-review-open" style="width:100%;margin-bottom:8px">Review ' + nq + ' suggested correction' + (nq === 1 ? '' : 's') + '</button>' +
+          '<button class="bigbtn" data-act="tag-review-approve-all" style="width:100%">Approve all ' + nq + ' without reviewing</button>'
         : '';
     }
   }
