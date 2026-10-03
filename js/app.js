@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v8.0';
+  const APP_VERSION = 'v8.1';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -2321,14 +2321,22 @@ const App = (() => {
   // engine 5 at a time. Confident fixes apply on their own; the rest come
   // to you for review, highest confidence first.
   async function fixAllSongs() {
-    if (S.fixing || fixUI.running) return;
+    if (S.fixing) return;
+    // v8.1 stale-run guard: a previous run that died without resetting must
+    // never wedge the button — restart it if nothing painted for 2 minutes.
+    if (fixUI.running) {
+      if (Date.now() - (fixUI.lastProgressAt || 0) < 120000) return;
+      try { console.warn('fixAllSongs: resetting stale run'); } catch (e) {}
+    }
     const list = [...S.tracks].sort((a, b) => String(a.title || '').localeCompare(String(b.title || '')));
     if (!list.length) { toast('No songs to fix'); return; }
     const roster = [...S.artists.values()];
     S.tagReview = S.tagReview || [];
-    Object.assign(fixUI, { running: true, album: '', albumIdx: 0, albumCount: list.length, scanned: 0, matched: 0, fixed: 0, notFound: 0, log: [], via: { apple: 0, deezer: 0, musicbrainz: 0, spotify: 0, memory: 0, acoustid: 0 } });
+    Object.assign(fixUI, { running: true, album: '', albumIdx: 0, albumCount: list.length, scanned: 0, matched: 0, fixed: 0, notFound: 0, log: [], lastProgressAt: Date.now(), via: { apple: 0, deezer: 0, musicbrainz: 0, spotify: 0, memory: 0, acoustid: 0 } });
+    const markProgress = () => { fixUI.lastProgressAt = Date.now(); };
     buildFixList(list);
     paintFixUI();
+    try {
     const queueReview = (queued) => {
       (queued || []).forEach(q => {
         if (!S.tagReview.some(x => x.trackId === q.trackId && x.proposal.field === q.proposal.field && x.proposal.to === q.proposal.to)) {
@@ -2356,12 +2364,17 @@ const App = (() => {
     const rosterNames = roster.map(r => r.name).filter(x => x && x !== 'Unknown Artist');
     // Phase 1 — album-first: named-album clusters resolve from one listing
     // lookup each; memory-known tracks skip the network entirely.
+    // v8.1: the status names the live album so a slow run is diagnosable.
     fixUI.album = 'albums';
     paintFixUI();
     let leftover = list;
     try {
       const cr = await Importer.fixAlbumClusters(list, knownAlbums, rosterNames, (t, status, note) => {
-        if (status === 'scanning') { paintFixRow(t.id, 'scanning'); return; }
+        markProgress();
+        if (status === 'scanning') {
+          fixUI.album = (t.album && t.album !== 'Unknown Album' ? t.album : 'albums');
+          paintFixRow(t.id, 'scanning'); paintFixUI(); return;
+        }
         fixUI.scanned++; fixUI.albumIdx++;
         if (status === 'fixed') { fixUI.fixed++; fixUI.matched++; logFixed(t, note); }
         else if (status === 'ok') { fixUI.matched++; }
@@ -2371,16 +2384,20 @@ const App = (() => {
       leftover = cr.leftover;
     } catch (e) { console.warn('album-first pass failed', e); }
     // Phase 2 — parallel fix pool for everything the album pass left over.
+    // v8.1: inside the run try/finally so a throw can never leave the
+    // button wedged on "Fixing…".
     await Importer.fixTrackPool(leftover, roster, {
       concurrency: 5,
       onStart: (t) => {
+        markProgress();
         fixUI.album = t.title || 'Unknown Title';
         paintFixRow(t.id, 'scanning');
         paintFixUI();
       },
       // v7.9: the fixer only fingerprints tracks nothing else recognized.
-      onFingerprint: (t) => { paintFixRow(t.id, 'fingerprinting'); },
+      onFingerprint: (t) => { markProgress(); paintFixRow(t.id, 'fingerprinting'); },
       onDone: (t, res) => {
+        markProgress();
         fixUI.scanned++; fixUI.albumIdx++;
         if (res) {
           if (res.fixed) { fixUI.fixed += res.fixed; fixUI.matched++; }
@@ -2393,7 +2410,6 @@ const App = (() => {
         paintFixUI();
       },
     });
-    fixUI.running = false; fixUI.album = '';
     // v7.8 review triage: highest confidence first, in the queue and on screen.
     S.tagReview.sort((a, b) => ((b.proposal || {}).confidence || 0) - ((a.proposal || {}).confidence || 0));
     try {
@@ -2410,6 +2426,11 @@ const App = (() => {
     toast(fixUI.scanned
       ? `utag fixer: fixed ${fixUI.fixed} of ${fixUI.scanned} tracks` + (nq ? `, ${nq} to review` : '')
       : 'utag fixer: tags already look good');
+    } finally {
+      // v8.1: the run can never wedge the button on "Fixing…" again.
+      fixUI.running = false; fixUI.album = '';
+      try { paintFixUI(); } catch (e) {}
+    }
   }
   // All-songs list for the fixer menu: every song with artwork, filterable,
   // each row painted live as the fixer works through it.

@@ -709,27 +709,36 @@ const Importer = (() => {
   const listingCache = new Map();
   // Fetch a full track listing straight from a collection id (lookup is not
   // subject to the search index's quirks).
-  async function listingFromCollectionId(colId) {
+  async function listingFromCollectionId(colId, skipArt) {
     try {
       const ld = await fetchJSON('https://itunes.apple.com/lookup?id=' + colId + '&entity=song&limit=200', 12000);
       if (!ld || !ld.results) return null;
       const col = ld.results.find(r => r.wrapperType === 'collection') || {};
       const songs = ld.results.filter(r => r.wrapperType === 'track');
       if (!songs.length) return null;
+      // v7.7: 1200px (was 600). v8.1: art fetch is lazy for candidate
+      // listings — most are only ever matched against, never displayed.
+      const artUrl = (col.artworkUrl100 || '').replace('100x100bb', '1200x1200bb') || null;
       let art = null;
-      // v7.7: 1200px (was 600).
-      const au = (col.artworkUrl100 || '').replace('100x100bb', '1200x1200bb');
-      if (au) {
-        try {
-          const c = new AbortController(); const tm = setTimeout(() => c.abort(), 6000);
-          const rr = await fetch(au, { signal: c.signal }); clearTimeout(tm);
-          if (rr.ok) { const b = await rr.blob(); if (b && b.size > 1000) art = b; }
-        } catch (e) {}
-        // Blob for offline use; the URL still displays if the download fails.
-        if (!art) art = au;
-      }
-      return { col, songs, art };
+      if (artUrl && !skipArt) art = await fetchArtBlob(artUrl);
+      return { col, songs, art, artUrl, artFetched: !skipArt };
     } catch (e) { return null; }
+  }
+  // Blob-first artwork fetch with URL fallback (v7.4 pattern), shared.
+  async function fetchArtBlob(au) {
+    try {
+      const c = new AbortController(); const tm = setTimeout(() => c.abort(), 6000);
+      const rr = await fetch(au, { signal: c.signal }); clearTimeout(tm);
+      if (rr.ok) { const b = await rr.blob(); if (b && b.size > 1000) return b; }
+    } catch (e) {}
+    return au || null; // URL string still displays if the download flaked
+  }
+  // Fetch a listing's artwork on demand (for alt listings that skipped it).
+  async function ensureListingArt(l) {
+    if (!l || l.artFetched) return l ? l.art : null;
+    l.artFetched = true;
+    if (l.artUrl && !l.art) l.art = await fetchArtBlob(l.artUrl);
+    return l.art;
   }
   // Resolve an album to its Apple Music track listing (cached per run).
   // Find the album via a song search (entity=album search is unreliable); the
@@ -760,6 +769,8 @@ const Importer = (() => {
   // text search: named albums resolve by id lookup, and known artists expand
   // to their full catalogs (every collection id found under the artist name),
   // which surfaces even tracks the search index suppresses.
+  // v8.1: artist -> [listings], shared across album clusters in a run.
+  const artistListingsCache = new Map();
   async function candidateListings(seedAlbums, seedArtists) {
     const out = [];
     const seenCol = new Set();
@@ -773,17 +784,26 @@ const Importer = (() => {
     }
     for (const ar of (seedArtists || [])) {
       if (!ar || ar === 'Unknown Artist') continue;
+      // v8.1: cross-cluster cache — the full-library pass used to re-fetch
+      // the same artist catalogs once per album cluster.
+      if (artistListingsCache.has(ar)) { artistListingsCache.get(ar).forEach(push); continue; }
+      const got = [];
       try {
         const d = await fetchJSON('https://itunes.apple.com/search?term=' + encodeURIComponent(ar) + '&entity=song&limit=200', 12000);
-        if (!d || !d.resultCount) continue;
-        const nar = norm(ar);
-        const mine = d.results.filter(r => {
-          const ra = norm(r.artistName);
-          return ra === nar || ra.indexOf(nar) !== -1 || nar.indexOf(ra) !== -1;
-        });
-        const ids = [...new Set(mine.map(r => r.collectionId).filter(Boolean))].slice(0, 6);
-        for (const id of ids) push(await listingFromCollectionId(id));
+        if (d && d.resultCount) {
+          const nar = norm(ar);
+          const mine = d.results.filter(r => {
+            const ra = norm(r.artistName);
+            return ra === nar || ra.indexOf(nar) !== -1 || nar.indexOf(ra) !== -1;
+          });
+          const ids = [...new Set(mine.map(r => r.collectionId).filter(Boolean))].slice(0, 6);
+          for (const id of ids) {
+            const l = await listingFromCollectionId(id, true); // art lazy
+            if (l && l.col && l.col.collectionId && !seenCol.has(l.col.collectionId)) { seenCol.add(l.col.collectionId); out.push(l); got.push(l); }
+          }
+        }
       } catch (e) {}
+      artistListingsCache.set(ar, got);
     }
     // Full albums before single releases: a track on both gets album tagging.
     out.sort((a, b) => b.songs.length - a.songs.length);
@@ -1897,31 +1917,52 @@ const Importer = (() => {
     tracks.forEach(t => { const a = trackArtist(t); if (a) artistSeeds.add(a); });
     const alts = await candidateListings([], [...artistSeeds]);
     const seenCol = new Set();
-    const ordered = [];
-    for (const l of [primary, ...alts]) {
-      const id = l && l.col && l.col.collectionId;
-      if (l && id && !seenCol.has(id)) { seenCol.add(id); ordered.push(l); }
-    }
-    ordered.sort((a, b) => b.songs.length - a.songs.length);
-    if (!ordered.length) return { fixed: 0, total: tracks.length, matched: 0, found: false, notFound: true, via: { apple: 0, musicbrainz: 0, spotify: 0 } };
-    const usedBy = new Map();
+    // v8.1 two-pass: every track tries the primary listing first; only the
+    // misses pay for the alt-catalog expansion (now cross-cluster cached).
+    // Primary always won per-track before too, so results are identical.
+    if (!primary && !alts.length) return { fixed: 0, total: tracks.length, matched: 0, found: false, notFound: true, via: { apple: 0, musicbrainz: 0, spotify: 0 } };
     let fixed = 0, matched = 0;
     const matchedIds = []; // v7.8: lets the album-first pass tell matched-but-correct from unmatched
     const via = { apple: 0, musicbrainz: 0, spotify: 0 };
-    for (const t of tracks) {
-      let best = null, bestListing = null;
-      for (const listing of ordered) {
-        let used = usedBy.get(listing);
-        if (!used) { used = new Set(); usedBy.set(listing, used); }
-        const m = matchTrackMulti(t, listing.songs, used);
-        if (m) { best = m; bestListing = listing; break; }
-      }
-      if (!best) continue;
+    const applyMatch = async (t, m, listing) => {
       matched++;
       matchedIds.push(t.id);
+      const art = await ensureListingArt(listing);
       const tr = { ...t };
-      const changed = applyListing(tr, best, bestListing.col, bestListing.art);
+      const changed = applyListing(tr, m, listing.col, art);
       try { await persistFix(t.id, tr); Object.assign(t, tr); if (changed) { fixed++; via.apple++; } } catch (e) {}
+    };
+    const usedPrimary = new Set();
+    const stillUnmatched = [];
+    if (primary && primary.col && primary.col.collectionId) {
+      for (const t of tracks) {
+        const m = matchTrackMulti(t, primary.songs, usedPrimary);
+        if (m) await applyMatch(t, m, primary);
+        else stillUnmatched.push(t);
+      }
+    } else {
+      stillUnmatched.push(...tracks);
+    }
+    if (stillUnmatched.length && alts.length) {
+      const ordered = [];
+      const seenCol = new Set(primary && primary.col ? [primary.col.collectionId] : []);
+      for (const l of alts) {
+        const id = l && l.col && l.col.collectionId;
+        if (l && id && !seenCol.has(id)) { seenCol.add(id); ordered.push(l); }
+      }
+      ordered.sort((a, b) => b.songs.length - a.songs.length);
+      const usedBy = new Map();
+      for (const t of stillUnmatched) {
+        let best = null, bestListing = null;
+        for (const listing of ordered) {
+          let used = usedBy.get(listing);
+          if (!used) { used = new Set(); usedBy.set(listing, used); }
+          const m = matchTrackMulti(t, listing.songs, used);
+          if (m) { best = m; bestListing = listing; break; }
+        }
+        if (!best) continue;
+        await applyMatch(t, best, bestListing);
+      }
     }
     await recordSingles(tracks);
     const albumLabel = primary ? primary.col.collectionName
@@ -1939,7 +1980,9 @@ const Importer = (() => {
   // transient; every track gets exactly one terminal status.
   const FP_FIELDS = ['title', 'artist', 'album', 'albumArtist', 'genre', 'year', 'trackNo', 'discNo'];
   const fpOf = t => FP_FIELDS.map(f => t[f]).join('|') + '|' + (!!t.art) + '|' + (t.artSource || '');
-  async function fixAlbumClusters(tracks, knownAlbums, knownArtists, onTrack) {
+  async function fixAlbumClusters(tracks, knownAlbums, knownArtists, onTrack, opts) {
+    opts = opts || {};
+    const clusterTimeoutMs = opts.clusterTimeoutMs || 120000;
     const list = tracks || [];
     const clusters = new Map();
     const leftover0 = [];
@@ -1969,7 +2012,10 @@ const Importer = (() => {
       if (!rest.length) continue;
       const before = new Map(rest.map(t => [t.id, fpOf(t)]));
       let res = null;
-      try { res = await fixAlbum(rest, knownAlbums || [], knownArtists || []); } catch (e) {}
+      // v8.1: a single slow cluster must never wedge the whole run — 120s
+      // cap, then its tracks fall through to the per-song pass.
+      try { res = await withTimeout(fixAlbum(rest, knownAlbums || [], knownArtists || []), clusterTimeoutMs, 'album cluster ' + (rest[0] && rest[0].album)); }
+      catch (e) { console.warn('album cluster timed out/failed', rest[0] && rest[0].album, e && e.message); }
       const matched = res && res.matchedIds ? new Set(res.matchedIds) : new Set();
       for (const t of rest) {
         if (fpOf(t) !== before.get(t.id)) {
