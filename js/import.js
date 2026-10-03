@@ -66,8 +66,45 @@ const Importer = (() => {
         if (!queries.some(x => x.a === q.a && x.t === q.t)) queries.push(q);
       }
     } catch (e) {}
+    let filled = false;
     for (const q of queries) {
-      try { if (await autoTagQuery(tr, q)) return true; } catch (e) {}
+      try { if (await autoTagQuery(tr, q)) { filled = true; break; } } catch (e) {}
+    }
+    // Artwork fallback chain: Apple first (inside autoTagQuery), then
+    // Deezer gets its turn when Apple had no art.
+    if (!tr.art && !tr.artManual) {
+      for (const q of queries) {
+        try { if (await autoTagDeezerArt(tr, q)) { filled = true; break; } } catch (e) {}
+      }
+    }
+    return filled;
+  }
+  // Deezer artwork fill (v7.6): when Apple had no art, Deezer's cover_xl
+  // gets its turn. Blob first (works offline); the URL string as fallback.
+  async function autoTagDeezerArt(tr, q) {
+    const qs = ((q.a ? q.a + ' ' : '') + q.t).trim();
+    if (!qs || tr.art || tr.artManual) return false;
+    const d = await fetchJSON('https://api.deezer.com/search?q=' + encodeURIComponent(qs) + '&limit=6', 12000);
+    if (!d || !d.total || !d.data) return false;
+    const na = norm(q.a);
+    for (const r of d.data) {
+      const ra = norm((r.artist && r.artist.name) || '');
+      const artistOK = !na || na === 'unknown artist' || ra === na || ra.indexOf(na) !== -1 || na.indexOf(ra) !== -1;
+      if (titleMatches(q.t, r.title || '', false) && artistOK) {
+        const au = (r.album && r.album.cover_xl) || '';
+        if (au) {
+          let blob = null;
+          try {
+            const c = new AbortController(); const tm = setTimeout(() => c.abort(), 6000);
+            const rr = await fetch(au, { signal: c.signal }); clearTimeout(tm);
+            if (rr.ok) { const b = await rr.blob(); if (b && b.size > 1000) blob = b; }
+          } catch (e) {}
+          tr.art = blob || au;
+          tr.tagsVia = (tr.tagsVia ? tr.tagsVia + '+' : '') + 'Deezer';
+          tr.tagged = true;
+          return true;
+        }
+      }
     }
     return false;
   }
@@ -1006,6 +1043,56 @@ const Importer = (() => {
   }
   // Back-compat: anything still calling appleProposal gets the proposals.
   async function appleProposal(t) { const r = await appleAudit(t); return r.proposals; }
+  // Deezer pass: second catalog in the fallback chain. Free, no key, and it
+  // carries artwork (cover_xl) — consulted when Apple Music doesn't
+  // recognize the song. Same scoring and gates as the Apple pass.
+  async function deezerAudit(t) {
+    const queries = [];
+    const tagQ = ((t.artist && t.artist !== 'Unknown Artist') ? t.artist + ' ' : '') + (t.title || '');
+    if (tagQ.trim()) queries.push({ qs: tagQ.trim(), a: t.artist || '', t: t.title || '' });
+    try {
+      const fb = splitArtistTitle(t.fileName || '');
+      if (fb.artist && fb.artist !== 'Unknown Artist' && fb.title && fb.title !== 'Unknown Title') {
+        const fbQ = fb.artist + ' ' + fb.title;
+        if (fbQ.trim() !== tagQ.trim()) queries.push({ qs: fbQ.trim(), a: fb.artist, t: fb.title });
+      }
+    } catch (e) {}
+    for (const qq of queries) {
+      try {
+        const r = await deezerAuditQuery(qq, t);
+        if (r && (r.proposals.length || r.verified)) return r;
+      } catch (e) {}
+    }
+    return { proposals: [], verified: false };
+  }
+  async function deezerAuditQuery(qq, t) {
+    const d = await fetchJSON('https://api.deezer.com/search?q=' + encodeURIComponent(qq.qs) + '&limit=8', 12000);
+    if (!d || !d.total || !d.data || !d.data.length) return null;
+    let best = null, bestScore = 0;
+    for (const r of d.data) {
+      const ts = strSim(r.title || '', qq.t);
+      const as = strSim((r.artist && r.artist.name) || '', qq.a);
+      const score = qq.a ? ts * 0.6 + as * 0.4 : ts;
+      if (score > bestScore) { bestScore = score; best = r; }
+    }
+    const threshold = qq.a ? 0.75 : 0.85;
+    if (!best || bestScore < threshold) return null;
+    const out = [];
+    const conf = 0.55 + bestScore * 0.4; // 0.85..0.95 at high similarity
+    const bTitle = best.title || '', bArtist = (best.artist && best.artist.name) || '';
+    const bAlbum = (best.album && best.album.title) || '';
+    if (strSim(bTitle, qq.t) >= 0.9 && bTitle !== t.title && norm(bTitle) !== norm(t.title)) {
+      out.push({ field: 'title', from: t.title, to: bTitle, confidence: Math.min(conf, 0.92), source: 'Deezer' });
+    }
+    if (qq.a && strSim(bArtist, qq.a) >= 0.85 && bArtist !== t.artist && norm(bArtist) !== norm(t.artist)) {
+      out.push({ field: 'artist', from: t.artist, to: bArtist, confidence: Math.min(conf, 0.9), source: 'Deezer' });
+    }
+    if (bAlbum && bAlbum !== t.album && norm(bAlbum) !== norm(t.album || '') && strSim(bTitle, qq.t) >= 0.9) {
+      const albumConf = qq.a ? Math.min(conf - 0.05, 0.88) : Math.min(conf - 0.05, 0.87);
+      out.push({ field: 'album', from: t.album || 'Unknown Album', to: bAlbum, confidence: albumConf, source: 'Deezer' });
+    }
+    return { proposals: out, verified: bestScore >= (qq.a ? 0.85 : 0.92) };
+  }
   // MusicBrainz pass (rate-limited): same idea, open database.
   async function mbProposal(t) {
     let recs = null;
@@ -1029,6 +1116,65 @@ const Importer = (() => {
     }
     return out;
   }
+  // Tag memory (v7.6): remembers corrections the fixer got right — auto-
+  // applied, review-approved, or hand-edited — so the next run just knows.
+  // Two keys per fix: the file itself (survives re-tagging) and the
+  // broken-tags fingerprint (catches a different rip of the same song with
+  // the same mangled tags). Lives in the tagMemory store (DB v3).
+  function memKeyFile(t) { return 'f:' + (t.fileName || '') + '::' + (t.fileSize || 0); }
+  function memKeyTags(title, artist, album) {
+    return 't:' + norm(title || '') + '|' + norm(artist || '') + '|' + norm(album || '');
+  }
+  function memFixOf(t) {
+    return {
+      title: t.title, artist: t.artist, album: t.album, albumArtist: t.albumArtist,
+      genre: t.genre, year: t.year, trackNo: t.trackNo, discNo: t.discNo, art: t.art,
+    };
+  }
+  async function learnFix(before, after) {
+    try {
+      const fix = memFixOf(after), b = memFixOf(before);
+      const changed = ['title', 'artist', 'album', 'albumArtist', 'genre', 'year', 'trackNo', 'discNo', 'art']
+        .some(k => String(fix[k] == null ? '' : fix[k]) !== String(b[k] == null ? '' : b[k]));
+      if (!changed) return;
+      const rec = { fix, learnedAt: Date.now() };
+      await DB.memPut({ key: memKeyFile(after), ...rec });
+      const brokenKey = memKeyTags(b.title, b.artist, b.album);
+      if (brokenKey !== memKeyTags(fix.title, fix.artist, fix.album)) {
+        await DB.memPut({ key: brokenKey, ...rec });
+      }
+    } catch (e) {}
+  }
+  async function recallFix(t) {
+    try {
+      let rec = await DB.memGet(memKeyFile(t));
+      if (!rec) rec = await DB.memGet(memKeyTags(t.title, t.artist, t.album));
+      return (rec && rec.fix) || null;
+    } catch (e) { return null; }
+  }
+  async function memCount() {
+    try { return await DB.memCount(); } catch (e) { return 0; }
+  }
+  // Apply a remembered fix. Never overwrites hand-set artwork with a
+  // remembered one — a newer hand-set always wins. Returns true on change.
+  async function applyMemFix(t, fix) {
+    const tr = { ...t };
+    let changed = false;
+    for (const k of ['title', 'artist', 'album', 'albumArtist', 'genre', 'year', 'trackNo', 'discNo']) {
+      if (fix[k] !== undefined && fix[k] !== null && fix[k] !== '' && tr[k] !== fix[k]) { tr[k] = fix[k]; changed = true; }
+    }
+    if (fix.art !== undefined && !tr.artManual && tr.art !== fix.art) { tr.art = fix.art; changed = true; }
+    if (!changed) return false;
+    tr.tagged = true;
+    tr.tagsVia = (tr.tagsVia ? tr.tagsVia + '+' : '') + 'memory';
+    await persistFix(t.id, tr);
+    Object.assign(t, {
+      title: tr.title, artist: tr.artist, album: tr.album, albumArtist: tr.albumArtist,
+      genre: tr.genre, year: tr.year, trackNo: tr.trackNo, discNo: tr.discNo,
+      art: tr.art, tagged: tr.tagged, tagsVia: tr.tagsVia,
+    });
+    return true;
+  }
   async function auditTrack(t, roster) {
     const proposals = [];
     let verified = false;
@@ -1037,16 +1183,26 @@ const Importer = (() => {
       if (rp) proposals.push(rp);
     } catch (e) {}
     // Only consult the network when the roster didn't already settle it and
-    // the track has something to search with. MusicBrainz is skipped when
-    // Apple already confidently identified the song — no need to burn the
-    // 1/sec budget re-verifying a known-good track.
+    // the track has something to search with. The fallback chain is Apple
+    // Music → Deezer → MusicBrainz: when one doesn't recognize the song,
+    // the next gets its turn. MusicBrainz is skipped when an earlier source
+    // already confidently identified it — no need to burn the 1/sec budget
+    // re-verifying a known-good track. Proposals from every consulted source
+    // compete per field, most confident wins.
     if (t.title && t.title !== 'Unknown Title') {
       try {
         const ar = await appleAudit(t);
         proposals.push(...ar.proposals);
         verified = ar.verified;
       } catch (e) {}
-      if (!proposals.length && !verified) { try { proposals.push(...await mbProposal(t)); } catch (e) {} }
+      if (!verified) {
+        try {
+          const dr = await deezerAudit(t);
+          proposals.push(...dr.proposals);
+          verified = verified || dr.verified;
+        } catch (e) {}
+      }
+      if (!verified) { try { proposals.push(...await mbProposal(t)); } catch (e) {} }
     }
     // One proposal per field: keep the most confident.
     const byField = new Map();
@@ -1075,6 +1231,16 @@ const Importer = (() => {
     let fixed = 0;
     const queued = [];
     let verified = false;
+    const before = memFixOf(t);
+    // Tag memory first: if we've fixed this song before, just apply what we
+    // already know is correct — no searching needed.
+    try {
+      const remembered = await recallFix(t);
+      if (remembered) {
+        if (await applyMemFix(t, remembered)) { fixed++; notes.push('remembered fix'); }
+        return { fixed, queued, verified: true, note: notes.join('; '), status: fixed ? 'fixed' : 'ok' };
+      }
+    } catch (e) {}
     // His music first: artist repair, then his Apple Music album, then his
     // singles. A full match returns done; otherwise the catalog passes below
     // take it from here — with the now-correct artist, Apple recognizes his
@@ -1085,6 +1251,7 @@ const Importer = (() => {
         if (my.note) notes.push(my.note);
         if (my.done) {
           fixed += my.fixed || 0;
+          if (fixed > 0) { try { await learnFix(before, t); } catch (e) {} }
           return { fixed, queued, verified: true, note: notes.join('; '), status: fixed ? 'fixed' : 'ok' };
         }
       }
@@ -1128,6 +1295,8 @@ const Importer = (() => {
       } catch (e) {}
     }
     const note = notes.join('; ');
+    // Remember what we got right, so next time we just know.
+    if (fixed > 0) { try { await learnFix(before, t); } catch (e) {} }
     return { fixed, queued, verified, note, status: fixed ? 'fixed' : queued.length ? 'review' : verified ? 'ok' : 'nomatch' };
   }
   // Full-library audit. Confident corrections auto-apply; the rest return
@@ -1400,5 +1569,5 @@ const Importer = (() => {
     } catch (e) { console.warn('healLibrary failed', e); }
     return { fixed, changed: fixed + touched };
   }
-  return { bind, open: () => { if (!busy) picker().click(); }, openZip: () => { if (!busy) zippicker().click(); }, fmtDur, healLibrary, fixAlbum, recordSingles, singleOrder, singleArt, mySingleArt, parseOne, auditLibrary, fixTrack };
+  return { bind, open: () => { if (!busy) picker().click(); }, openZip: () => { if (!busy) zippicker().click(); }, fmtDur, healLibrary, fixAlbum, recordSingles, singleOrder, singleArt, mySingleArt, parseOne, auditLibrary, fixTrack, learnFix, memCount };
 })();

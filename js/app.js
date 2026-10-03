@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v7.5';
+  const APP_VERSION = 'v7.6';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -2003,7 +2003,7 @@ const App = (() => {
 
   /* utag fixer screen (v5.8): a dedicated view showing the auto fixer working
      live — per-song before/after, run stats — plus manual tag editing. */
-  const fixUI = { running: false, album: '', albumIdx: 0, albumCount: 0, scanned: 0, matched: 0, fixed: 0, notFound: 0, log: [], via: { apple: 0, musicbrainz: 0, spotify: 0 } };
+  const fixUI = { running: false, album: '', albumIdx: 0, albumCount: 0, scanned: 0, matched: 0, fixed: 0, notFound: 0, log: [], via: { apple: 0, deezer: 0, musicbrainz: 0, spotify: 0, memory: 0 } };
   const TAG_FIELDS = ['title', 'artist', 'album', 'albumArtist', 'genre'];
   const TAG_LABEL = { title: 'Title', artist: 'Artist', album: 'Album', albumArtist: 'Album artist', genre: 'Genre' };
   const snapTags = t => { const o = {}; TAG_FIELDS.forEach(f => o[f] = t[f] || ''); return o; };
@@ -2033,7 +2033,8 @@ const App = (() => {
     set('fix-matched', String(d.matched));
     set('fix-fixed', String(d.fixed));
     const vs = d.via || {};
-    set('fix-sources', 'Apple Music: ' + (vs.apple || 0) + ' · MusicBrainz: ' + (vs.musicbrainz || 0) + ' · Spotify: ' + (vs.spotify || 0));
+    set('fix-sources', 'Apple Music: ' + (vs.apple || 0) + ' · Deezer: ' + (vs.deezer || 0) + ' · MusicBrainz: ' + (vs.musicbrainz || 0) + ' · Spotify: ' + (vs.spotify || 0));
+    try { Importer.memCount().then(n => set('fix-memory', n > 0 ? 'Remembers ' + n + ' fix' + (n === 1 ? '' : 'es') + ' — recognized songs skip the search next time' : '')); } catch (e) {}
     set('fix-status', fixUI.running
       ? 'Fixing ' + fixUI.album + '…'
       : ((d.albumCount || lastRun) ? 'Last run: fixed ' + d.fixed + ' of ' + d.scanned + ' tracks' : 'Check every song\u2019s tags.'));
@@ -2076,8 +2077,9 @@ const App = (() => {
         ${stat('fix-fixed', 'Fixed')}
       </div>
       <div id="fix-sources" style="color:var(--sub);font-size:13px;margin-top:10px"></div>
+      <div id="fix-memory" style="color:var(--sub);font-size:13px;margin-top:4px"></div>
       <div style="text-align:center"><button id="fix-run-btn" class="bigbtn pink" data-act="fix-run" style="margin:20px 0 8px">Fix all songs</button>
-      <p class="sub" style="margin:0 0 8px">Goes through every song, checks its tags against the artist roster, Apple Music, and MusicBrainz. Confident fixes apply on their own; the rest come to you for review.</p></div>
+      <p class="sub" style="margin:0 0 8px">Goes through every song, checks its tags against the artist roster, Apple Music, Deezer, and MusicBrainz — if one doesn\u2019t recognize it, the next gets a turn. Confident fixes apply on their own; the rest come to you for review.</p></div>
       <div id="fix-review-cta" style="margin:4px 0 8px"></div>
       <h2 style="font-size:16px;margin:22px 0 6px">All songs</h2>
       <input id="fixlist-q" placeholder="Filter songs…" autocomplete="off" autocapitalize="off" spellcheck="false"
@@ -2227,7 +2229,7 @@ const App = (() => {
     if (!list.length) { toast('No songs to fix'); return; }
     const roster = [...S.artists.values()];
     S.tagReview = S.tagReview || [];
-    Object.assign(fixUI, { running: true, album: '', albumIdx: 0, albumCount: list.length, scanned: 0, matched: 0, fixed: 0, notFound: 0, log: [], via: { apple: 0, musicbrainz: 0, spotify: 0 } });
+    Object.assign(fixUI, { running: true, album: '', albumIdx: 0, albumCount: list.length, scanned: 0, matched: 0, fixed: 0, notFound: 0, log: [], via: { apple: 0, deezer: 0, musicbrainz: 0, spotify: 0, memory: 0 } });
     buildFixList(list);
     paintFixUI();
     for (let i = 0; i < list.length; i++) {
@@ -2251,6 +2253,12 @@ const App = (() => {
         if (res.fixed && res.note) {
           fixUI.log.unshift({ id: t.id, title: t.title, artist: t.artist, changes: res.note });
           if (fixUI.log.length > 60) fixUI.log.pop();
+          const tv = t.tagsVia || '';
+          if (tv.includes('memory')) fixUI.via.memory++;
+          else if (tv.includes('Deezer')) fixUI.via.deezer++;
+          else if (tv.includes('Apple')) fixUI.via.apple++;
+          else if (tv.includes('MusicBrainz')) fixUI.via.musicbrainz++;
+          else if (tv.includes('Spotify')) fixUI.via.spotify++;
         }
       } else {
         paintFixRow(t.id, 'nomatch');
@@ -2474,10 +2482,12 @@ const App = (() => {
           try {
             const t = S.byId.get(it.trackId);
             if (t) {
+              const before = { ...t };
               const tr = { ...t, [it.proposal.field]: it.proposal.to };
               tr.tagsVia = (t.tagsVia ? t.tagsVia + '+' : '') + 'audit(' + it.proposal.source + ')';
               await DB.updateTrack(t.id, { [it.proposal.field]: it.proposal.to, tagsVia: tr.tagsVia, tagged: true });
               Object.assign(t, { [it.proposal.field]: it.proposal.to, tagsVia: tr.tagsVia, tagged: true });
+              try { Importer.learnFix(before, t); } catch (e) {}
             }
           } catch (e) {}
           S.tagReview.splice(i, 1);
@@ -2490,15 +2500,21 @@ const App = (() => {
         break;
       }
       case 'tag-review-approve-all': {
+        const befores = new Map();
         for (const it of S.tagReview) {
           try {
             const t = S.byId.get(it.trackId);
             if (t) {
+              if (!befores.has(t.id)) befores.set(t.id, { ...t });
               const tagsVia = (t.tagsVia ? t.tagsVia + '+' : '') + 'audit(' + it.proposal.source + ')';
               await DB.updateTrack(t.id, { [it.proposal.field]: it.proposal.to, tagsVia, tagged: true });
               Object.assign(t, { [it.proposal.field]: it.proposal.to, tagsVia, tagged: true });
             }
           } catch (e) {}
+        }
+        for (const [bid, before] of befores) {
+          const t = S.byId.get(bid);
+          if (t) { try { Importer.learnFix(before, t); } catch (e) {} }
         }
         S.tagReview = [];
         await refreshTracks(); render();
@@ -2524,8 +2540,11 @@ const App = (() => {
           S._artRemoved = false;
         }
         try {
+          const t0 = S.byId.get(tid);
+          const beforeTags = t0 ? { ...t0 } : null;
           await DB.updateTrack(tid, patch);
           const t = S.byId.get(tid); if (t) Object.assign(t, patch);
+          if (beforeTags && t) { try { Importer.learnFix(beforeTags, t); } catch (e) {} }
           try { S.artURLs.delete(tid); } catch (e) {}
           closeSheet(); await refreshTracks(); render(); paintMini();
           paintFixUI();

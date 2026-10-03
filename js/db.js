@@ -1,6 +1,6 @@
 /* Splotify local database — IndexedDB. The SDB (tracks) + library live on-device only. */
 const DB = (() => {
-  const NAME = 'splotify', VER = 2;
+  const NAME = 'splotify', VER = 3;
   let db = null;
 
   function open() {
@@ -20,6 +20,9 @@ const DB = (() => {
         // v7.0: artist roster table (placeholder artists + follow state).
         // The SDB is the tracks store; the library is a membership list in kv.
         if (!d.objectStoreNames.contains('artists')) d.createObjectStore('artists', { keyPath: 'id' });
+        // v7.6: tag memory — corrections the fixer got right (auto-applied,
+        // review-approved, hand-edited), keyed for instant recall next run.
+        if (!d.objectStoreNames.contains('tagMemory')) d.createObjectStore('tagMemory', { keyPath: 'key' });
       };
       req.onsuccess = () => { db = req.result; resolve(db); };
       req.onerror = () => reject(req.error);
@@ -78,6 +81,10 @@ const DB = (() => {
       return tx('kv', 'readonly', s => req2p(s.get(k))).then(r => (r ? r.v : def));
     },
     kvSet(k, v) { return tx('kv', 'readwrite', s => { s.put({ k, v }); }); },
+
+    memGet(key) { return tx('tagMemory', 'readonly', s => req2p(s.get(key))); },
+    memPut(rec) { return tx('tagMemory', 'readwrite', s => { s.put(rec); }); },
+    memCount() { return tx('tagMemory', 'readonly', s => req2p(s.count())); },
 
     usage() {
       if (navigator.storage && navigator.storage.estimate) return navigator.storage.estimate();
