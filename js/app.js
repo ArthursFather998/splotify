@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v6.8';
+  const APP_VERSION = 'v6.9';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -661,7 +661,6 @@ const App = (() => {
       <div class="setrow" data-act="import"><div>Add music to library<div class="sub">Import audio files from the Files app</div></div><span style="color:var(--sub)">${icon('plus')}</span></div>
       <div class="setrow" data-act="import-zip"><div>Import ZIP<div class="sub">Pull the songs out of a zip file</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
       <div class="setrow" data-act="export-hub"><div>Export music<div class="sub">Back up your songs to a link or Google Drive</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
-      <div class="setrow" data-act="restore-drive"><div>Import from Drive<div class="sub">Paste your Drive folder link, songs download straight in</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
       <div class="setrow" data-act="open-plimport"><div>Import Spotify playlist<div class="sub" id="plimport-sub">Turn a playlist into library downloads</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
       <div class="setrow" data-act="fix-all-tags"><div>utag fixer<div class="sub">Retag your library, watch it work, edit tags by hand</div></div><span style="color:var(--sub)">${icon('tag')}</span></div>
       <div class="setrow"><div>Songs in library<div class="sub" id="set-storage">Counting…</div></div><span style="color:var(--sub)">${n}</span></div>
@@ -1236,278 +1235,6 @@ const App = (() => {
     <div id="plimport-body" style="padding:0 16px 32px"></div>`;
   }
 
-  /* Drive import (v6.7): paste your Google Drive backup folder link and the
-     app downloads every song straight from Drive. No code, no re-upload.
-     The drain worker keeps a public file list (splotify-files.json) fresh;
-     the filebin rendezvous bin maps this app to it. Resumable per song,
-     foreground only (same iOS limits as the uploader). */
-  const RELAY_RENDEZVOUS = 'https://filebin.net/splotify-relay-01f7ca01ad84edb7438d7084/relay.json';
-  const BRIDGE_BIN_URL = 'https://filebin.net/splotify-bridge-01f7ca01ad84edb7438d7084';
-  /* Drive proxy: Google 403s cross-origin Drive reads, so a tiny serverless
-     hop fetches from Drive (no Origin header) and streams to the phone
-     with CORS allowed. */
-  const DRIVE_PROXY = 'https://splotify-drive-proxy.vercel.app';
-  const RS_KEY = 'splotify-restore-progress';
-  const RS_LINK_KEY = 'splotify-drive-link';
-  const rsUI = { phase: 'idle', file: 0, files: 0, frac: 0, gotBytes: 0, totalBytes: 0, t0: 0, note: '', backup: null };
-  let rsTimer = null, restoring = false, rsCancel = false;
-  const rsgb = b => (b / 1073741824).toFixed(1) + ' GB';
-  function rsElapsed() {
-    if (!rsUI.t0) return '0:00';
-    const s = Math.floor((Date.now() - rsUI.t0) / 1000);
-    return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
-  }
-  function rsSavedLink() { try { return localStorage.getItem(RS_LINK_KEY) || ''; } catch (e) { return ''; } }
-  function rsFolderIdFromLink(link) {
-    const m = /\/folders\/([a-zA-Z0-9_-]+)/.exec(link || '') || /[?&]id=([a-zA-Z0-9_-]+)/.exec(link || '');
-    return m ? m[1] : null;
-  }
-  /* The public file list lives next to the app (same origin, always fresh:
-     the service worker passes drive-files.json straight to network). */
-  async function rsFilesManifest() {
-    const r = await fetch('./drive-files.json', { cache: 'no-store' });
-    if (!r.ok) throw new Error('manifest http ' + r.status);
-    const man = await r.json();
-    if (!man || !Array.isArray(man.files)) throw new Error('bad manifest');
-    return { folderId: man.folderId || null, man };
-  }
-  /* Backup still uploading? Count parts in the bridge bin. */
-  async function rsBackupStatus() {
-    const out = { ready: false, partsDone: 0, partsTotal: 0 };
-    try {
-      await rsFilesManifest();
-      out.ready = true;
-      return out;
-    } catch (e) { /* not published yet: fall through to part counts */ }
-    try {
-      const r = await fetch(BRIDGE_BIN_URL, { headers: { 'Accept': 'application/json' } });
-      if (r.ok) {
-        const d = await r.json();
-        const by = {};
-        for (const f of (d.files || [])) {
-          const m = /^splotify-backup-([a-z0-9]+)-part(\d+)-of-(\d+)\.zip$/.exec(f.filename || '');
-          if (m) { const k = m[1] + '/' + m[3]; (by[k] = by[k] || []).push(+m[2]); }
-        }
-        let best = null, bestN = 0;
-        for (const k of Object.keys(by)) if (by[k].length > bestN) { best = k; bestN = by[k].length; }
-        if (best) { out.partsDone = bestN; out.partsTotal = +best.split('/')[1]; }
-      }
-    } catch (e) { /* ignore */ }
-    return out;
-  }
-  function restoreUnfinished() {
-    try {
-      const s = JSON.parse(localStorage.getItem(RS_KEY) || 'null');
-      if (!s || !Array.isArray(s.done) || !s.done.length) return false;
-      return s.done.filter(Boolean).length < s.done.length;
-    } catch (e) { return false; }
-  }
-  function maybeAutoResumeRestore() {
-    if (restoring || exporting) return;
-    if (restoreUnfinished() && rsSavedLink()) restoreLibrary(true);
-  }
-  function mimeFor(name) {
-    const ext = (name.split('.').pop() || '').toLowerCase();
-    return { mp3: 'audio/mpeg', flac: 'audio/flac', m4a: 'audio/mp4', m4b: 'audio/mp4', aac: 'audio/aac', wav: 'audio/wav', ogg: 'audio/ogg', opus: 'audio/opus' }[ext] || 'application/octet-stream';
-  }
-  const rsPaint = (i, frac, gotBytes, note) => {
-    Object.assign(rsUI, { file: i + 1, frac, gotBytes, note: note || '' });
-    const n = rsUI.files || 1;
-    const pct = Math.min(100, Math.round(((i + frac) / n) * 100));
-    const set = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
-    set('rs-status', note || rsUI.note || ('Pulling song ' + (i + 1) + ' of ' + n + '…'));
-    set('rs-pct', pct + '%');
-    set('rs-file', (i + 1) + ' of ' + n);
-    set('rs-got', rsgb(gotBytes) + ' of ' + rsgb(rsUI.totalBytes));
-    const f = document.getElementById('rs-fill'); if (f) f.style.width = pct + '%';
-  };
-  async function restoreLibrary(auto) {
-    if (restoring || exporting) return;
-    const link = rsSavedLink();
-    const wantFolder = rsFolderIdFromLink(link);
-    if (!wantFolder) { rsUI.phase = 'need-link'; rsUI.note = link ? 'That link did not look like a Google Drive folder link.' : ''; nav('restore'); return; }
-    restoring = true; rsCancel = false;
-    const fail = (note) => {
-      restoring = false;
-      Object.assign(rsUI, { phase: 'failed', note });
-      clearInterval(rsTimer); rsTimer = null;
-      nav('restore');
-    };
-    let man;
-    try {
-      const res = await rsFilesManifest();
-      man = res.man;
-      if (res.folderId && wantFolder !== res.folderId) {
-        restoring = false;
-        rsUI.phase = 'need-link';
-        rsUI.note = 'That link is not your Splotify backup folder. Paste the link to the "Splotify Backup" folder.';
-        nav('restore');
-        return;
-      }
-    } catch (e) { fail('Could not read the song list. Check your connection and try again on Wi-Fi.'); return; }
-    const files = man.files || [];
-    if (!files.length) { fail('The song list is empty — nothing to pull yet.'); return; }
-    const fp = files.length + ':' + (man.totalBytes || 0) + ':' + (man.session || '');
-    let saved = null;
-    try { saved = JSON.parse(localStorage.getItem(RS_KEY) || 'null'); } catch (e) { /* ignore */ }
-    let done = null;
-    if (saved && saved.fp === fp && Array.isArray(saved.done) && saved.done.length === files.length) {
-      const n = saved.done.filter(Boolean).length;
-      if (n > 0 && n < files.length) {
-        if (auto || confirm('Resume import? ' + n + ' of ' + files.length + ' songs are already here.')) {
-          done = saved.done.slice();
-        } else { restoring = false; return; }
-      } else if (n === files.length) {
-        try { localStorage.removeItem(RS_KEY); } catch (e) { /* ignore */ }
-      }
-    }
-    if (!done) done = files.map(() => false);
-    const save = () => { try { localStorage.setItem(RS_KEY, JSON.stringify({ fp, done })); } catch (e) { /* ignore */ } };
-    save();
-    Object.assign(rsUI, { phase: 'running', file: 0, files: files.length, frac: 0, gotBytes: 0, totalBytes: man.totalBytes || 0, t0: Date.now(), note: 'Connecting…' });
-    nav('restore');
-    clearInterval(rsTimer);
-    rsTimer = setInterval(() => { const el = document.getElementById('rs-time'); if (el) el.textContent = rsElapsed(); paintRsBgMode(); }, 1000);
-    let wake = null;
-    const grabWake = async () => { try { wake = await navigator.wakeLock.request('screen'); } catch (e) { /* unsupported */ } };
-    const onVis = () => { if (document.visibilityState === 'visible' && restoring && !wake) grabWake(); };
-    document.addEventListener('visibilitychange', onVis);
-    grabWake();
-    const finish = (phase, msg) => {
-      restoring = false;
-      document.removeEventListener('visibilitychange', onVis);
-      try { wake && wake.release(); } catch (e) { /* ignore */ } wake = null;
-      clearInterval(rsTimer); rsTimer = null;
-      Object.assign(rsUI, { phase, note: msg || '' });
-      if (phase === 'done') { try { localStorage.removeItem(RS_KEY); } catch (e) { /* ignore */ } }
-      render();
-    };
-    let existing = new Set();
-    try { existing = new Set((await DB.allTracks()).map(t => t.fileName + '|' + t.fileSize)); } catch (e) { /* ignore */ }
-    const batch = []; let batchBytes = 0, added = 0, skipped = 0;
-    const flush = async () => {
-      if (!batch.length) return;
-      const chunk = batch.splice(0); batchBytes = 0;
-      try { await DB.addTracks(chunk); added += chunk.length; }
-      catch (e) {
-        console.warn('import flush failed, retrying once', e);
-        try { await DB.addTracks(chunk); added += chunk.length; }
-        catch (e2) { console.warn('import flush failed twice, dropping', chunk.length, e2); skipped += chunk.length; }
-      }
-    };
-    const dl = async (entry) => {
-      let lastErr = null;
-      for (let a = 0; a < 3; a++) {
-        try {
-          const r = await fetch(DRIVE_PROXY + '/api/file?id=' + entry.id);
-          if (!r.ok) throw new Error('http ' + r.status);
-          const blob = await r.blob();
-          if (!blob.size) throw new Error('empty file');
-          return blob;
-        } catch (e) { lastErr = e; await new Promise(r2 => setTimeout(r2, 1500)); }
-      }
-      throw lastErr;
-    };
-    try {
-      for (let i = 0; i < files.length; i++) {
-        if (rsCancel) { finish('paused', ''); return; }
-        if (done[i]) continue;
-        const e = files[i];
-        const key = e.name + '|' + e.size;
-        if (existing.has(key)) { done[i] = true; skipped++; save(); continue; }
-        rsPaint(i, 0, rsUI.gotBytes, 'Pulling ' + e.name + '…');
-        let blob;
-        try { blob = await dl(e); }
-        catch (err) { finish('failed', 'Lost the connection on "' + e.name + '". Your progress is saved — tap to resume.'); return; }
-        try {
-          const tr = await Importer.parseOne(new File([blob], e.name, { type: mimeFor(e.name) }));
-          batch.push(tr); batchBytes += tr.fileSize || e.size || 0;
-          existing.add(key);
-        } catch (err) { console.warn('import parse failed', e.name, err); skipped++; }
-        if (batch.length >= 4 || batchBytes >= 128 * 1024 * 1024) await flush();
-        done[i] = true; rsUI.gotBytes += e.size || 0; save();
-        rsPaint(i, 1, rsUI.gotBytes);
-      }
-      await flush();
-    } catch (e) { finish('failed', 'Something went wrong. Your progress is saved — tap to resume.'); return; }
-    App.onLibraryChanged();
-    finish('done', added + ' song' + (added === 1 ? '' : 's') + ' pulled into this Splotify' + (skipped ? ' (' + skipped + ' skipped)' : '') + '.');
-  }
-  function paintRsBgMode() {
-    const el = document.getElementById('rs-bgmode');
-    if (!el) return;
-    let playing = false;
-    try { playing = !!(Player && Player.playing && !Player.playing.paused); } catch (e) { /* ignore */ }
-    el.textContent = playing
-      ? 'Music is playing, so downloads keep going if you leave Splotify.'
-      : 'Keep Splotify open — iPhone pauses downloads when the app is closed.';
-  }
-  function vRestore() {
-    const u = rsUI;
-    let savedN = null;
-    if (u.phase === 'idle' || u.phase === 'need-link') {
-      try {
-        const s = JSON.parse(localStorage.getItem(RS_KEY) || 'null');
-        if (s && Array.isArray(s.done)) {
-          const n = s.done.filter(Boolean).length;
-          if (n > 0 && n < s.done.length) savedN = { n, of: s.done.length };
-        }
-      } catch (e) { /* ignore */ }
-    }
-    const pct = u.files ? Math.min(100, Math.round(((u.file - 1 + u.frac) / u.files) * 100)) : 0;
-    let statusText, actionBtn, extra = '';
-    const hasLink = !!rsSavedLink();
-    if (u.phase === 'running') {
-      statusText = u.note || 'Pulling…';
-      actionBtn = '<button class="bigbtn" data-act="rs-pause" style="margin-top:26px">Pause</button>';
-    } else if (u.phase === 'paused') {
-      statusText = 'Paused — your progress is saved.';
-      actionBtn = '<button class="bigbtn pink" data-act="rs-start" style="margin-top:26px">Resume import</button>';
-    } else if (u.phase === 'done') {
-      statusText = u.note || 'Import complete.';
-      actionBtn = '<button class="bigbtn" data-act="rs-done" style="margin-top:26px">Done</button>';
-    } else if (u.phase === 'failed') {
-      statusText = u.note || 'Something went wrong.';
-      actionBtn = '<button class="bigbtn pink" data-act="rs-start" style="margin-top:26px">Try again</button>';
-    } else if (u.phase === 'waiting') {
-      const b = u.backup || {};
-      const pd = b.partsDone || 0, pt = b.partsTotal || 0;
-      statusText = pt ? 'Your backup is still uploading: ' + pd + ' of ' + pt + ' parts.' : 'Your backup is still uploading.';
-      extra = '<div style="color:var(--sub);font-size:13px;margin-top:10px">The song list is not published yet. Keep the old Splotify open on Wi-Fi and check back here.</div>';
-      actionBtn = '<button class="bigbtn" data-act="rs-done" style="margin-top:26px">Done</button>';
-    } else if (u.phase === 'need-link' || !hasLink) {
-      statusText = u.note || 'Paste your Google Drive backup folder link.';
-      extra = '<input id="rs-link" type="url" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://drive.google.com/drive/folders/…" ' +
-        'style="width:100%;margin-top:14px;padding:14px;border-radius:12px;border:1px solid rgba(255,255,255,.2);background:rgba(255,255,255,.06);color:#fff;font-size:16px">' +
-        '<div style="color:var(--sub);font-size:13px;margin-top:8px">In Drive, open the "Splotify Backup" folder, copy its link, and paste it here. You only do this once.</div>';
-      actionBtn = '<button class="bigbtn pink" data-act="rs-save-link" style="margin-top:18px">Download my songs</button>';
-    } else if (savedN) {
-      statusText = 'You have an unfinished import.';
-      actionBtn = '<button class="bigbtn pink" data-act="rs-start" style="margin-top:26px">Resume import — ' + savedN.n + ' of ' + savedN.of + ' songs pulled</button>';
-    } else {
-      statusText = 'Pull every song in your Drive backup straight into this Splotify. One tap, no re-upload.';
-      actionBtn = '<button class="bigbtn pink" data-act="rs-start" style="margin-top:26px">Download my songs</button>';
-    }
-    return `<div class="pagehead"><button class="iconbtn" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><h1>Drive Import</h1><span style="width:44px"></span></div>
-    <div style="padding:4px 20px 48px">
-      <div id="rs-status" style="font-size:17px;font-weight:700;margin:10px 0 2px">${statusText}</div>
-      ${extra}
-      <div style="display:flex;align-items:baseline;justify-content:space-between;margin-top:14px">
-        <span style="color:var(--sub);font-size:13px">Progress</span>
-        <span id="rs-pct" style="font-size:28px;font-weight:800">${pct}%</span>
-      </div>
-      <div style="height:8px;border-radius:4px;background:rgba(255,255,255,.12);margin:8px 0 4px;overflow:hidden">
-        <div id="rs-fill" style="height:100%;width:${pct}%;border-radius:4px;background:var(--pink);transition:width .3s"></div>
-      </div>
-      <div style="margin-top:14px;border-top:1px solid rgba(255,255,255,.1);padding-top:6px">
-        <div style="display:flex;justify-content:space-between;padding:8px 0;font-size:14px"><span style="color:var(--sub)">Song</span><span id="rs-file" style="font-weight:700">${u.files ? u.file + ' of ' + u.files : '—'}</span></div>
-        <div style="display:flex;justify-content:space-between;padding:8px 0;font-size:14px"><span style="color:var(--sub)">Pulled</span><span id="rs-got" style="font-weight:700">${u.totalBytes ? rsgb(u.gotBytes) + ' of ' + rsgb(u.totalBytes) : '—'}</span></div>
-        <div style="display:flex;justify-content:space-between;padding:8px 0;font-size:14px"><span style="color:var(--sub)">Elapsed</span><span id="rs-time" style="font-weight:700">${rsElapsed()}</span></div>
-      </div>
-      <div id="rs-bgmode" style="color:var(--sub);font-size:13px;margin-top:14px"></div>
-      <div style="text-align:center">${actionBtn}</div>
-    </div>`;
-  }
   /* ================= router ================= */
   const VIEWS = {
     home: vHome, search: vSearch, library: vLibrary, settings: vSettings,
@@ -1521,7 +1248,6 @@ const App = (() => {
     videos: () => vStub('Videos', 'playRect', 'No videos here yet.'),
     plimport: () => vPlImport(),
     driveBackup: () => vDriveBackup(),
-    restore: () => vRestore(),
     exportHub: () => vExportHub(),
     deviceExport: () => vDeviceExport(),
     tagFixer: () => vTagFixer(),
@@ -1993,19 +1719,6 @@ const App = (() => {
       case 'export-hub': nav('exportHub'); break;
       case 'export-device': nav('deviceExport'); break;
       case 'export-drive': if (exporting) nav('driveBackup'); else exportLibrary('drive'); break;
-      case 'restore-drive': if (!restoring) restoreLibrary(false); else nav('restore'); break;
-      case 'rs-start': restoreLibrary(false); break;
-      case 'rs-pause': rsCancel = true; break;
-      case 'rs-done': nav('settings'); break;
-      case 'rs-save-link': {
-        const inp = document.getElementById('rs-link');
-        const v = ((inp && inp.value) || '').trim();
-        if (!v) { toast('Paste the Drive folder link first'); break; }
-        if (!rsFolderIdFromLink(v)) { toast('That does not look like a Drive folder link'); break; }
-        try { localStorage.setItem(RS_LINK_KEY, v); } catch (e) { /* ignore */ }
-        restoreLibrary(false);
-        break;
-      }
       case 'dev-start': exportLibrary('link'); break;
       case 'dev-pause': exportUserPaused = true; exportCancel = true; { const el = document.getElementById('dev-note'); if (el) el.textContent = 'Finishing this part, then pausing…'; } break;
       case 'dev-done': nav('settings'); break;
@@ -2205,6 +1918,59 @@ const App = (() => {
   }
 
   /* ================= boot ================= */
+  /* One-time library dedupe (v6.9): the retired Drive import could double-add
+     songs already pulled from the ZIP. Exact match on file name + byte size
+     (identical bytes from the same source files); keeps the earliest-added
+     copy and remaps playlist/liked references onto it. */
+  async function dedupeLibraryOnce() {
+    try {
+      if (localStorage.getItem('splotify-deduped-v1')) return;
+      const tracks = await DB.allTracks();
+      const groups = new Map();
+      for (const t of tracks) {
+        if (!t.fileName) continue;
+        const k = t.fileName + '|' + (t.fileSize || 0);
+        if (!groups.has(k)) groups.set(k, []);
+        groups.get(k).push(t);
+      }
+      const remap = new Map(), delIds = [];
+      for (const g of groups.values()) {
+        if (g.length < 2) continue;
+        g.sort((a, b) => ((a.dateAdded || 0) - (b.dateAdded || 0)) || (a.id < b.id ? -1 : 1));
+        const keep = g[0].id;
+        for (const d of g.slice(1)) { remap.set(d.id, keep); delIds.push(d.id); }
+      }
+      const mark = () => { try { localStorage.setItem('splotify-deduped-v1', '1'); } catch (e) {} };
+      if (!delIds.length) { mark(); return; }
+      const remapIds = (ids) => {
+        const seen = new Set(); let changed = false;
+        const next = [];
+        for (const id of (ids || [])) {
+          const nid = remap.get(id) || id;
+          if (nid !== id) changed = true;
+          if (seen.has(nid)) { changed = true; continue; }
+          seen.add(nid); next.push(nid);
+        }
+        return { next, changed };
+      };
+      try {
+        for (const p of await DB.allPlaylists()) {
+          if (!Array.isArray(p.trackIds) || !p.trackIds.length) continue;
+          const { next, changed } = remapIds(p.trackIds);
+          if (changed) { p.trackIds = next; try { await DB.putPlaylist(p); } catch (e) {} }
+        }
+      } catch (e) {}
+      try {
+        const liked = await DB.kvGet('liked', []);
+        if (Array.isArray(liked) && liked.length) {
+          const { next, changed } = remapIds(liked);
+          if (changed) await DB.kvSet('liked', next);
+        }
+      } catch (e) {}
+      for (const id of delIds) { try { await DB.delTrack(id); } catch (e) {} }
+      mark();
+    } catch (e) { /* never break boot */ }
+  }
   async function refreshTracks() {
     S.tracks = await DB.allTracks();
     S.byId = new Map(S.tracks.map(t => [t.id, t]));
@@ -2216,6 +1982,7 @@ const App = (() => {
     try { view().innerHTML = vSkeletonHome(); } catch (e) {}
     await DB.open();
     try { if (navigator.storage && navigator.storage.persist) await navigator.storage.persist(); } catch (e) {}
+    await dedupeLibraryOnce();
     await refreshTracks();
     try { S.followedArtists = new Set(await DB.kvGet('followedArtists', [])); } catch (e) {}
     await loadRecent();
@@ -2244,9 +2011,9 @@ const App = (() => {
        deliberately paused it. Also re-check when the app comes back to the
        foreground, covering background kills without a full relaunch. */
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible') { maybeAutoResumeDrive(); maybeAutoResumeRestore(); }
+      if (document.visibilityState === 'visible') { maybeAutoResumeDrive(); }
     });
-    setTimeout(() => { maybeAutoResumeDrive(); maybeAutoResumeRestore(); }, 2500);
+    setTimeout(() => { maybeAutoResumeDrive(); }, 2500);
     // Player's track cache is a separate object from the library list; keep the
     // visible record in sync when playback learns a missing duration.
     Player.on('duration', ({ id, duration }) => {
