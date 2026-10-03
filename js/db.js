@@ -35,6 +35,9 @@ const DB = (() => {
       const out = fn(s);
       t.oncomplete = () => resolve(out && out.result !== undefined ? out.result : out);
       t.onerror = () => reject(t.error);
+      // v8.3: an aborted transaction fires neither oncomplete nor onerror —
+      // without this the promise never settles and the caller hangs forever.
+      t.onabort = () => reject(t.error || new Error('IDB transaction aborted: ' + store));
     });
   }
   const req2p = r => new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });

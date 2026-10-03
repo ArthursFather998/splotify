@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v8.2';
+  const APP_VERSION = 'v8.3';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -2168,6 +2168,7 @@ const App = (() => {
       '<div style="color:var(--sub);font-size:12px;margin-top:4px">' + label + '</div></div>';
     return `<div class="pagehead"><button class="iconbtn" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><h1>utag fixer</h1><span style="width:44px"></span></div>
     <div style="padding:4px 20px 48px">
+      <div style="color:var(--sub);font-size:12px;margin:2px 0 0">${APP_VERSION}</div>
       <div id="fix-status" style="font-size:15px;font-weight:700;margin:10px 0 2px"></div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px">
         ${stat('fix-albums', 'Songs')}

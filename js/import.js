@@ -10,6 +10,11 @@ const Importer = (() => {
     const to = new Promise((_, rej) => { t = setTimeout(() => rej(new Error('timeout: ' + (label || 'op'))), ms); });
     return Promise.race([Promise.resolve(p).finally(() => clearTimeout(t)), to]);
   }
+  // v8.3: IndexedDB can stall indefinitely on iOS (a wedged transaction
+  // blocks every later op on its store). The fixer must never hang on the
+  // database — bound every DB op in its path; all callers already treat a
+  // DB failure as "skip and continue".
+  const dbOp = (p, ms, label) => withTimeout(p, ms || 10000, 'db:' + (label || 'op'));
 
   function baseTitle(name) {
     return name.replace(/\.[a-z0-9]{2,5}$/i, '');
@@ -252,7 +257,7 @@ const Importer = (() => {
         releaseId = (rel && rel.id) || null;
       }
       let fkey = null;
-      try { fkey = await DB.kvGet('fanartKey', null); } catch (e) {}
+      try { fkey = await dbOp(DB.kvGet('fanartKey', null), 10000, 'fanartKey'); } catch (e) {}
       if (releaseId) {
         cands.push({ url: 'https://coverartarchive.org/release/' + releaseId + '/front', w: 1400, source: 'Cover Art Archive' });
         if (fkey) {
@@ -293,16 +298,16 @@ const Importer = (() => {
       const bucket = Math.round((confidence || 0) * 20) / 20; // 0.05 steps
       const src = source || 'unknown';
       const key = 'calib:' + src + ':' + bucket.toFixed(2);
-      const rec = (await DB.memGet(key)) || { key, approved: 0, total: 0 };
+      const rec = (await dbOp(DB.memGet(key), 10000, 'calib-get')) || { key, approved: 0, total: 0 };
       rec.approved += approved ? 1 : 0;
       rec.total += 1;
-      await DB.memPut(rec);
+      await dbOp(DB.memPut(rec), 10000, 'calib-put');
       // v7.8: per-source bucket index so the adaptive thresholds can
       // enumerate buckets without scanning the whole tagMemory store.
       const ik = 'calibidx:' + src;
-      const idx = (await DB.memGet(ik)) || { key: ik, buckets: {} };
+      const idx = (await dbOp(DB.memGet(ik), 10000, 'calibidx-get')) || { key: ik, buckets: {} };
       idx.buckets[bucket.toFixed(2)] = true;
-      await DB.memPut(idx);
+      await dbOp(DB.memPut(idx), 10000, 'calibidx-put');
     } catch (e) {}
   }
   // v7.8 adaptive confidence thresholds. Per source, the auto-apply
@@ -315,11 +320,11 @@ const Importer = (() => {
     const DEF = 0.88, FLOOR = 0.60;
     try {
       const src = source || 'unknown';
-      const idx = await DB.memGet('calibidx:' + src);
+      const idx = await dbOp(DB.memGet('calibidx:' + src), 10000, 'thr-idx');
       const buckets = idx && idx.buckets ? Object.keys(idx.buckets).map(Number).sort((a, b) => a - b) : [];
       let thr = DEF;
       for (const b of buckets) {
-        const rec = await DB.memGet('calib:' + src + ':' + b.toFixed(2));
+        const rec = await dbOp(DB.memGet('calib:' + src + ':' + b.toFixed(2)), 10000, 'thr-bucket');
         if (rec && rec.total >= 10 && rec.approved / rec.total >= 0.95) { thr = b; break; }
       }
       return Math.min(DEF, Math.max(FLOOR, thr));
@@ -682,7 +687,7 @@ const Importer = (() => {
     zippicker().addEventListener('change', e => { const f = e.target.files[0]; zippicker().value = ''; if (f) runZip(f); });
   }
   async function persistFix(id, tr) {
-    await DB.updateTrack(id, {
+    await dbOp(DB.updateTrack(id, {
       title: tr.title, artist: tr.artist, album: tr.album, albumArtist: tr.albumArtist,
       genre: tr.genre, year: tr.year, trackNo: tr.trackNo, discNo: tr.discNo,
       art: tr.art, tagged: tr.tagged, tagsVia: tr.tagsVia, diag: tr.diag,
@@ -692,7 +697,7 @@ const Importer = (() => {
       // Hand-set artwork flag: only written when explicitly present, so a
       // fixer pass never accidentally clears it with an undefined write.
       ...(tr.artManual !== undefined ? { artManual: tr.artManual } : {}),
-    });
+    }), 20000, 'updateTrack');
   }
   // Manual album fix: look up the whole album, apply proper tags + track order.
   const compact = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -1402,17 +1407,17 @@ const Importer = (() => {
         .some(k => String(fix[k] == null ? '' : fix[k]) !== String(b[k] == null ? '' : b[k]));
       if (!changed) return;
       const rec = { fix, learnedAt: Date.now() };
-      await DB.memPut({ key: memKeyFile(after), ...rec });
+      await dbOp(DB.memPut({ key: memKeyFile(after), ...rec }), 10000, 'learn-put');
       const brokenKey = memKeyTags(b.title, b.artist, b.album);
       if (brokenKey !== memKeyTags(fix.title, fix.artist, fix.album)) {
-        await DB.memPut({ key: brokenKey, ...rec });
+        await dbOp(DB.memPut({ key: brokenKey, ...rec }), 10000, 'learn-put2');
       }
     } catch (e) {}
   }
   async function recallFix(t) {
     try {
-      let rec = await DB.memGet(memKeyFile(t));
-      if (!rec) rec = await DB.memGet(memKeyTags(t.title, t.artist, t.album));
+      let rec = await dbOp(DB.memGet(memKeyFile(t)), 10000, 'recall-file');
+      if (!rec) rec = await dbOp(DB.memGet(memKeyTags(t.title, t.artist, t.album)), 10000, 'recall-tags');
       return (rec && rec.fix) || null;
     } catch (e) { return null; }
   }
@@ -1458,7 +1463,7 @@ const Importer = (() => {
   // match there would be a corruption bug, not a miss.
   async function acoustidLookupUngated(fp, durSec) {
     let key = null;
-    try { key = await DB.kvGet('acoustidKey', null); } catch (e) {}
+    try { key = await dbOp(DB.kvGet('acoustidKey', null), 10000, 'acoustidKey'); } catch (e) {}
     if (!key) return null;
     // POST: long fingerprints choke GET URLs.
     const body = 'client=' + encodeURIComponent(key) +
@@ -1504,7 +1509,7 @@ const Importer = (() => {
     opts = opts || {};
     try { if (await looksLikeHis(t)) return null; } catch (e) { return null; }
     let key = null;
-    try { key = await DB.kvGet('acoustidKey', null); } catch (e) {}
+    try { key = await dbOp(DB.kvGet('acoustidKey', null), 10000, 'acoustidKey'); } catch (e) {}
     if (!key) return null;
     const fpMod = (typeof window !== 'undefined' && window.SplotifyFingerprint) || null;
     if (!fpMod || !fpMod.compute) return null;
