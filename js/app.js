@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v8.5';
+  const APP_VERSION = 'v8.6';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -1746,6 +1746,10 @@ const App = (() => {
       const data = await SpImport.parseExportZip(file);
       data.source = 'export';
       if (!data.playlists.length && !data.liked.length && !data.artists.length) {
+        if (data.historyOnly) {
+          toast('That ZIP is only your listening history — download your full account data from Spotify\u2019s privacy page to import playlists');
+          return;
+        }
         toast('No playlists, liked songs, or artists found' + (data.found.length ? ' (saw: ' + data.found.join('; ') + ')' : ''));
         return;
       }

@@ -137,6 +137,14 @@ const SpImport = (() => {
       }
       out.found.push('Follow.json: followed artists');
     }
+    // v8.6: detect a streaming-history-only ZIP (the wrong download — the
+    // full "Download your data" is a separate request) so the app can say
+    // so instead of the cryptic "nothing found".
+    const histFiles = names.filter(n => /Streaming_History_.*\.json$/i.test(n));
+    if (histFiles.length && !out.playlists.length && !out.liked.length && !out.artists.length) {
+      out.historyOnly = true;
+      out.found.push(histFiles.length + ' streaming history files (listening history only)');
+    }
     // Dedupe artists by normalized name
     const seen = new Set();
     out.artists = out.artists.filter(a => {
