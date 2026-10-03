@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v7.4';
+  const APP_VERSION = 'v7.5';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),

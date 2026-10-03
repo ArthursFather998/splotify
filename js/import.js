@@ -642,52 +642,104 @@ const Importer = (() => {
   // a chance to misidentify them). Repairs tags AND artwork, even when a
   // wrong cover is already present. Never touches hand-set artwork.
   // Returns a fixTrack-style result, or null when this isn't his song.
+  // His album on Apple Music, cached per run. The song search inside
+  // albumTrackListing is the reliable path (entity=album search is flaky).
+  let myAlbumListingCache = 'pending';
+  async function myAlbumListing() {
+    if (myAlbumListingCache === 'pending') {
+      try { myAlbumListingCache = await albumTrackListing('I Left The Roses Out Too Long', 'Skyler Green'); }
+      catch (e) { myAlbumListingCache = null; }
+    }
+    return myAlbumListingCache;
+  }
+  // His music, repaired from Apple Music (his album is on all platforms, so
+  // the catalog path recognizes it like any other artist's) and the bundled
+  // discography (for singles Apple lacks). Returns null when this isn't his
+  // song; {done:true} when fully handled; {done:false} when the artist was
+  // repaired but the normal Apple song search should take it from here.
   async function fixMyTrack(t) {
     const disco = await loadDiscography();
+    const artistName = (disco && disco.artist) || 'Skyler Green';
     const a = norm(t.artist || '');
     const saysHim = a.indexOf('skyler green') !== -1;
     const noArtist = !a || a === 'unknown artist';
-    const m = matchMySingle(t, disco);
-    let mine = saysHim || (noArtist && !!m);
-    if (!mine && m && a) {
+    const ms = matchMySingle(t, disco);
+    let mine = saysHim || (noArtist && !!ms);
+    if (!mine && ms && a) {
       // Title matches his discography but the artist tag names someone else
       // (a past fixer run mislabeled some of his songs as d4vd). Claim it
       // only when the named artist is catalog-known yet has no such song —
       // an obscure artist proves nothing either way, so those stay manual.
       try { mine = (await artistKnown(t.artist)) && !(await artistHasSong(t.artist, t.title)); } catch (e) {}
     }
+    if (!mine && !ms && a) {
+      // Not a single title — maybe an album track with a mangled artist.
+      // The file name is free evidence; Apple confirms before claiming.
+      const fn = (t.fileName || '').toLowerCase();
+      if (fn.indexOf('skyler') !== -1) {
+        try { mine = await artistHasSong('Skyler Green', t.title); } catch (e) {}
+      }
+    }
     if (!mine) return null;
-    const artistName = (disco && disco.artist) || 'Skyler Green';
     const tr = { ...t };
     const notes = [];
-    if (tr.artist !== artistName) { notes.push('Artist: ' + (tr.artist || '—') + ' → ' + artistName); tr.artist = artistName; }
-    if (m) {
-      if (tr.title !== m.st.title) { notes.push('Title: ' + (tr.title || '—') + ' → ' + m.st.title); tr.title = m.st.title; }
-      if (tr.album !== m.s.name) { notes.push('Album: ' + (tr.album || '—') + ' → ' + m.s.name); tr.album = m.s.name; }
-      tr.albumArtist = artistName;
-      if (!tr.year) tr.year = (m.s.date || '').slice(0, 4) || tr.year;
-      tr.trackNo = m.idx + 1; tr.discNo = 1;
-      if (!tr.artManual) {
-        const want = singleArt(m.s.name);
-        if (want && tr.art !== want) { tr.art = want; notes.push('artwork restored'); }
-      }
-    } else if (!tr.art && !tr.artManual) {
-      // His album track (not a single): wears the album cover.
-      tr.art = MY_ALBUM_ART;
-      notes.push('artwork restored');
-    }
-    tr.tagged = true;
-    tr.tagsVia = 'Spotify';
-    if (!notes.length) return { fixed: 0, queued: [], verified: true, note: '', status: 'ok' };
-    try {
+    const saveMy = async () => {
+      tr.tagged = true;
       await persistFix(t.id, tr);
       Object.assign(t, {
         title: tr.title, artist: tr.artist, album: tr.album, albumArtist: tr.albumArtist,
         genre: tr.genre, year: tr.year, trackNo: tr.trackNo, discNo: tr.discNo,
         art: tr.art, tagged: tr.tagged, tagsVia: tr.tagsVia,
       });
-    } catch (e) { return { fixed: 0, queued: [], verified: false, note: '', status: 'nomatch' }; }
-    return { fixed: 1, queued: [], verified: true, note: notes.join('; '), status: 'fixed' };
+    };
+    // The artist is always his.
+    if (tr.artist !== artistName) { notes.push('Artist: ' + (tr.artist || '—') + ' → ' + artistName); tr.artist = artistName; }
+    tr.albumArtist = artistName;
+    // 1. His Apple Music album: match by title against the real 12-track
+    //    listing. This pulls stolen album tracks back home and tags
+    //    everything (title/album/track#/year/art) from Apple data.
+    try {
+      const listing = await myAlbumListing();
+      if (listing) {
+        const m = matchTrackMulti(tr, listing.songs, new Set());
+        if (m) {
+          const changed = applyListing(tr, m, listing.col, listing.art || MY_ALBUM_ART);
+          await saveMy();
+          const didChange = changed || notes.length > 0;
+          if (didChange) notes.push('matched Apple Music album');
+          return { done: true, mine: true, fixed: didChange ? 1 : 0, note: notes.join('; ') };
+        }
+      }
+    } catch (e) {}
+    // 2. His singles (not on the album): tag the single, but ONLY when the
+    //    album tag is missing — never steal a real album tag.
+    if (ms && (!tr.album || tr.album === 'Unknown Album')) {
+      if (tr.title !== ms.st.title) { notes.push('Title: ' + (tr.title || '—') + ' → ' + ms.st.title); tr.title = ms.st.title; }
+      notes.push('Album: ' + (tr.album || '—') + ' → ' + ms.s.name);
+      tr.album = ms.s.name;
+      if (!tr.year) tr.year = (ms.s.date || '').slice(0, 4) || tr.year;
+      tr.trackNo = ms.idx + 1; tr.discNo = 1;
+      if (!tr.artManual) {
+        const want = singleArt(ms.s.name);
+        if (want && tr.art !== want) { tr.art = want; notes.push('artwork restored'); }
+      }
+      tr.tagsVia = 'Spotify';
+      await saveMy();
+      return { done: true, mine: true, fixed: 1, note: notes.join('; ') };
+    }
+    // 3. Single art fill for his single-titled tracks that already have a
+    //    real album tag (nothing else to do here).
+    if (ms && !tr.art && !tr.artManual) {
+      const want = singleArt(ms.s.name);
+      if (want) { tr.art = want; notes.push('artwork restored'); }
+    }
+    if (notes.length) {
+      tr.tagsVia = tr.tagsVia || 'Spotify';
+      await saveMy();
+    }
+    // Not fully handled: the normal Apple song search takes it from here
+    // (with the now-correct artist, Apple recognizes his released music).
+    return { done: false, mine: true, note: notes.join('; ') };
   }
   // Newest-first position of a single release (for shelf ordering); unknown
   // names sort last.
@@ -1019,17 +1071,24 @@ const Importer = (() => {
      return queued for the review screen. Never touches correct tags. */
   const FIX_LABEL = { title: 'Title', artist: 'Artist', album: 'Album', albumArtist: 'Album artist', genre: 'Genre' };
   async function fixTrack(t, roster) {
-    // His own songs are claimed FIRST: the bundled discography is ground
-    // truth, and the store catalogs must never get a chance to misidentify
-    // them (or plaster another artist's artwork on them).
-    try {
-      const my = await fixMyTrack(t);
-      if (my) return my;
-    } catch (e) {}
+    const notes = [];
     let fixed = 0;
     const queued = [];
-    const notes = [];
     let verified = false;
+    // His music first: artist repair, then his Apple Music album, then his
+    // singles. A full match returns done; otherwise the catalog passes below
+    // take it from here — with the now-correct artist, Apple recognizes his
+    // released music like any other artist's.
+    try {
+      const my = await fixMyTrack(t);
+      if (my) {
+        if (my.note) notes.push(my.note);
+        if (my.done) {
+          fixed += my.fixed || 0;
+          return { fixed, queued, verified: true, note: notes.join('; '), status: fixed ? 'fixed' : 'ok' };
+        }
+      }
+    } catch (e) {}
     try {
       const ar = await auditTrack(t, roster);
       verified = ar.verified;
