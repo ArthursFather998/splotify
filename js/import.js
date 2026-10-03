@@ -45,28 +45,52 @@ const Importer = (() => {
   function needsFix(tr) {
     return tr.album === 'Unknown Album' || !tr.art || tr.artist === 'Unknown Artist' || !tr.title || tr.title === 'Unknown Title';
   }
-  // Fill in missing tags from Apple's music catalog (song/artist name only — audio never leaves the device).
-  async function autoTag(tr) {
-    if (!needsFix(tr)) return false;
-    const q = (tr.artist && tr.artist !== 'Unknown Artist' ? tr.artist + ' ' + tr.title : tr.title || '').trim();
-    if (!q || q === 'Unknown Title') return false;
-    const d = await fetchJSON('https://itunes.apple.com/search?term=' + encodeURIComponent(q) + '&media=music&entity=song&limit=6', 12000);
+  // Fill in missing tags from Apple's music catalog (song/artist name only —
+  // audio never leaves the device). Strictly fill-only: fields that already
+  // have values are never overwritten here; corrections go through the
+  // scored audit proposals instead. Tries the tag query first, then the
+  // file-name query (mangled tags poison the first, the file name often
+  // still holds "Artist - Title").
+  const TAG_MISSING = v => !v || v === 'Unknown Album' || v === 'Unknown Artist' || v === 'Unknown Title';
+  async function autoTag(tr, opts) {
+    opts = opts || {};
+    if (!needsFix(tr) && !opts.fillAny) return false;
+    const queries = [];
+    if (tr.title && tr.title !== 'Unknown Title') {
+      queries.push({ a: tr.artist && tr.artist !== 'Unknown Artist' ? tr.artist : '', t: tr.title });
+    }
+    try {
+      const fb = splitArtistTitle(tr.fileName || '');
+      if (fb.title && fb.title !== 'Unknown Title') {
+        const q = { a: fb.artist && fb.artist !== 'Unknown Artist' ? fb.artist : '', t: fb.title };
+        if (!queries.some(x => x.a === q.a && x.t === q.t)) queries.push(q);
+      }
+    } catch (e) {}
+    for (const q of queries) {
+      try { if (await autoTagQuery(tr, q)) return true; } catch (e) {}
+    }
+    return false;
+  }
+  async function autoTagQuery(tr, q) {
+    const qs = ((q.a ? q.a + ' ' : '') + q.t).trim();
+    if (!qs) return false;
+    const d = await fetchJSON('https://itunes.apple.com/search?term=' + encodeURIComponent(qs) + '&media=music&entity=song&limit=6', 12000);
     if (!d || !d.resultCount) return false;
-    const nt = norm(tr.title), na = norm(tr.artist);
+    const na = norm(q.a);
     let best = null;
     for (const r of d.results) {
       const ra = norm(r.artistName);
       const artistOK = !na || na === 'unknown artist' || ra === na || ra.indexOf(na) !== -1 || na.indexOf(ra) !== -1;
-      if (titleMatches(tr.title, r.trackName, false) && artistOK) { best = r; break; }
+      if (titleMatches(q.t, r.trackName, false) && artistOK) { best = r; break; }
     }
     if (!best) return false;
-    tr.title = best.trackName || tr.title;
-    tr.artist = best.artistName || tr.artist;
-    tr.album = best.collectionName || tr.album;
-    tr.genre = best.primaryGenreName || tr.genre;
-    tr.year = (best.releaseDate || '').slice(0, 4) || tr.year;
-    tr.trackNo = best.trackNumber || tr.trackNo;
-    tr.tagsVia = 'Apple Music';
+    if (TAG_MISSING(tr.title)) tr.title = best.trackName || tr.title;
+    if (TAG_MISSING(tr.artist)) tr.artist = best.artistName || tr.artist;
+    if (TAG_MISSING(tr.album)) tr.album = best.collectionName || tr.album;
+    if (!tr.genre) tr.genre = best.primaryGenreName || tr.genre;
+    if (!tr.year) tr.year = (best.releaseDate || '').slice(0, 4) || tr.year;
+    if (!tr.trackNo) tr.trackNo = best.trackNumber || tr.trackNo;
+    tr.tagsVia = tr.tagsVia || 'Apple Music';
     const au = (best.artworkUrl100 || '').replace('100x100bb', '600x600bb');
     if (au && !tr.art) {
       try {
@@ -757,33 +781,65 @@ const Importer = (() => {
     return null;
   }
   // Apple pass: search the catalog; when it confidently identifies the song
-  // but our tags differ, propose the correction.
-  async function appleProposal(t) {
-    const q = ((t.artist && t.artist !== 'Unknown Artist') ? t.artist + ' ' : '') + (t.title || '');
-    if (!q.trim()) return [];
-    const d = await fetchJSON('https://itunes.apple.com/search?term=' + encodeURIComponent(q) + '&media=music&entity=song&limit=8', 12000);
-    if (!d || !d.resultCount) return [];
+  // but our tags differ, propose the correction. Returns {proposals, verified}:
+  // verified means Apple confidently identified the song even if nothing
+  // needed changing (so callers can skip slower sources). Tries the tag
+  // query first, then the file-name query — mangled tags poison the first,
+  // but the file name often still holds "Artist - Title".
+  async function appleAudit(t) {
+    const queries = [];
+    const tagQ = ((t.artist && t.artist !== 'Unknown Artist') ? t.artist + ' ' : '') + (t.title || '');
+    if (tagQ.trim()) queries.push({ qs: tagQ.trim(), a: t.artist || '', t: t.title || '' });
+    try {
+      const fb = splitArtistTitle(t.fileName || '');
+      // Filename query only when it carries BOTH artist and title: an
+      // artist-less file name ("Track 01.mp3") would match random catalog
+      // tracks and cause bogus corrections.
+      if (fb.artist && fb.artist !== 'Unknown Artist' && fb.title && fb.title !== 'Unknown Title') {
+        const fbQ = fb.artist + ' ' + fb.title;
+        if (fbQ.trim() !== tagQ.trim()) queries.push({ qs: fbQ.trim(), a: fb.artist, t: fb.title });
+      }
+    } catch (e) {}
+    for (const qq of queries) {
+      try {
+        const r = await appleAuditQuery(qq, t);
+        if (r && (r.proposals.length || r.verified)) return r;
+      } catch (e) {}
+    }
+    return { proposals: [], verified: false };
+  }
+  async function appleAuditQuery(qq, t) {
+    const d = await fetchJSON('https://itunes.apple.com/search?term=' + encodeURIComponent(qq.qs) + '&media=music&entity=song&limit=8', 12000);
+    if (!d || !d.resultCount) return null;
     let best = null, bestScore = 0;
     for (const r of d.results) {
-      const ts = strSim(r.trackName, t.title);
-      const as = strSim(r.artistName, t.artist);
-      const score = ts * 0.6 + as * 0.4;
+      const ts = strSim(r.trackName, qq.t);
+      const as = strSim(r.artistName, qq.a);
+      // Title-only query (no artist): score on the title alone, stricter bar.
+      const score = qq.a ? ts * 0.6 + as * 0.4 : ts;
       if (score > bestScore) { bestScore = score; best = r; }
     }
-    if (!best || bestScore < 0.75) return [];
+    const threshold = qq.a ? 0.75 : 0.85;
+    if (!best || bestScore < threshold) return null;
     const out = [];
     const conf = 0.55 + bestScore * 0.4; // 0.85..0.95 at high similarity
-    if (strSim(best.trackName, t.title) >= 0.9 && best.trackName !== t.title && norm(best.trackName) !== norm(t.title)) {
+    // Gates compare the catalog hit against the QUERY's title/artist (which
+    // is what actually matched), not the current tags — so a filename query
+    // can correct fully-mangled tags, while a mere qualifier difference
+    // ("(Sped Up)") never triggers a rewrite.
+    if (strSim(best.trackName, qq.t) >= 0.9 && best.trackName !== t.title && norm(best.trackName) !== norm(t.title)) {
       out.push({ field: 'title', from: t.title, to: best.trackName, confidence: Math.min(conf, 0.92), source: 'Apple Music' });
     }
-    if (strSim(best.artistName, t.artist) >= 0.85 && best.artistName !== t.artist && norm(best.artistName) !== norm(t.artist)) {
+    if (qq.a && strSim(best.artistName, qq.a) >= 0.85 && best.artistName !== t.artist && norm(best.artistName) !== norm(t.artist)) {
       out.push({ field: 'artist', from: t.artist, to: best.artistName, confidence: Math.min(conf, 0.9), source: 'Apple Music' });
     }
-    if (best.collectionName && best.collectionName !== t.album && norm(best.collectionName) !== norm(t.album || '') && strSim(best.trackName, t.title) >= 0.9) {
+    if (best.collectionName && best.collectionName !== t.album && norm(best.collectionName) !== norm(t.album || '') && strSim(best.trackName, qq.t) >= 0.9) {
       out.push({ field: 'album', from: t.album || 'Unknown Album', to: best.collectionName, confidence: Math.min(conf - 0.05, 0.88), source: 'Apple Music' });
     }
-    return out;
+    return { proposals: out, verified: bestScore >= (qq.a ? 0.85 : 0.92) };
   }
+  // Back-compat: anything still calling appleProposal gets the proposals.
+  async function appleProposal(t) { const r = await appleAudit(t); return r.proposals; }
   // MusicBrainz pass (rate-limited): same idea, open database.
   async function mbProposal(t) {
     let recs = null;
@@ -809,15 +865,22 @@ const Importer = (() => {
   }
   async function auditTrack(t, roster) {
     const proposals = [];
+    let verified = false;
     try {
       const rp = rosterProposal(t, roster || []);
       if (rp) proposals.push(rp);
     } catch (e) {}
     // Only consult the network when the roster didn't already settle it and
-    // the track has something to search with.
+    // the track has something to search with. MusicBrainz is skipped when
+    // Apple already confidently identified the song — no need to burn the
+    // 1/sec budget re-verifying a known-good track.
     if (t.title && t.title !== 'Unknown Title') {
-      try { proposals.push(...await appleProposal(t)); } catch (e) {}
-      if (!proposals.length) { try { proposals.push(...await mbProposal(t)); } catch (e) {} }
+      try {
+        const ar = await appleAudit(t);
+        proposals.push(...ar.proposals);
+        verified = ar.verified;
+      } catch (e) {}
+      if (!proposals.length && !verified) { try { proposals.push(...await mbProposal(t)); } catch (e) {} }
     }
     // One proposal per field: keep the most confident.
     const byField = new Map();
@@ -825,7 +888,7 @@ const Importer = (() => {
       const cur = byField.get(p.field);
       if (!cur || p.confidence > cur.confidence) byField.set(p.field, p);
     }
-    return [...byField.values()];
+    return { proposals: [...byField.values()], verified };
   }
   async function applyAuditProposal(t, p) {
     const tr = { ...t, [p.field]: p.to };
@@ -833,6 +896,65 @@ const Importer = (() => {
     tr.tagged = true;
     await persistFix(t.id, tr);
     Object.assign(t, { [p.field]: p.to, tagsVia: tr.tagsVia, tagged: true });
+  }
+  /* One song, fully fixed — the single engine behind the utag fixer.
+     1. Scored corrections (roster → Apple → MusicBrainz, filename fallback).
+     2. Fill for anything still missing (Apple, fill-only).
+     3. His discography as the last resort for his own tracks.
+     Confident corrections (≥0.88) auto-apply; uncertain ones (0.55–0.88)
+     return queued for the review screen. Never touches correct tags. */
+  const FIX_LABEL = { title: 'Title', artist: 'Artist', album: 'Album', albumArtist: 'Album artist', genre: 'Genre' };
+  async function fixTrack(t, roster) {
+    let fixed = 0;
+    const queued = [];
+    const notes = [];
+    let verified = false;
+    try {
+      const ar = await auditTrack(t, roster);
+      verified = ar.verified;
+      for (const p of ar.proposals) {
+        if (p.confidence >= 0.88) {
+          try {
+            await applyAuditProposal(t, p);
+            fixed++;
+            notes.push((FIX_LABEL[p.field] || p.field) + ': ' + p.from + ' → ' + p.to);
+          } catch (e) {}
+        } else if (p.confidence >= 0.55) {
+          queued.push({ trackId: t.id, title: t.title, artist: t.artist, proposal: p });
+        }
+      }
+    } catch (e) {}
+    // Fill pass: anything still missing gets the Apple fill (art, album…).
+    // autoTag is fill-only, so present-but-wrong fields are never clobbered.
+    if (needsFix(t)) {
+      const tr = { ...t };
+      try {
+        if (await autoTag(tr)) {
+          const upd = {};
+          ['title', 'artist', 'album', 'albumArtist', 'genre', 'year', 'trackNo', 'discNo', 'art'].forEach(f => {
+            if (tr[f] !== undefined && String(tr[f] !== null ? tr[f] : '') !== String(t[f] !== null && t[f] !== undefined ? t[f] : '')) upd[f] = tr[f];
+          });
+          if (Object.keys(upd).length) {
+            upd.tagged = true;
+            upd.tagsVia = tr.tagsVia || t.tagsVia;
+            await persistFix(t.id, { ...t, ...upd });
+            Object.assign(t, upd);
+            fixed++;
+            const filledNames = Object.keys(upd).filter(f => f !== 'tagged' && f !== 'tagsVia').map(f => FIX_LABEL[f] || f);
+            if (filledNames.length) notes.push('filled ' + filledNames.join(', '));
+          }
+        }
+      } catch (e) {}
+    }
+    // Last resort: his own discography for his tracks (singles Apple lacks).
+    if (needsFix(t)) {
+      try {
+        const r = await discoFixTracks([t]);
+        if (r && r.fixed) { fixed += r.fixed; notes.push('matched his discography'); }
+      } catch (e) {}
+    }
+    const note = notes.join('; ');
+    return { fixed, queued, verified, note, status: fixed ? 'fixed' : queued.length ? 'review' : verified ? 'ok' : 'nomatch' };
   }
   // Full-library audit. Confident corrections auto-apply; the rest return
   // for the review screen. Re-verifies previously tagged tracks too.
@@ -843,9 +965,9 @@ const Importer = (() => {
     for (const t of tracks) {
       scanned++;
       if (onProgress) { try { onProgress(scanned, tracks.length, t); } catch (e) {} }
-      let proposals = [];
-      try { proposals = await auditTrack(t, roster); } catch (e) { continue; }
-      for (const p of proposals) {
+      let ar = { proposals: [], verified: false };
+      try { ar = await auditTrack(t, roster); } catch (e) { continue; }
+      for (const p of ar.proposals) {
         if (p.confidence >= 0.88) {
           try { await applyAuditProposal(t, p); fixed++; autoCount++; } catch (e) {}
         } else if (p.confidence >= 0.55) {
@@ -1103,5 +1225,5 @@ const Importer = (() => {
     } catch (e) { console.warn('healLibrary failed', e); }
     return { fixed, changed: fixed + touched };
   }
-  return { bind, open: () => { if (!busy) picker().click(); }, openZip: () => { if (!busy) zippicker().click(); }, fmtDur, healLibrary, fixAlbum, recordSingles, singleOrder, singleArt, parseOne, auditLibrary };
+  return { bind, open: () => { if (!busy) picker().click(); }, openZip: () => { if (!busy) zippicker().click(); }, fmtDur, healLibrary, fixAlbum, recordSingles, singleOrder, singleArt, parseOne, auditLibrary, fixTrack };
 })();

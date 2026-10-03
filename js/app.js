@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v7.1';
+  const APP_VERSION = 'v7.2';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -1678,7 +1678,7 @@ const App = (() => {
   /* v7.0 utag review: uncertain corrections, before/after, approve or skip. */
   function vTagReview() {
     S.viewCtx = null;
-    const items = S.tagReview;
+    const items = S.tagReview || [];
     return `<div class="pagehead"><button class="iconbtn" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><h1>Review corrections</h1><span style="width:44px"></span></div>
     <div style="padding:8px 16px 48px">
       <p class="sub" style="margin:0 0 12px">The audit wasn't sure about these. Approve the right ones, skip the rest.</p>
@@ -1695,26 +1695,6 @@ const App = (() => {
           <div style="margin-top:8px"><button class="bigbtn" data-act="tag-edit" data-id="${it.trackId}" style="width:100%">Edit by hand instead</button></div>
         </div>`).join('') : `<div class="empty"><h3>All reviewed</h3><p>Nothing left to check.</p></div>`}
     </div>`;
-  }
-  async function runTagAudit() {
-    if (S.tagAuditRunning) return;
-    S.tagAuditRunning = true;
-    const status = () => document.getElementById('fix-status');
-    try {
-      const roster = [...S.artists.values()];
-      const res = await Importer.auditLibrary(roster, (done, total, t) => {
-        const el = status();
-        if (el) el.textContent = `Auditing ${done}/${total}: ${t.title}`;
-      });
-      await refreshTracks(); render();
-      S.tagReview = res.review;
-      toast(`Audit done: ${res.fixed} auto-fixed, ${res.review.length} to review`);
-      if (res.review.length) nav('tagReview');
-    } catch (e) {
-      toast('Audit failed: ' + (e && e.message ? e.message : e));
-    }
-    S.tagAuditRunning = false;
-    render();
   }
   function vPlImport() {
     return `<div class="pagehead"><button class="iconbtn" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><h1>Playlist import</h1><span style="width:44px"></span></div>
@@ -1752,7 +1732,7 @@ const App = (() => {
     view().onscroll = null;
     if (cur.v === 'artist') bindArtistScroll();
     if (cur.v === 'driveBackup') paintDbBgMode();
-    if (cur.v === 'tagFixer') { paintFixUI(); paintTagFixResults(); }
+    if (cur.v === 'tagFixer') { buildFixList(); paintFixUI(); paintTagFixResults(); }
     S._lastViewKey = cur.v + '|' + (cur.id || '');
     document.querySelectorAll('.tab').forEach(b => {
       const on = b.dataset.tab === S.tab;
@@ -1776,6 +1756,8 @@ const App = (() => {
     }
     const tq = document.getElementById('tagfix-q');
     if (tq) tq.addEventListener('input', paintTagFixResults);
+    const flq = document.getElementById('fixlist-q');
+    if (flq) flq.addEventListener('input', applyFixFilter);
     updateStorageLine();
     updatePlImportLine();
     if ((S.stack[S.stack.length - 1] || {}).v === 'plimport') PlImport.paint();
@@ -2041,7 +2023,7 @@ const App = (() => {
     set('fix-sources', 'Apple Music: ' + (vs.apple || 0) + ' · MusicBrainz: ' + (vs.musicbrainz || 0) + ' · Spotify: ' + (vs.spotify || 0));
     set('fix-status', fixUI.running
       ? 'Fixing ' + fixUI.album + '…'
-      : ((d.albumCount || lastRun) ? 'Last run: fixed ' + d.fixed + ' of ' + d.scanned + ' tracks' : 'Retag every album in your library.'));
+      : ((d.albumCount || lastRun) ? 'Last run: fixed ' + d.fixed + ' of ' + d.scanned + ' tracks' : 'Check every song\u2019s tags.'));
     const log = document.getElementById('fix-log');
     if (log) {
       log.innerHTML = fixUI.log.map(e =>
@@ -2052,10 +2034,17 @@ const App = (() => {
     }
     const btn = document.getElementById('fix-run-btn');
     if (btn) {
-      btn.textContent = fixUI.running ? 'Fixing…' : 'Fix all albums';
+      btn.textContent = fixUI.running ? 'Fixing…' : 'Fix all songs';
       btn.disabled = fixUI.running;
       btn.classList.toggle('pink', !fixUI.running);
       btn.style.opacity = fixUI.running ? 0.5 : 1;
+    }
+    const rcta = document.getElementById('fix-review-cta');
+    if (rcta) {
+      const nq = (S.tagReview || []).length;
+      rcta.innerHTML = (!fixUI.running && nq)
+        ? '<button class="bigbtn pink" data-act="tag-review-open" style="width:100%">Review ' + nq + ' suggested correction' + (nq === 1 ? '' : 's') + '</button>'
+        : '';
     }
   }
   function vTagFixer() {
@@ -2067,16 +2056,20 @@ const App = (() => {
     <div style="padding:4px 20px 48px">
       <div id="fix-status" style="font-size:15px;font-weight:700;margin:10px 0 2px"></div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px">
-        ${stat('fix-albums', 'Albums')}
-        ${stat('fix-scanned', 'Tracks scanned')}
+        ${stat('fix-albums', 'Songs')}
+        ${stat('fix-scanned', 'Scanned')}
         ${stat('fix-matched', 'Matched')}
         ${stat('fix-fixed', 'Fixed')}
       </div>
       <div id="fix-sources" style="color:var(--sub);font-size:13px;margin-top:10px"></div>
-      <div style="text-align:center"><button id="fix-run-btn" class="bigbtn pink" data-act="fix-run" style="margin:20px 0 8px">Fix all albums</button></div>
-      <div style="text-align:center"><button class="bigbtn" data-act="tag-audit" style="margin:0 0 8px">Deep audit: correct wrong tags</button>
-      <p class="sub" style="margin:0 0 8px">Checks every song against the artist roster, Apple Music, and MusicBrainz. Confident fixes apply on their own; the rest come to you for review.</p></div>
-      <h2 style="font-size:16px;margin:22px 0 6px">Fixed in this run</h2>
+      <div style="text-align:center"><button id="fix-run-btn" class="bigbtn pink" data-act="fix-run" style="margin:20px 0 8px">Fix all songs</button>
+      <p class="sub" style="margin:0 0 8px">Goes through every song, checks its tags against the artist roster, Apple Music, and MusicBrainz. Confident fixes apply on their own; the rest come to you for review.</p></div>
+      <div id="fix-review-cta" style="margin:4px 0 8px"></div>
+      <h2 style="font-size:16px;margin:22px 0 6px">All songs</h2>
+      <input id="fixlist-q" placeholder="Filter songs…" autocomplete="off" autocapitalize="off" spellcheck="false"
+        style="width:100%;box-sizing:border-box;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;color:var(--txt);font-size:15px;margin:4px 0 8px" />
+      <div id="fix-all-songs"></div>
+      <h2 style="font-size:16px;margin:26px 0 6px">Fixed in this run</h2>
       <div id="fix-log"></div>
       <h2 style="font-size:16px;margin:26px 0 6px">Edit by hand</h2>
       <input id="tagfix-q" placeholder="Search songs to edit…" autocomplete="off" autocapitalize="off" spellcheck="false"
@@ -2116,9 +2109,8 @@ const App = (() => {
       '<div style="display:flex;gap:10px">' + inp('year', 'Year', t.year, true) + inp('trackNo', 'Track #', t.trackNo, true) + '</div>' +
       '<button class="bigbtn pink" data-act="tag-save" data-id="' + t.id + '" style="width:100%;margin-top:14px">Save tags</button></div>');
   }
-  // Shared album-tag fixer: used by the album page button, the track ••• sheet,
-  // and the Settings "utag fixer" (fix-all). Quiet mode skips per-album
-  // toasts and view jumps so fixAllTags can aggregate; returns the raw result.
+  // Shared album-tag fixer: used by the album page button and the track •••
+  // sheet. Quiet mode skips per-album toasts and view jumps. Returns the raw result.
   async function fixAlbumByKey(key, opts = {}) {
     const quiet = !!opts.quiet;
     const silent = !!opts.silent; // tag-fixer screen: no mid-run renders, it paints itself
@@ -2162,43 +2154,47 @@ const App = (() => {
     } catch (e) { console.warn('fix-album render failed', e); }
     return res;
   }
-  // utag fixer (fix-all): retag every album in the library, one by one.
-  // Paints the tag-fixer screen live: current album, per-song before/after,
-  // and running stats.
-  async function fixAllTags() {
+  // utag fixer: one pass over every song, live per-row painting. Each song
+  // goes through the unified fixTrack engine (scored corrections via the
+  // artist roster, Apple Music, and MusicBrainz with a file-name fallback,
+  // then a fill pass for anything still missing, then his discography).
+  async function fixAllSongs() {
     if (S.fixing || fixUI.running) return;
-    const list = albums().filter(a => a.tracks && a.tracks.length);
-    if (!list.length) { toast('No albums to fix'); return; }
+    const list = [...S.tracks].sort((a, b) => String(a.title || '').localeCompare(String(b.title || '')));
+    if (!list.length) { toast('No songs to fix'); return; }
+    const roster = [...S.artists.values()];
+    S.tagReview = S.tagReview || [];
     Object.assign(fixUI, { running: true, album: '', albumIdx: 0, albumCount: list.length, scanned: 0, matched: 0, fixed: 0, notFound: 0, log: [], via: { apple: 0, musicbrainz: 0, spotify: 0 } });
+    buildFixList(list);
     paintFixUI();
     for (let i = 0; i < list.length; i++) {
-      const a = list[i];
-      fixUI.album = a.name || 'Unknown Album'; fixUI.albumIdx = i + 1;
-      const tracks = a.tracks || [];
-      const before = new Map(tracks.map(t => [t.id, snapTags(t)]));
+      const t = list[i];
+      fixUI.album = t.title || 'Unknown Title'; fixUI.albumIdx = i + 1;
+      paintFixRow(t.id, 'scanning');
+      paintFixUI();
       let res = null;
       try {
-        res = await fixAlbumByKey(a.key, { quiet: true, silent: true });
-      } catch (e) { console.warn('utag fixer failed on', a.key, e); }
+        res = await Importer.fixTrack(t, roster);
+      } catch (e) { console.warn('utag fixer failed on', t.id, e); }
+      fixUI.scanned++;
       if (res) {
-        fixUI.scanned += res.total || 0;
-        fixUI.matched += res.matched || 0;
-        fixUI.fixed += res.fixed || 0;
-        const rv = res.via || {};
-        fixUI.via.apple += rv.apple || 0;
-        fixUI.via.musicbrainz += rv.musicbrainz || 0;
-        fixUI.via.spotify += rv.spotify || 0;
-        if (!res.found) fixUI.notFound++;
-        for (const t of tracks) {
-          const b = before.get(t.id); if (!b) continue;
-          const changes = diffTags(b, t);
-          if (changes) {
-            fixUI.log.unshift({ id: t.id, title: t.title, artist: t.artist, changes });
-            if (fixUI.log.length > 60) fixUI.log.pop();
+        if (res.fixed) { fixUI.fixed += res.fixed; fixUI.matched++; }
+        (res.queued || []).forEach(q => {
+          if (!S.tagReview.some(x => x.trackId === q.trackId && x.proposal.field === q.proposal.field && x.proposal.to === q.proposal.to)) {
+            S.tagReview.push(q);
           }
+        });
+        paintFixRow(t.id, res.status, res.note);
+        if (res.fixed && res.note) {
+          fixUI.log.unshift({ id: t.id, title: t.title, artist: t.artist, changes: res.note });
+          if (fixUI.log.length > 60) fixUI.log.pop();
         }
+      } else {
+        paintFixRow(t.id, 'nomatch');
       }
       paintFixUI();
+      // Yield to the UI thread so rows paint as the run moves.
+      await new Promise(r => setTimeout(r, 0));
     }
     fixUI.running = false; fixUI.album = '';
     try {
@@ -2209,8 +2205,59 @@ const App = (() => {
       }));
     } catch (e) { /* ignore */ }
     try { await refreshTracks(); render(); paintMini(); } catch (e) {}
+    buildFixList();
     paintFixUI();
-    toast(fixUI.scanned ? `utag fixer: fixed ${fixUI.fixed} of ${fixUI.scanned} tracks` : 'utag fixer: tags already look good');
+    const nq = (S.tagReview || []).length;
+    toast(fixUI.scanned
+      ? `utag fixer: fixed ${fixUI.fixed} of ${fixUI.scanned} tracks` + (nq ? `, ${nq} to review` : '')
+      : 'utag fixer: tags already look good');
+  }
+  // All-songs list for the fixer menu: every song with artwork, filterable,
+  // each row painted live as the fixer works through it.
+  function fixListTracks() {
+    return [...S.tracks].sort((a, b) => String(a.title || '').localeCompare(String(b.title || '')));
+  }
+  function buildFixList(prebuilt) {
+    const box = document.getElementById('fix-all-songs');
+    if (!box) return;
+    const list = prebuilt || fixListTracks();
+    box.innerHTML = list.map(t =>
+      '<div class="fx-row" data-act="tag-edit" data-id="' + t.id + '">' +
+      '<div class="fx-art">' + artImg(t) + '</div>' +
+      '<div class="fx-meta"><div class="fx-title">' + esc(t.title || 'Unknown Title') + '</div>' +
+      '<div class="fx-sub">' + esc(t.artist || 'Unknown Artist') + ' · ' + esc(t.album || 'Unknown Album') + '</div>' +
+      '<div class="fx-note" id="fxn-' + t.id + '"></div></div>' +
+      '<div class="fx-status" id="fxs-' + t.id + '"></div></div>'
+    ).join('');
+    applyFixFilter();
+  }
+  const FX_STATUS = {
+    scanning: ['<span class="fx-dot"></span>Fixing…', 'scanning'],
+    fixed: ['✓ Fixed', 'fixed'],
+    review: ['→ Review', 'review'],
+    ok: ['✓ Checked', 'ok'],
+    nomatch: ['No match', 'nomatch'],
+  };
+  function paintFixRow(id, status, note) {
+    const el = document.getElementById('fxs-' + id);
+    if (el) {
+      const s = FX_STATUS[status] || FX_STATUS.nomatch;
+      el.innerHTML = s[0];
+      el.className = 'fx-status ' + s[1];
+    }
+    const n = document.getElementById('fxn-' + id);
+    if (n) n.textContent = note || '';
+  }
+  function applyFixFilter() {
+    const qEl = document.getElementById('fixlist-q');
+    const box = document.getElementById('fix-all-songs');
+    if (!box) return;
+    const needle = (qEl && qEl.value || '').trim().toLowerCase();
+    box.querySelectorAll('.fx-row').forEach(r => {
+      const t = S.byId.get(Number(r.dataset.id));
+      const hay = t ? ((t.title || '') + ' ' + (t.artist || '') + ' ' + (t.album || '')).toLowerCase() : '';
+      r.style.display = (!needle || hay.includes(needle)) ? '' : 'none';
+    });
   }
 
   /* ================= actions ================= */
@@ -2355,9 +2402,8 @@ const App = (() => {
       }
       case 'fix-album': await fixAlbumByKey(id); break;
       case 'fix-all-tags': nav('tagFixer'); break;
-      case 'fix-run': fixAllTags(); break;
-      /* v7.0 utag deep audit */
-      case 'tag-audit': runTagAudit(); break;
+      case 'fix-run': fixAllSongs(); break;
+      case 'tag-review-open': nav('tagReview'); break;
       case 'tag-review-approve': {
         const i = Number(el.dataset.idx);
         const it = S.tagReview[i];
