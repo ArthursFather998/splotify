@@ -1,5 +1,5 @@
 /* Splotify service worker — offline app shell. Audio stays in IndexedDB, never in the cache. */
-const CACHE = 'splotify-v6.7';
+const CACHE = 'splotify-v6.8';
 const SHELL = [
   './', './index.html', './manifest.json',
   './css/app.css',
@@ -30,6 +30,8 @@ self.addEventListener('fetch', e => {
   if (e.request.method !== 'GET' || url.origin !== location.origin) return;
   // The in-app update check fetches sw.js directly; never serve it from cache.
   if (url.pathname.endsWith('/sw.js')) return;
+  // drive-files.json is a live manifest (updated by the drain); always network.
+  if (url.pathname.endsWith('drive-files.json')) return;
   e.respondWith(
     caches.match(e.request, { ignoreSearch: true }).then(hit => {
       if (hit) return hit;

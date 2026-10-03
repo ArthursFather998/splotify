@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v6.7';
+  const APP_VERSION = 'v6.8';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -1243,6 +1243,10 @@ const App = (() => {
      foreground only (same iOS limits as the uploader). */
   const RELAY_RENDEZVOUS = 'https://filebin.net/splotify-relay-01f7ca01ad84edb7438d7084/relay.json';
   const BRIDGE_BIN_URL = 'https://filebin.net/splotify-bridge-01f7ca01ad84edb7438d7084';
+  /* Drive proxy: Google 403s cross-origin Drive reads, so a tiny serverless
+     hop fetches from Drive (no Origin header) and streams to the phone
+     with CORS allowed. */
+  const DRIVE_PROXY = 'https://splotify-drive-proxy.vercel.app';
   const RS_KEY = 'splotify-restore-progress';
   const RS_LINK_KEY = 'splotify-drive-link';
   const rsUI = { phase: 'idle', file: 0, files: 0, frac: 0, gotBytes: 0, totalBytes: 0, t0: 0, note: '', backup: null };
@@ -1258,18 +1262,14 @@ const App = (() => {
     const m = /\/folders\/([a-zA-Z0-9_-]+)/.exec(link || '') || /[?&]id=([a-zA-Z0-9_-]+)/.exec(link || '');
     return m ? m[1] : null;
   }
-  const rsDriveDl = id => 'https://drive.google.com/uc?export=download&confirm=t&id=' + id;
-  /* Resolve the public file list: rendezvous bin -> files manifest in Drive. */
+  /* The public file list lives next to the app (same origin, always fresh:
+     the service worker passes drive-files.json straight to network). */
   async function rsFilesManifest() {
-    const r = await fetch(RELAY_RENDEZVOUS, { cache: 'no-store' });
-    if (!r.ok) throw new Error('rendezvous http ' + r.status);
-    const d = await r.json();
-    if (!d || !d.filesManifestId) throw new Error('no files manifest yet');
-    const mr = await fetch(rsDriveDl(d.filesManifestId), { cache: 'no-store' });
-    if (!mr.ok) throw new Error('manifest http ' + mr.status);
-    const man = await mr.json();
+    const r = await fetch('./drive-files.json', { cache: 'no-store' });
+    if (!r.ok) throw new Error('manifest http ' + r.status);
+    const man = await r.json();
     if (!man || !Array.isArray(man.files)) throw new Error('bad manifest');
-    return { folderId: d.folderId || man.folderId || null, man };
+    return { folderId: man.folderId || null, man };
   }
   /* Backup still uploading? Count parts in the bridge bin. */
   async function rsBackupStatus() {
@@ -1399,10 +1399,8 @@ const App = (() => {
       let lastErr = null;
       for (let a = 0; a < 3; a++) {
         try {
-          const r = await fetch(rsDriveDl(entry.id));
+          const r = await fetch(DRIVE_PROXY + '/api/file?id=' + entry.id);
           if (!r.ok) throw new Error('http ' + r.status);
-          const ct = r.headers.get('content-type') || '';
-          if (ct.includes('text/html')) throw new Error('drive interstitial');
           const blob = await r.blob();
           if (!blob.size) throw new Error('empty file');
           return blob;
