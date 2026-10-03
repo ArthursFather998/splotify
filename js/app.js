@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v8.1';
+  const APP_VERSION = 'v8.2';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -2130,6 +2130,10 @@ const App = (() => {
     const vs = d.via || {};
     set('fix-sources', 'Apple Music: ' + (vs.apple || 0) + ' · Deezer: ' + (vs.deezer || 0) + ' · MusicBrainz: ' + (vs.musicbrainz || 0) + ' · Spotify: ' + (vs.spotify || 0) + ' · AcoustID: ' + (vs.acoustid || 0));
     try { Importer.memCount().then(n => set('fix-memory', n > 0 ? 'Remembers ' + n + ' fix' + (n === 1 ? '' : 'es') + ' — recognized songs skip the search next time' : '')); } catch (e) {}
+    try {
+      const skipped = (S.tracks || []).filter(t => !trackNeedsFix(t)).length;
+      set('fix-skipped', skipped ? skipped + ' song' + (skipped === 1 ? '' : 's') + ' already have metadata — skipped' : '');
+    } catch (e) {}
     set('fix-status', fixUI.running
       ? 'Fixing ' + fixUI.album + '…'
       : ((d.albumCount || lastRun) ? 'Last run: fixed ' + d.fixed + ' of ' + d.scanned + ' tracks' : 'Check every song\u2019s tags.'));
@@ -2174,9 +2178,10 @@ const App = (() => {
       <div id="fix-sources" style="color:var(--sub);font-size:13px;margin-top:10px"></div>
       <div id="fix-memory" style="color:var(--sub);font-size:13px;margin-top:4px"></div>
       <div style="text-align:center"><button id="fix-run-btn" class="bigbtn pink" data-act="fix-run" style="margin:20px 0 8px">Fix all songs</button>
-      <p class="sub" style="margin:0 0 8px">Goes through every song, checks its tags against the artist roster, Apple Music, Deezer, and MusicBrainz — if one doesn\u2019t recognize it, the next gets a turn. Confident fixes apply on their own; the rest come to you for review. Songs nothing recognizes get identified by sound (fingerprinting) once you add an AcoustID key in Settings, Metadata.</p></div>
+      <p class="sub" style="margin:0 0 8px">Goes through songs with missing tags and checks them against the artist roster, Apple Music, Deezer, and MusicBrainz. Confident fixes apply on their own; the rest come to you for review. Songs with complete metadata are skipped — fix those by hand below. Songs nothing recognizes get identified by sound once you add an AcoustID key in Settings, Metadata.</p></div>
       <div id="fix-review-cta" style="margin:4px 0 8px"></div>
-      <h2 style="font-size:16px;margin:22px 0 6px">All songs</h2>
+      <h2 style="font-size:16px;margin:22px 0 6px">Needs fixing</h2>
+      <div id="fix-skipped" style="color:var(--sub);font-size:13px;margin:-2px 0 4px"></div>
       <input id="fixlist-q" placeholder="Filter songs…" autocomplete="off" autocapitalize="off" spellcheck="false"
         style="width:100%;box-sizing:border-box;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;color:var(--txt);font-size:15px;margin:4px 0 8px" />
       <div id="fix-all-songs"></div>
@@ -2328,8 +2333,8 @@ const App = (() => {
       if (Date.now() - (fixUI.lastProgressAt || 0) < 120000) return;
       try { console.warn('fixAllSongs: resetting stale run'); } catch (e) {}
     }
-    const list = [...S.tracks].sort((a, b) => String(a.title || '').localeCompare(String(b.title || '')));
-    if (!list.length) { toast('No songs to fix'); return; }
+    const list = [...S.tracks].filter(trackNeedsFix).sort((a, b) => String(a.title || '').localeCompare(String(b.title || '')));
+    if (!list.length) { toast('All songs already have metadata'); return; }
     const roster = [...S.artists.values()];
     S.tagReview = S.tagReview || [];
     Object.assign(fixUI, { running: true, album: '', albumIdx: 0, albumCount: list.length, scanned: 0, matched: 0, fixed: 0, notFound: 0, log: [], lastProgressAt: Date.now(), via: { apple: 0, deezer: 0, musicbrainz: 0, spotify: 0, memory: 0, acoustid: 0 } });
@@ -2434,8 +2439,14 @@ const App = (() => {
   }
   // All-songs list for the fixer menu: every song with artwork, filterable,
   // each row painted live as the fixer works through it.
+  // v8.2: the auto fixer only queues songs with incomplete metadata —
+  // complete tags are skipped (correct those by hand in "Edit by hand").
+  function trackNeedsFix(t) {
+    try { if (window.Importer && Importer.needsFix) return Importer.needsFix(t); } catch (e) {}
+    return true;
+  }
   function fixListTracks() {
-    return [...S.tracks].sort((a, b) => String(a.title || '').localeCompare(String(b.title || '')));
+    return [...S.tracks].filter(trackNeedsFix).sort((a, b) => String(a.title || '').localeCompare(String(b.title || '')));
   }
   function buildFixList(prebuilt) {
     const box = document.getElementById('fix-all-songs');

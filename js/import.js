@@ -2113,5 +2113,5 @@ const Importer = (() => {
   const deezerAuditQuery = (qq, t) => catalogGate(() => deezerAuditQueryUngated(qq, t));
   // AcoustID shares the 3-in-flight gate: polite under the parallel pool.
   const acoustidQuery = (fp, dur) => catalogGate(() => acoustidLookupUngated(fp, dur));
-  return { bind, open: () => { if (!busy) picker().click(); }, openZip: () => { if (!busy) zippicker().click(); }, fmtDur, healLibrary, fixAlbum, recordSingles, singleOrder, singleArt, mySingleArt, parseOne, auditLibrary, fixTrack, fingerprintTrack, learnFix, memCount, logCalib, artChainExtra, fixAlbumClusters, fixTrackPool, fileNameCandidates, autoThresholdFor };
+  return { bind, open: () => { if (!busy) picker().click(); }, openZip: () => { if (!busy) zippicker().click(); }, fmtDur, healLibrary, fixAlbum, recordSingles, singleOrder, singleArt, mySingleArt, parseOne, auditLibrary, fixTrack, fingerprintTrack, learnFix, memCount, logCalib, artChainExtra, fixAlbumClusters, fixTrackPool, fileNameCandidates, autoThresholdFor, needsFix };
 })();
