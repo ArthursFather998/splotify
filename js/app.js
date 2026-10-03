@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v8.4';
+  const APP_VERSION = 'v8.5';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -788,8 +788,8 @@ const App = (() => {
     if (!a) return vLibrary();
     S.viewCtx = { kicker: 'PLAYING FROM ALBUM', name: a.name, kind: 'album', id: a.key };
     return detailHead('go-back', heroArt(a.art), a.name, `${a.single ? 'Single' : 'Album'} • ${esc(a.artist)} • ${a.tracks.length} song${a.tracks.length === 1 ? '' : 's'}`)
-      + playRow(`<button class="shufflebtn" data-act="fix-album" data-id="${esc(key)}">${icon('tag', 'width:18px;height:18px')} utag</button>`)
-      + (S.fixing === key ? skelTrow().repeat(Math.max(a.tracks.length, 4)) : a.tracks.map(t => trackRow(t)).join(''));
+      + playRow()
+      + a.tracks.map(t => trackRow(t)).join('');
   }
   function vArtist(name) {
     const a = artistViewModel(name);
@@ -2045,7 +2045,8 @@ const App = (() => {
       <div class="sheet-item" data-act="artist-play" data-id="${esc(a.name)}">${icon('play')}Play</div>
       <div class="sheet-item" data-act="artist-shuffle" data-id="${esc(a.name)}">${icon('shuffle')}Shuffle</div>
       <div class="sheet-item" data-act="artist-follow" data-id="${esc(a.name)}">${icon(following ? 'check' : 'plus')}${following ? 'Following' : 'Follow'}</div>
-      <div class="sheet-item" data-act="open-artist-releases" data-id="${esc(a.name)}">${icon('disc')}See discography</div>`);
+      <div class="sheet-item" data-act="open-artist-releases" data-id="${esc(a.name)}">${icon('disc')}See discography</div>
+      <div class="sheet-item" data-act="fix-artist" data-id="${esc(a.name)}">${icon('tag')}Fix tags</div>`);
   }
   function infoSheet(id) {
     const t = S.byId.get(id); if (!t) return;
@@ -2141,6 +2142,7 @@ const App = (() => {
       const skipped = (S.tracks || []).filter(t => !trackNeedsFix(t)).length;
       set('fix-skipped', skipped ? skipped + ' song' + (skipped === 1 ? '' : 's') + ' already have metadata — skipped' : '');
     } catch (e) {}
+    set('fix-scope', fixUI.scopeTitle ? 'Fixing songs by ' + fixUI.scopeTitle : '');
     set('fix-status', fixUI.running
       ? 'Fixing ' + fixUI.album + '…'
       : ((d.albumCount || lastRun) ? 'Last run: fixed ' + d.fixed + ' of ' + d.scanned + ' tracks' : 'Check every song\u2019s tags.'));
@@ -2176,6 +2178,7 @@ const App = (() => {
     return `<div class="pagehead"><button class="iconbtn" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><h1>utag fixer</h1><span style="width:44px"></span></div>
     <div style="padding:4px 20px 48px">
       <div style="color:var(--sub);font-size:12px;margin:2px 0 0">${APP_VERSION}</div>
+      <div id="fix-scope" style="color:var(--pink);font-size:13px;font-weight:700;margin:6px 0 0"></div>
       <div id="fix-status" style="font-size:15px;font-weight:700;margin:10px 0 2px"></div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px">
         ${stat('fix-albums', 'Songs')}
@@ -2282,58 +2285,27 @@ const App = (() => {
       paintTagArtPreview(t);
     } catch (e) { toast('Could not read that image'); }
   }
-  // Shared album-tag fixer: used by the album page button and the track •••
-  // sheet. Quiet mode skips per-album toasts and view jumps. Returns the raw result.
-  async function fixAlbumByKey(key, opts = {}) {
-    const quiet = !!opts.quiet;
-    const silent = !!opts.silent; // tag-fixer screen: no mid-run renders, it paints itself
-    const a = albumByKey(key);
-    if (!a || S.fixing) return null;
-    const ids = a.tracks.map(t => t.id);
-    const knownAlbums = albums()
-      .filter(x => x.name && x.name !== 'Unknown Album' && x.key !== a.key)
-      .map(x => ({ name: x.name, artist: x.artist }));
-    const knownArtists = [...new Set(S.tracks.map(t => t.artist).filter(x => x && x !== 'Unknown Artist'))];
-    // Strays: same-artist tracks filed under physical single releases.
-    // Fixing the album pulls them home so the album comes out complete.
-    // (Virtual singles are views onto the same tracks, not strays.)
-    const strays = [];
-    realAlbums()
-      .filter(g => g.key !== a.key && g.name !== 'Unknown Album' && g.tracks.length <= 2 && g.artist === a.artist)
-      .forEach(g => g.tracks.forEach(t => {
-        if (!ids.includes(t.id) && (t.artist === a.artist || t.albumArtist === a.artist)) strays.push(t);
-      }));
-    if (!quiet) toast('Fixing album tags…');
-    S.fixing = key; if (!silent) render();
-    let res = null;
-    try {
-      res = await Importer.fixAlbum(a.tracks.concat(strays), knownAlbums, knownArtists);
-    } catch (e) { console.warn('fix-album failed', e); }
-    S.fixing = null;
-    try {
-      await refreshTracks(); if (!silent) { render(); paintMini(); }
-      if (quiet) return res;
-      if (res && res.fixed > 0) {
-        const na = albums().find(x => !x.single && x.tracks.some(t => ids.includes(t.id)))
-          || albums().find(x => x.tracks.some(t => ids.includes(t.id)));
-        if (na) S.stack[S.stack.length - 1] = { v: 'album', id: na.key };
-        render();
-        toast(`Fixed ${res.fixed} of ${res.total} tracks`);
-      } else if (res && res.notFound) toast('Couldn\u2019t find that album');
-      else if (res && res.matched > 0) toast('Tags already look good');
-      else if (res && res.found) toast('Couldn\u2019t find tags for these tracks');
-      else if (res) toast('Tags already look good');
-      else toast('Fix failed, try again');
-    } catch (e) { console.warn('fix-album render failed', e); }
-    return res;
-  }
   // utag fixer: album-first pass, then a parallel per-song pool, with live
   // per-row painting. The album pass clusters named-album tracks and
   // resolves each cluster with one listing lookup; whatever it leaves over
   // (unknown albums, unmatched tracks) goes through the unified fixTrack
   // engine 5 at a time. Confident fixes apply on their own; the rest come
   // to you for review, highest confidence first.
-  async function fixAllSongs() {
+  // v8.5: utag fixer at artist scope — replaces the old album-page button.
+  // Runs the same two-phase engine on the artist's songs (albums, singles,
+  // features), scoped into the fixer screen.
+  async function fixArtistByKey(name) {
+    const a = artistByName(name);
+    if (!a || !(a.tracks || []).length) { toast('No songs by this artist yet'); return; }
+    if (S.fixing || fixUI.running) { toast('The fixer is already running'); return; }
+    closeSheet();
+    nav('tagFixer');
+    await fixAllSongs({ tracks: a.tracks, title: a.name });
+  }
+  // v8.5: opts.tracks + opts.title scope the run (artist pages). Default
+  // is the whole library, as before.
+  async function fixAllSongs(opts) {
+    opts = opts || {};
     if (S.fixing) return;
     // v8.1 stale-run guard: a previous run that died without resetting must
     // never wedge the button — restart it if nothing painted for 2 minutes.
@@ -2341,11 +2313,13 @@ const App = (() => {
       if (Date.now() - (fixUI.lastProgressAt || 0) < 120000) return;
       try { console.warn('fixAllSongs: resetting stale run'); } catch (e) {}
     }
-    const list = [...S.tracks].filter(trackNeedsFix).sort((a, b) => String(a.title || '').localeCompare(String(b.title || '')));
-    if (!list.length) { toast('All songs already have metadata'); return; }
+    const scopeTitle = opts.title || '';
+    const base = opts.tracks || [...S.tracks];
+    const list = base.filter(trackNeedsFix).sort((a, b) => String(a.title || '').localeCompare(String(b.title || '')));
+    if (!list.length) { toast(scopeTitle ? `All of ${scopeTitle}'s songs already have metadata` : 'All songs already have metadata'); return; }
     const roster = [...S.artists.values()];
     S.tagReview = S.tagReview || [];
-    Object.assign(fixUI, { running: true, album: '', albumIdx: 0, albumCount: list.length, scanned: 0, matched: 0, fixed: 0, notFound: 0, log: [], lastProgressAt: Date.now(), via: { apple: 0, deezer: 0, musicbrainz: 0, spotify: 0, memory: 0, acoustid: 0 } });
+    Object.assign(fixUI, { running: true, album: '', scopeTitle, albumIdx: 0, albumCount: list.length, scanned: 0, matched: 0, fixed: 0, notFound: 0, log: [], lastProgressAt: Date.now(), via: { apple: 0, deezer: 0, musicbrainz: 0, spotify: 0, memory: 0, acoustid: 0 } });
     const markProgress = () => { fixUI.lastProgressAt = Date.now(); };
     buildFixList(list);
     paintFixUI();
@@ -2447,7 +2421,7 @@ const App = (() => {
       : 'utag fixer: tags already look good');
     } finally {
       // v8.1: the run can never wedge the button on "Fixing…" again.
-      fixUI.running = false; fixUI.album = ''; fixUI.skipNow = null;
+      fixUI.running = false; fixUI.album = ''; fixUI.skipNow = null; fixUI.scopeTitle = '';
       try { paintFixUI(); } catch (e) {}
     }
   }
@@ -2664,9 +2638,9 @@ const App = (() => {
         await Player.playContext(ctx, ids, ids[0]);
         break;
       }
-      case 'fix-album': await fixAlbumByKey(id); break;
       case 'fix-all-tags': nav('tagFixer'); break;
       case 'fix-run': fixAllSongs(); break;
+      case 'fix-artist': fixArtistByKey(id); break;
       case 'fix-skip': {
         const t = S.byId.get(Number(id));
         if (!t) break;
@@ -2802,30 +2776,25 @@ const App = (() => {
         break;
       }
       case 'sheet-fixtags': {
+        // v8.5: the fixer no longer works at album scope — retag just this track.
         const t = S.byId.get(Number(id));
         closeSheet();
         if (!t) break;
-        const a = albums().find(x => x.tracks.some(y => y.id === t.id));
-        if (!a) {
-          // Loose song, not on an album: retag just this track.
-          if (S.fixing) break;
-          const knownAlbums = albums().filter(x => x.name && !x.single).map(x => ({ name: x.name, artist: x.artist }));
-          const knownArtists = [...new Set(S.tracks.map(x => x.artist).filter(x => x && x !== 'Unknown Artist'))];
-          toast('Fixing tags…');
-          S.fixing = 'track-' + t.id; render();
-          let res = null;
-          try { res = await Importer.fixAlbum([t], knownAlbums, knownArtists); } catch (e) { console.warn('fix-track failed', e); }
-          S.fixing = null;
-          try {
-            await refreshTracks(); render(); paintMini();
-            if (res && res.fixed > 0) toast('Tags fixed');
-            else if (res && res.notFound) toast('Couldn\u2019t find tags for this song');
-            else if (res) toast('Tags already look good');
-            else toast('Fix failed, try again');
-          } catch (e) { console.warn('fix-track render failed', e); }
-          break;
-        }
-        await fixAlbumByKey(a.key);
+        if (S.fixing) break;
+        const knownAlbums = albums().filter(x => x.name && !x.single).map(x => ({ name: x.name, artist: x.artist }));
+        const knownArtists = [...new Set(S.tracks.map(x => x.artist).filter(x => x && x !== 'Unknown Artist'))];
+        toast('Fixing tags…');
+        S.fixing = 'track-' + t.id; render();
+        let res = null;
+        try { res = await Importer.fixAlbum([t], knownAlbums, knownArtists); } catch (e) { console.warn('fix-track failed', e); }
+        S.fixing = null;
+        try {
+          await refreshTracks(); render(); paintMini();
+          if (res && res.fixed > 0) toast('Tags fixed');
+          else if (res && res.notFound) toast('Couldn\u2019t find tags for this song');
+          else if (res) toast('Tags already look good');
+          else toast('Fix failed, try again');
+        } catch (e) { console.warn('fix-track render failed', e); }
         break;
       }
       case 'play-track': {
