@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v7.6';
+  const APP_VERSION = 'v7.7';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -1039,6 +1039,10 @@ const App = (() => {
     <div class="setgroup"><h2>Playback</h2>
       <div class="setrow" data-act="clear-recent"><div>Clear recently played</div></div>
     </div>
+    <div class="setgroup"><h2>Metadata</h2>
+      <div class="setrow"><div>fanart.tv API key<div class="sub">Extra artwork source for the utag fixer — stored only on this iPhone, never uploaded</div></div></div>
+      <div style="padding:0 16px 14px"><input id="fanart-key" type="text" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="Paste key here" style="width:100%;box-sizing:border-box;padding:10px 12px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--text);font-size:15px"></div>
+    </div>
     <div class="setgroup"><h2>App</h2>
       <div class="setrow" id="update-row" data-act="check-update"><div>App updates<div class="sub" id="update-sub">Checking for updates…</div></div><span class="updpill" id="update-pill">…</span></div>
     </div>
@@ -1746,6 +1750,22 @@ const App = (() => {
     if (cur.v === 'artist') bindArtistScroll();
     if (cur.v === 'driveBackup') paintDbBgMode();
     if (cur.v === 'tagFixer') { buildFixList(); paintFixUI(); paintTagFixResults(); }
+    if (cur.v === 'settings') {
+      // fanart.tv key lives only on this device (kv store) — never in the repo.
+      try {
+        DB.kvGet('fanartKey', '').then(v => {
+          const i = document.getElementById('fanart-key');
+          if (i && document.activeElement !== i) i.value = v || '';
+        }).catch(() => {});
+        const fi = document.getElementById('fanart-key');
+        if (fi && !fi._fkeyBound) {
+          fi._fkeyBound = true;
+          fi.addEventListener('change', () => {
+            DB.kvSet('fanartKey', fi.value.trim()).then(() => toast('fanart.tv key saved')).catch(() => {});
+          });
+        }
+      } catch (e) {}
+    }
     S._lastViewKey = cur.v + '|' + (cur.id || '');
     document.querySelectorAll('.tab').forEach(b => {
       const on = b.dataset.tab === S.tab;
@@ -2487,15 +2507,24 @@ const App = (() => {
               tr.tagsVia = (t.tagsVia ? t.tagsVia + '+' : '') + 'audit(' + it.proposal.source + ')';
               await DB.updateTrack(t.id, { [it.proposal.field]: it.proposal.to, tagsVia: tr.tagsVia, tagged: true });
               Object.assign(t, { [it.proposal.field]: it.proposal.to, tagsVia: tr.tagsVia, tagged: true });
+              // v7.7 calibration: remember what was approved and how sure the
+              // fixer was, so a later hand-edit can log a rejection signal.
+              t.autoConf = { ...(t.autoConf || {}), [it.proposal.field]: it.proposal.confidence };
+              t.autoSource = { ...(t.autoSource || {}), [it.proposal.field]: it.proposal.source };
               try { Importer.learnFix(before, t); } catch (e) {}
             }
           } catch (e) {}
+          try { Importer.logCalib(it.proposal.source, it.proposal.confidence, true); } catch (e) {}
           S.tagReview.splice(i, 1);
         }
         render();
         break;
       }
       case 'tag-review-skip': {
+        try {
+          const it = S.tagReview[Number(el.dataset.idx)];
+          if (it) Importer.logCalib(it.proposal.source, it.proposal.confidence, false);
+        } catch (e) {}
         S.tagReview.splice(Number(el.dataset.idx), 1); render();
         break;
       }
@@ -2509,6 +2538,9 @@ const App = (() => {
               const tagsVia = (t.tagsVia ? t.tagsVia + '+' : '') + 'audit(' + it.proposal.source + ')';
               await DB.updateTrack(t.id, { [it.proposal.field]: it.proposal.to, tagsVia, tagged: true });
               Object.assign(t, { [it.proposal.field]: it.proposal.to, tagsVia, tagged: true });
+              t.autoConf = { ...(t.autoConf || {}), [it.proposal.field]: it.proposal.confidence };
+              t.autoSource = { ...(t.autoSource || {}), [it.proposal.field]: it.proposal.source };
+              try { Importer.logCalib(it.proposal.source, it.proposal.confidence, true); } catch (e) {}
             }
           } catch (e) {}
         }
@@ -2545,6 +2577,17 @@ const App = (() => {
           await DB.updateTrack(tid, patch);
           const t = S.byId.get(tid); if (t) Object.assign(t, patch);
           if (beforeTags && t) { try { Importer.learnFix(beforeTags, t); } catch (e) {} }
+          // v7.7 calibration: hand-editing a field the fixer auto-set is a
+          // rejection signal at that confidence (best-effort, in-session).
+          try {
+            if (beforeTags && t && t.autoConf) {
+              for (const f of ['title', 'artist', 'album', 'albumArtist', 'genre']) {
+                if (t.autoConf[f] !== undefined && String(patch[f] ?? '') !== String(beforeTags[f] ?? '')) {
+                  Importer.logCalib((t.autoSource || {})[f] || 'unknown', t.autoConf[f], false);
+                }
+              }
+            }
+          } catch (e) {}
           try { S.artURLs.delete(tid); } catch (e) {}
           closeSheet(); await refreshTracks(); render(); paintMini();
           paintFixUI();

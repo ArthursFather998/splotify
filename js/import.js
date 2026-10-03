@@ -77,6 +77,11 @@ const Importer = (() => {
         try { if (await autoTagDeezerArt(tr, q)) { filled = true; break; } } catch (e) {}
       }
     }
+    // v7.7: extended art chain (Spotify oEmbed → Cover Art Archive →
+    // fanart.tv) when Apple and Deezer both came up empty.
+    if (!tr.art && !tr.artManual) {
+      try { if (await artChainExtra(tr)) filled = true; } catch (e) {}
+    }
     return filled;
   }
   // Deezer artwork fill (v7.6): when Apple had no art, Deezer's cover_xl
@@ -100,6 +105,7 @@ const Importer = (() => {
             if (rr.ok) { const b = await rr.blob(); if (b && b.size > 1000) blob = b; }
           } catch (e) {}
           tr.art = blob || au;
+          tr.artSource = 'Deezer';
           tr.tagsVia = (tr.tagsVia ? tr.tagsVia + '+' : '') + 'Deezer';
           tr.tagged = true;
           return true;
@@ -107,6 +113,88 @@ const Importer = (() => {
       }
     }
     return false;
+  }
+  // Fetch an artwork URL with a 6s timeout. Returns the Blob, false when
+  // the URL definitively has no image (404 — try the next candidate), or
+  // null when the fetch flaked (the URL string is still a viable fallback).
+  async function artBlob(url) {
+    try {
+      const c = new AbortController(); const tm = setTimeout(() => c.abort(), 6000);
+      const rr = await fetch(url, { signal: c.signal }); clearTimeout(tm);
+      if (rr.status === 404) return false;
+      if (rr.ok) { const b = await rr.blob(); if (b && b.size > 1000) return b; }
+    } catch (e) {}
+    return null;
+  }
+  // v7.7 extended artwork chain. Runs when Apple and Deezer found no art.
+  // Sources: Spotify oEmbed (imported tracks carry a spotifyId — no auth),
+  // Cover Art Archive (via the MusicBrainz release id), fanart.tv (needs
+  // the key stored in Settings → Metadata). Candidates are tried highest
+  // resolution first; the winner's source is recorded on tr.artSource.
+  // Never touches existing or hand-set art.
+  async function artChainExtra(tr) {
+    if (tr.art || tr.artManual) return false;
+    const cands = [];
+    if (tr.spotifyId) {
+      try {
+        const o = await fetchJSON('https://open.spotify.com/oembed?url=' + encodeURIComponent('https://open.spotify.com/track/' + tr.spotifyId), 8000);
+        if (o && o.thumbnail_url) cands.push({ url: o.thumbnail_url, w: o.thumbnail_width || 640, source: 'Spotify' });
+      } catch (e) {}
+    }
+    // Cover Art Archive + fanart.tv need a MusicBrainz release id. The MB
+    // lookup is cached and polite (1/sec), so a repeat query costs nothing.
+    try {
+      const recs = await mbSearchRecording(tr.title, tr.artist);
+      const pick = mbPick(recs, tr);
+      const rel = pick && (pick.releases || [])[0];
+      const ac = pick && (pick['artist-credit'] || [])[0];
+      const artistId = ac && ac.artist && ac.artist.id;
+      let fkey = null;
+      try { fkey = await DB.kvGet('fanartKey', null); } catch (e) {}
+      if (rel && rel.id) {
+        cands.push({ url: 'https://coverartarchive.org/release/' + rel.id + '/front', w: 1400, source: 'Cover Art Archive' });
+        if (fkey) {
+          try {
+            const f = await fetchJSON('https://webservice.fanart.tv/v3/music/albums/' + rel.id + '?api_key=' + encodeURIComponent(fkey), 8000);
+            const alb = f && f.albums && f.albums[rel.id];
+            const covers = alb && alb.albumcover;
+            if (covers && covers.length && covers[0].url) cands.push({ url: covers[0].url, w: 1000, source: 'fanart.tv' });
+          } catch (e) {}
+        }
+      }
+      if (fkey && artistId) {
+        try {
+          const f = await fetchJSON('https://webservice.fanart.tv/v3/music/' + artistId + '?api_key=' + encodeURIComponent(fkey), 8000);
+          const thumbs = f && f.artistthumb;
+          if (thumbs && thumbs.length && thumbs[0].url) cands.push({ url: thumbs[0].url, w: 1000, source: 'fanart.tv' });
+        } catch (e) {}
+      }
+    } catch (e) {}
+    if (!cands.length) return false;
+    cands.sort((a, b) => b.w - a.w);
+    for (const cd of cands) {
+      const blob = await artBlob(cd.url);
+      if (blob === false) continue; // definitively missing — try the next
+      tr.art = blob || cd.url;
+      tr.artSource = cd.source;
+      tr.tagsVia = (tr.tagsVia ? tr.tagsVia + '+' : '') + cd.source;
+      tr.tagged = true;
+      return true;
+    }
+    return false;
+  }
+  // v7.7 calibration signals: every review approve/skip (and approve-all)
+  // is logged per source + confidence bucket into the tagMemory store.
+  // Thresholds stay fixed this version — v7.8 adapts them from these.
+  async function logCalib(source, confidence, approved) {
+    try {
+      const bucket = Math.round((confidence || 0) * 20) / 20; // 0.05 steps
+      const key = 'calib:' + (source || 'unknown') + ':' + bucket.toFixed(2);
+      const rec = (await DB.memGet(key)) || { key, approved: 0, total: 0 };
+      rec.approved += approved ? 1 : 0;
+      rec.total += 1;
+      await DB.memPut(rec);
+    } catch (e) {}
   }
   async function autoTagQuery(tr, q) {
     const qs = ((q.a ? q.a + ' ' : '') + q.t).trim();
@@ -128,7 +216,8 @@ const Importer = (() => {
     if (!tr.year) tr.year = (best.releaseDate || '').slice(0, 4) || tr.year;
     if (!tr.trackNo) tr.trackNo = best.trackNumber || tr.trackNo;
     tr.tagsVia = tr.tagsVia || 'Apple Music';
-    const au = (best.artworkUrl100 || '').replace('100x100bb', '600x600bb');
+    // v7.7: 1200px art (was 600) — crisp on retina, still cheap to store.
+    const au = (best.artworkUrl100 || '').replace('100x100bb', '1200x1200bb');
     // Never overwrite hand-set artwork. Blob first (works offline); the URL
     // string as fallback so art still displays if the download flakes.
     if (au && !tr.art && !tr.artManual) {
@@ -139,6 +228,7 @@ const Importer = (() => {
         if (rr.ok) { const b = await rr.blob(); if (b && b.size > 1000) blob = b; }
       } catch (e) {}
       tr.art = blob || au;
+      tr.artSource = 'Apple Music';
     }
     tr.tagged = true;
     return true;
@@ -467,6 +557,9 @@ const Importer = (() => {
       title: tr.title, artist: tr.artist, album: tr.album, albumArtist: tr.albumArtist,
       genre: tr.genre, year: tr.year, trackNo: tr.trackNo, discNo: tr.discNo,
       art: tr.art, tagged: tr.tagged, tagsVia: tr.tagsVia, diag: tr.diag,
+      // Winning artwork source (v7.7): only written when present, so a
+      // fixer pass never clears it with an undefined write.
+      ...(tr.artSource !== undefined ? { artSource: tr.artSource } : {}),
       // Hand-set artwork flag: only written when explicitly present, so a
       // fixer pass never accidentally clears it with an undefined write.
       ...(tr.artManual !== undefined ? { artManual: tr.artManual } : {}),
@@ -495,7 +588,8 @@ const Importer = (() => {
       const songs = ld.results.filter(r => r.wrapperType === 'track');
       if (!songs.length) return null;
       let art = null;
-      const au = (col.artworkUrl100 || '').replace('100x100bb', '600x600bb');
+      // v7.7: 1200px (was 600).
+      const au = (col.artworkUrl100 || '').replace('100x100bb', '1200x1200bb');
       if (au) {
         try {
           const c = new AbortController(); const tm = setTimeout(() => c.abort(), 6000);
@@ -727,6 +821,7 @@ const Importer = (() => {
         title: tr.title, artist: tr.artist, album: tr.album, albumArtist: tr.albumArtist,
         genre: tr.genre, year: tr.year, trackNo: tr.trackNo, discNo: tr.discNo,
         art: tr.art, tagged: tr.tagged, tagsVia: tr.tagsVia,
+        ...(tr.artSource !== undefined ? { artSource: tr.artSource } : {}),
       });
     };
     // The artist is always his.
@@ -741,6 +836,7 @@ const Importer = (() => {
         const m = matchTrackMulti(tr, listing.songs, new Set());
         if (m) {
           const changed = applyListing(tr, m, listing.col, listing.art || MY_ALBUM_ART);
+          if (!listing.art) tr.artSource = 'bundled'; // his rose, not Apple's
           await saveMy();
           const didChange = changed || notes.length > 0;
           if (didChange) notes.push('matched Apple Music album');
@@ -758,7 +854,7 @@ const Importer = (() => {
       tr.trackNo = ms.idx + 1; tr.discNo = 1;
       if (!tr.artManual) {
         const want = singleArt(ms.s.name);
-        if (want && tr.art !== want) { tr.art = want; notes.push('artwork restored'); }
+        if (want && tr.art !== want) { tr.art = want; tr.artSource = 'bundled'; notes.push('artwork restored'); }
       }
       tr.tagsVia = 'Spotify';
       await saveMy();
@@ -768,7 +864,7 @@ const Importer = (() => {
     //    real album tag (nothing else to do here).
     if (ms && !tr.art && !tr.artManual) {
       const want = singleArt(ms.s.name);
-      if (want) { tr.art = want; notes.push('artwork restored'); }
+      if (want) { tr.art = want; tr.artSource = 'bundled'; notes.push('artwork restored'); }
     }
     if (notes.length) {
       tr.tagsVia = tr.tagsVia || 'Spotify';
@@ -841,7 +937,7 @@ const Importer = (() => {
       let artSet = false;
       if (!tr.art && !tr.artManual) {
         const p = singleArt(s.name);
-        if (p) { tr.art = p; artSet = true; }
+        if (p) { tr.art = p; tr.artSource = 'bundled'; artSet = true; }
       }
       try {
         await persistFix(t.id, tr);
@@ -849,6 +945,7 @@ const Importer = (() => {
           title: tr.title, artist: tr.artist, album: tr.album, albumArtist: tr.albumArtist,
           genre: tr.genre, year: tr.year, trackNo: tr.trackNo, discNo: tr.discNo,
           art: tr.art, tagged: tr.tagged, tagsVia: tr.tagsVia, diag: tr.diag,
+          ...(tr.artSource !== undefined ? { artSource: tr.artSource } : {}),
         });
         if (changed || artSet) fixed++;
       } catch (e) {}
@@ -1172,6 +1269,7 @@ const Importer = (() => {
       title: tr.title, artist: tr.artist, album: tr.album, albumArtist: tr.albumArtist,
       genre: tr.genre, year: tr.year, trackNo: tr.trackNo, discNo: tr.discNo,
       art: tr.art, tagged: tr.tagged, tagsVia: tr.tagsVia,
+      ...(tr.artSource !== undefined ? { artSource: tr.artSource } : {}),
     });
     return true;
   }
@@ -1218,6 +1316,10 @@ const Importer = (() => {
     tr.tagged = true;
     await persistFix(t.id, tr);
     Object.assign(t, { [p.field]: p.to, tagsVia: tr.tagsVia, tagged: true });
+    // v7.7 calibration: remember what the fixer auto-set and how sure it
+    // was, so a later hand-edit can log a rejection signal (in-memory only).
+    t.autoConf = { ...(t.autoConf || {}), [p.field]: p.confidence };
+    t.autoSource = { ...(t.autoSource || {}), [p.field]: p.source };
   }
   /* One song, fully fixed — the single engine behind the utag fixer.
      1. Scored corrections (roster → Apple → MusicBrainz, filename fallback).
@@ -1279,7 +1381,7 @@ const Importer = (() => {
       try {
         if (await autoTag(tr)) {
           const upd = {};
-          ['title', 'artist', 'album', 'albumArtist', 'genre', 'year', 'trackNo', 'discNo', 'art'].forEach(f => {
+          ['title', 'artist', 'album', 'albumArtist', 'genre', 'year', 'trackNo', 'discNo', 'art', 'artSource'].forEach(f => {
             if (tr[f] !== undefined && String(tr[f] !== null ? tr[f] : '') !== String(t[f] !== null && t[f] !== undefined ? t[f] : '')) upd[f] = tr[f];
           });
           if (Object.keys(upd).length) {
@@ -1397,7 +1499,7 @@ const Importer = (() => {
     // Take the listing's artwork: listings are tried albums-first, so an
     // album track gets the album art (like Spotify), not a stale single cover.
     // Hand-set artwork is never overwritten.
-    if (art && !tr.artManual) tr.art = art;
+    if (art && !tr.artManual) { tr.art = art; if (!tr.artSource) tr.artSource = 'Apple Music'; }
     tr.tagged = true;
     if ((tr.diag || '').indexOf('fix v') === 0) tr.diag = 'reader-ok';
     return [tr.title, tr.artist, tr.album, tr.albumArtist, tr.genre, tr.year, tr.trackNo, tr.discNo, !!tr.art].join('|') !== before;
@@ -1428,6 +1530,7 @@ const Importer = (() => {
               title: tr.title, artist: tr.artist, album: tr.album, albumArtist: tr.albumArtist,
               genre: tr.genre, year: tr.year, trackNo: tr.trackNo, discNo: tr.discNo,
               art: tr.art, tagged: tr.tagged, tagsVia: tr.tagsVia,
+              ...(tr.artSource !== undefined ? { artSource: tr.artSource } : {}),
             });
             fixed++; matched++; via.apple++; continue;
           }
@@ -1569,5 +1672,5 @@ const Importer = (() => {
     } catch (e) { console.warn('healLibrary failed', e); }
     return { fixed, changed: fixed + touched };
   }
-  return { bind, open: () => { if (!busy) picker().click(); }, openZip: () => { if (!busy) zippicker().click(); }, fmtDur, healLibrary, fixAlbum, recordSingles, singleOrder, singleArt, mySingleArt, parseOne, auditLibrary, fixTrack, learnFix, memCount };
+  return { bind, open: () => { if (!busy) picker().click(); }, openZip: () => { if (!busy) zippicker().click(); }, fmtDur, healLibrary, fixAlbum, recordSingles, singleOrder, singleArt, mySingleArt, parseOne, auditLibrary, fixTrack, learnFix, memCount, logCalib, artChainExtra };
 })();
