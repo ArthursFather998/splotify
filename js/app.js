@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v7.9';
+  const APP_VERSION = 'v8.0';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -566,6 +566,50 @@ const App = (() => {
     <button class="iconbtn" data-act="open-settings" aria-label="Settings">${icon('gear')}</button>`;
   }
 
+  /* v8.0 Spotify-style search ranking (pure — unit-tested in node).
+     Tier: 0 exact, 1 starts-with, 2 word-starts, 3 contains, 4 no match. */
+  function searchTier(name, q) {
+    const n = String(name || '').toLowerCase().trim();
+    if (!n || !q) return 4;
+    if (n === q) return 0;
+    if (n.startsWith(q)) return 1;
+    if (n.split(/[^a-z0-9]+/).some(w => w.startsWith(q))) return 2;
+    if (n.includes(q)) return 3;
+    return 4;
+  }
+  // list: [{name, key, followed, plays, placeholder}]. Sorted best-first.
+  function rankArtistHits(q, list) {
+    return [...list]
+      .map(h => ({ ...h, tier: searchTier(h.name, q) }))
+      .filter(h => h.tier <= 3)
+      .sort((x, y) => x.tier - y.tier || (y.followed - x.followed) || y.plays - x.plays || x.name.localeCompare(y.name));
+  }
+  // list: [{t:{id,title,artist,album}, plays}]. Title match outranks
+  // artist/album match; your play counts break ties.
+  function rankSongHits(q, list) {
+    return [...list]
+      .map(e => {
+        const tt = searchTier(e.t.title, q), at = searchTier(e.t.artist, q), alt = searchTier(e.t.album, q);
+        let tier = 99;
+        if (tt <= 3) tier = tt;
+        else if (at <= 3) tier = 4 + at;
+        else if (alt <= 3) tier = 8 + alt;
+        return { ...e, tier };
+      })
+      .filter(e => e.tier <= 11)
+      .sort((x, y) => x.tier - y.tier || y.plays - x.plays || String(x.t.title).localeCompare(String(y.t.title)));
+  }
+  // Top result: the artist wins when the query names them (exact or
+  // starts-with); an exact song-title match with no strong artist match
+  // takes it; otherwise the best artist, then the best song.
+  function pickTopResult(aHits, sHits) {
+    const bestA = aHits[0], bestS = sHits[0];
+    if (bestA && bestA.tier <= 1) return { kind: 'artist', a: bestA };
+    if (bestS && bestS.tier === 0) return { kind: 'song', s: bestS };
+    if (bestA) return { kind: 'artist', a: bestA };
+    if (bestS) return { kind: 'song', s: bestS };
+    return null;
+  }
   function vSearch() {
     const q = S.query.trim().toLowerCase();
     S.viewCtx = { kicker: 'PLAYING FROM SEARCH', name: 'Search', kind: 'search', id: 'search' };
@@ -582,34 +626,50 @@ const App = (() => {
         <div class="trow" data-act="open-albums"><span style="display:flex;color:var(--sub)">${icon('disc', 'width:30px;height:30px')}</span><div class="tmeta"><div class="ttitle">All albums</div><div class="tsub">${albums().length} albums</div></div><span style="color:var(--sub);display:flex">${icon('chevR')}</span></div>
         ${S.tracks.length ? '' : `<div class="empty"><h3>Search your music</h3><p>Import songs first, then find them here.</p><button class="bigbtn" data-act="import">Add music</button></div>`}`;
     } else {
-      const ts = S.tracks.filter(t => (t.title + ' ' + t.artist + ' ' + t.album).toLowerCase().includes(q)).slice(0, 20);
-      const as = artists().filter(a => a.name.toLowerCase().includes(q)).slice(0, 8);
-      // v7.0: roster artists (incl. placeholders with no SDB songs yet) are
-      // searchable too, with follow buttons. Deduped against derived hits.
-      const rosterHits = [];
+      const plays = id => (S.playCounts && S.playCounts[id]) || 0;
+      // v8.0: artists first, like Spotify. Derived artists (with songs) +
+      // roster placeholders, ranked by match quality, follow state, plays.
+      const seenA = new Set();
+      const aList = [];
+      artists().forEach(a => {
+        const key = artistKey(a.name);
+        seenA.add(key);
+        aList.push({ name: a.name, key, followed: S.followedArtists.has(key),
+          plays: a.tracks.reduce((sum, t) => sum + plays(t.id), 0), placeholder: false });
+      });
       try {
-        S.artists.forEach(a => {
-          if (!a.name.toLowerCase().includes(q)) return;
-          if (as.some(x => artistKey(x.name) === artistKey(a.name))) return;
-          if (rosterHits.some(x => artistKey(x.name) === artistKey(a.name))) return;
-          rosterHits.push(a);
+        S.artists.forEach(ra => {
+          const key = artistKey(ra.name);
+          if (seenA.has(key)) return;
+          seenA.add(key);
+          aList.push({ name: ra.name, key, followed: S.followedArtists.has(key), plays: 0, placeholder: true });
         });
       } catch (e) {}
-      const rosterShown = rosterHits.slice(0, Math.max(0, 8 - as.length));
+      const aHits = rankArtistHits(q, aList).slice(0, 8);
+      // Songs underneath: title match outranks artist/album match, then plays.
+      const sHits = rankSongHits(q, S.tracks.map(t => ({ t, plays: plays(t.id) }))).slice(0, 20);
       const als = albums().filter(a => (a.name + ' ' + a.artist).toLowerCase().includes(q)).slice(0, 8);
       const ps = S._pls.filter(p => p.name.toLowerCase().includes(q));
       const row = (name, sub, t, act) => `<div class="trow" ${act}>${artImg(t, 'art')}<div class="tmeta"><div class="ttitle">${esc(name)}</div><div class="tsub">${esc(sub)}</div></div></div>`;
-      const rosterRow = a => {
-        const t = S.tracks.find(t => t.art && trackArtistKeys(t).includes(artistKey(a.name)));
-        const following = S.followedArtists.has(artistKey(a.name));
+      const artistRow = h => {
+        const t = S.tracks.find(t => t.art && trackArtistKeys(t).includes(h.key));
         const art = t ? artImg(t, 'art') : `<div class="lib-thumb lib-ph round">${icon('person', 'width:26px;height:26px')}</div>`;
-        return `<div class="trow" data-act="open-artist" data-id="${esc(a.name)}">${art}<div class="tmeta"><div class="ttitle">${esc(a.name)}</div><div class="tsub">Artist${a.isPlaceholder && !following ? ' \u2022 No songs yet' : ''}</div></div><button class="iconbtn" data-act="artist-follow" data-id="${esc(a.name)}" aria-label="${following ? 'Unfollow' : 'Follow'}">${icon(following ? 'check' : 'plus')}</button></div>`;
+        return `<div class="trow" data-act="open-artist" data-id="${esc(h.name)}">${art}<div class="tmeta"><div class="ttitle">${esc(h.name)}</div><div class="tsub">Artist${h.placeholder && !h.followed ? ' \u2022 No songs yet' : ''}</div></div><button class="iconbtn" data-act="artist-follow" data-id="${esc(h.name)}" aria-label="${h.followed ? 'Unfollow' : 'Follow'}">${icon(h.followed ? 'check' : 'plus')}</button></div>`;
       };
-      body = `${ts.length ? `<div class="sectionhead"><h2>Songs</h2></div>${ts.map(t => trackRow(t)).join('')}` : ''}
-      ${(as.length || rosterShown.length) ? `<div class="sectionhead"><h2>Artists</h2></div>${as.map(a => row(a.name, 'Artist', a.art, `data-act="open-artist" data-id="${esc(a.name)}"`)).join('')}${rosterShown.map(rosterRow).join('')}` : ''}
-      ${als.length ? `<div class="sectionhead"><h2>Albums</h2></div>${als.map(a => row(a.name, 'Album • ' + a.artist, a.art, `data-act="open-album" data-id="${esc(a.key)}"`)).join('')}` : ''}
-      ${ps.length ? `<div class="sectionhead"><h2>Playlists</h2></div>${ps.map(p => { const t = p.trackIds.map(id => S.byId.get(id)).find(x => x); return row(p.name, `Playlist • ${p.trackIds.length} songs`, t, `data-act="open-playlist" data-id="${p.id}"`); }).join('')}` : ''}
-      ${(!ts.length && !as.length && !als.length && !ps.length) ? `<div class="empty"><h3>No results for "${esc(S.query)}"</h3><p>Check the spelling, or try an artist or song title.</p></div>` : ''}`;
+      const top = pickTopResult(aHits, sHits);
+      const topHtml = !top ? '' : `<div class="sectionhead"><h2>Top result</h2></div>` + (top.kind === 'artist'
+        ? (() => {
+            const t = S.tracks.find(t => t.art && trackArtistKeys(t).includes(top.a.key));
+            const art = t ? artImg(t, 'top-art') : `<div class="top-art art-ph">${icon('person', 'width:44px;height:44px')}</div>`;
+            return `<div class="top-result" data-act="open-artist" data-id="${esc(top.a.name)}">${art}<div class="tmeta"><div class="ttitle">${esc(top.a.name)}</div><div class="tsub">Artist</div></div><button class="bigbtn ${top.a.followed ? '' : 'pink'}" data-act="artist-follow" data-id="${esc(top.a.name)}">${top.a.followed ? 'Following' : 'Follow'}</button></div>`;
+          })()
+        : trackRow(top.s.t));
+      body = `${topHtml}
+      ${aHits.length ? `<div class="sectionhead"><h2>Artists</h2></div>${aHits.map(artistRow).join('')}` : ''}
+      ${sHits.length ? `<div class="sectionhead"><h2>Songs</h2></div>${sHits.map(e => trackRow(e.t)).join('')}` : ''}
+      ${als.length ? `<div class="sectionhead"><h2>Albums</h2></div>${als.map(a => row(a.name, 'Album \u2022 ' + a.artist, a.art, `data-act="open-album" data-id="${esc(a.key)}"`)).join('')}` : ''}
+      ${ps.length ? `<div class="sectionhead"><h2>Playlists</h2></div>${ps.map(p => { const t = p.trackIds.map(id => S.byId.get(id)).find(x => x); return row(p.name, `Playlist \u2022 ${p.trackIds.length} songs`, t, `data-act="open-playlist" data-id="${p.id}"`); }).join('')}` : ''}
+      ${(!aHits.length && !sHits.length && !als.length && !ps.length) ? `<div class="empty"><h3>No results for "${esc(S.query)}"</h3><p>Check the spelling, or try an artist or song title.</p></div>` : ''}`;
     }
     return `<div class="searchbox">${icon('search')}<input id="q" placeholder="What do you want to listen to?" value="${esc(S.query)}" autocomplete="off"></div>${body}`;
   }
@@ -3064,6 +3124,7 @@ const App = (() => {
   return {
     boot, nav, toast, logRecent, logPlay,
     artURL, artImg, artErr,
+    searchTier, rankArtistHits, rankSongHits, pickTopResult, vSearch,
     libraryAdd, libraryRemove, libraryHas,
     upsertArtist, setArtistFollowed, notePlaylist,
     onLibraryChanged: async () => {

@@ -39,6 +39,13 @@ input{font:inherit}
 .trow .eq{display:none}
 .trow.playing .eq{display:block}
 .sectionhead{display:flex;align-items:center;justify-content:space-between;padding:18px 16px 6px}
+/* v8.0 Spotify-style top result card */
+.top-result{display:flex;align-items:center;gap:14px;padding:10px 16px;min-height:104px}
+.top-result:active{background:rgba(255,255,255,.06)}
+.top-result .top-art{width:88px;height:88px;flex:none;background:#333;object-fit:cover;border-radius:8px}
+.top-result .tmeta{flex:1;min-width:0}
+.top-result .ttitle{font-size:20px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.top-result .tsub{font-size:13px;color:var(--sub);margin-top:4px}
 .sectionhead h2{font-size:17px;font-weight:700}
 .sectionhead button{font-size:12px;font-weight:600;letter-spacing:1.2px;color:var(--sub)}
 
