@@ -408,6 +408,10 @@ const App = (() => {
   async function loadRecent() {
     S.recent = await DB.kvGet('recent', []);
     S.notifSeen = await DB.kvGet('notifSeen', true);
+    // Per-song play counts + last-played timestamps: the taste signal behind
+    // Made by Splotify. Written on every track start, throttled to disk.
+    S.playCounts = await DB.kvGet('playCounts', {});
+    S.lastPlayed = await DB.kvGet('lastPlayed', {});
   }
   function logRecent(ctx) {
     if (!ctx || ctx.kind === 'single' || ctx.kind === 'search') return;
@@ -415,6 +419,20 @@ const App = (() => {
     S.recent.unshift({ kind: ctx.kind, id: ctx.id, ts: Date.now() });
     S.recent = S.recent.slice(0, 20);
     DB.kvSet('recent', S.recent).catch(() => {});
+  }
+  /* ---------- play counts (Made by Splotify taste signal) ---------- */
+  let playSaveT = 0;
+  function logPlay(id) {
+    id = Number(id);
+    if (!id) return;
+    S.playCounts[id] = (S.playCounts[id] || 0) + 1;
+    S.lastPlayed[id] = Date.now();
+    const n = Date.now();
+    if (n - playSaveT > 15000) {
+      playSaveT = n;
+      DB.kvSet('playCounts', S.playCounts).catch(() => {});
+      DB.kvSet('lastPlayed', S.lastPlayed).catch(() => {});
+    }
   }
   function recentCards() {
     // resolve recents to {name, artTrack, act}
@@ -492,8 +510,9 @@ const App = (() => {
     const libCount = S.library.length + S._pls.length + S.followedArtists.size + Player.state.liked.size;
     if (!libCount) return `<div class="home-top"><h1>${greeting()}</h1><div class="home-icons">${hicons()}</div></div>
       <div class="empty">${icon('heart', 'width:64px;height:64px;color:var(--pink)')}
-      <h3>Your library is empty</h3><p>Your songs are in the SDB. Save the ones you love, or pull in your Spotify collection.</p>
-      <div style="display:flex;gap:10px;justify-content:center;margin-top:14px;flex-wrap:wrap"><button class="bigbtn pink" data-act="tab" data-tab="search">Search the SDB</button><button class="bigbtn" data-act="open-create-sheet">Create a playlist</button></div></div>`;
+      <h3>Your library is empty</h3><p>Save the songs you love, or pull in your Spotify collection.</p>
+      <div style="display:flex;gap:10px;justify-content:center;margin-top:14px;flex-wrap:wrap"><button class="bigbtn pink" data-act="tab" data-tab="search">Search songs</button><button class="bigbtn" data-act="open-create-sheet">Create a playlist</button></div></div>
+      ${madeBySplotify()}`;
     const cards = recentCards();
     // Library-first fallbacks (never the raw SDB).
     const libTracks = S.library.map(id => S.byId.get(id)).filter(Boolean);
@@ -522,6 +541,7 @@ const App = (() => {
     </div>
     ${S.pill !== 'music' ? `<div class="empty"><h3>Nothing here yet</h3><p>Your imported audio appears under Music.</p><button class="bigbtn" data-act="import">Add music</button></div>` : `
     <div class="recent-grid">${grid.map(c => `<div class="recent-card" ${c.act}>${artImg(c.t, '')}<span>${esc(c.name)}</span></div>`).join('')}</div>
+    ${madeBySplotify()}
     ${ta && taAlbums.length ? `
     <div class="morelike">${artImg(ta.art, '')}<div><div class="k">More like</div><div class="n">${esc(ta.name)}</div></div></div>
     <div class="rail">${taAlbums.map(a => `<div class="railcard" data-act="open-album" data-id="${esc(a.key)}">${artImg(a.art, '')}<div class="t">${esc(a.name)}</div><div class="s">Album • ${esc(a.artist)}</div></div>`).join('')}</div>` : ''}
@@ -544,10 +564,9 @@ const App = (() => {
       const colors = ['#8d67ab', '#e13300', '#1e3264', '#e8115b', '#148a08', '#b49bc8', '#dc148c', '#477d95'];
       body = `<div class="browse-title">Browse all</div><div class="genre-grid">${top.map(([g, n], i) =>
         `<div class="genre" style="background:${colors[i % colors.length]}" data-act="open-genre" data-id="${esc(g)}"><span>${esc(g)}</span>${icon('note')}</div>`).join('')}</div>
-        <div class="browse-title" style="margin-top:18px">The SDB</div>
-        <div class="trow" data-act="open-songs"><span style="display:flex;color:var(--sub)">${icon('note', 'width:30px;height:30px')}</span><div class="tmeta"><div class="ttitle">All songs</div><div class="tsub">${S.tracks.length} songs in the Song DataBase</div></div><span style="color:var(--sub);display:flex">${icon('chevR')}</span></div>
-        <div class="trow" data-act="open-artists"><span style="display:flex;color:var(--sub)">${icon('person', 'width:30px;height:30px')}</span><div class="tmeta"><div class="ttitle">All artists</div><div class="tsub">Every artist in the SDB</div></div><span style="color:var(--sub);display:flex">${icon('chevR')}</span></div>
-        <div class="trow" data-act="open-albums"><span style="display:flex;color:var(--sub)">${icon('disc', 'width:30px;height:30px')}</span><div class="tmeta"><div class="ttitle">All albums</div><div class="tsub">Every album in the SDB</div></div><span style="color:var(--sub);display:flex">${icon('chevR')}</span></div>
+        <div class="trow" data-act="open-songs"><span style="display:flex;color:var(--sub)">${icon('note', 'width:30px;height:30px')}</span><div class="tmeta"><div class="ttitle">All songs</div><div class="tsub">${S.tracks.length} songs</div></div><span style="color:var(--sub);display:flex">${icon('chevR')}</span></div>
+        <div class="trow" data-act="open-artists"><span style="display:flex;color:var(--sub)">${icon('person', 'width:30px;height:30px')}</span><div class="tmeta"><div class="ttitle">All artists</div><div class="tsub">${artists().length} artists</div></div><span style="color:var(--sub);display:flex">${icon('chevR')}</span></div>
+        <div class="trow" data-act="open-albums"><span style="display:flex;color:var(--sub)">${icon('disc', 'width:30px;height:30px')}</span><div class="tmeta"><div class="ttitle">All albums</div><div class="tsub">${albums().length} albums</div></div><span style="color:var(--sub);display:flex">${icon('chevR')}</span></div>
         ${S.tracks.length ? '' : `<div class="empty"><h3>Search your music</h3><p>Import songs first, then find them here.</p><button class="bigbtn" data-act="import">Add music</button></div>`}`;
     } else {
       const ts = S.tracks.filter(t => (t.title + ' ' + t.artist + ' ' + t.album).toLowerCase().includes(q)).slice(0, 20);
@@ -571,7 +590,7 @@ const App = (() => {
         const t = S.tracks.find(t => t.art && trackArtistKeys(t).includes(artistKey(a.name)));
         const following = S.followedArtists.has(artistKey(a.name));
         const art = t ? artImg(t, 'art') : `<div class="lib-thumb lib-ph round">${icon('person', 'width:26px;height:26px')}</div>`;
-        return `<div class="trow" data-act="open-artist" data-id="${esc(a.name)}">${art}<div class="tmeta"><div class="ttitle">${esc(a.name)}</div><div class="tsub">Artist${a.isPlaceholder && !following ? ' \u2022 No songs in the SDB yet' : ''}</div></div><button class="iconbtn" data-act="artist-follow" data-id="${esc(a.name)}" aria-label="${following ? 'Unfollow' : 'Follow'}">${icon(following ? 'check' : 'plus')}</button></div>`;
+        return `<div class="trow" data-act="open-artist" data-id="${esc(a.name)}">${art}<div class="tmeta"><div class="ttitle">${esc(a.name)}</div><div class="tsub">Artist${a.isPlaceholder && !following ? ' \u2022 No songs yet' : ''}</div></div><button class="iconbtn" data-act="artist-follow" data-id="${esc(a.name)}" aria-label="${following ? 'Unfollow' : 'Follow'}">${icon(following ? 'check' : 'plus')}</button></div>`;
       };
       body = `${ts.length ? `<div class="sectionhead"><h2>Songs</h2></div>${ts.map(t => trackRow(t)).join('')}` : ''}
       ${(as.length || rosterShown.length) ? `<div class="sectionhead"><h2>Artists</h2></div>${as.map(a => row(a.name, 'Artist', a.art, `data-act="open-artist" data-id="${esc(a.name)}"`)).join('')}${rosterShown.map(rosterRow).join('')}` : ''}
@@ -641,7 +660,7 @@ const App = (() => {
     const items = libItems();
     const chips = [['playlists', 'Playlists'], ['artists', 'Artists'], ['albums', 'Albums']];
     const body = !items.length
-      ? '<div class="empty" style="padding:36px 24px"><h3>Your library is empty</h3><p>Save songs from the SDB, or create your first playlist.</p><div style="display:flex;gap:10px;justify-content:center;margin-top:14px;flex-wrap:wrap"><button class="bigbtn pink" data-act="open-create-sheet">Create a playlist</button><button class="bigbtn" data-act="tab" data-tab="search">Search the SDB</button></div></div>'
+      ? '<div class="empty" style="padding:36px 24px"><h3>Your library is empty</h3><p>Save songs you love, or create your first playlist.</p><div style="display:flex;gap:10px;justify-content:center;margin-top:14px;flex-wrap:wrap"><button class="bigbtn pink" data-act="open-create-sheet">Create a playlist</button><button class="bigbtn" data-act="tab" data-tab="search">Search songs</button></div></div>'
       : (S.libGrid ? '<div class="lib-grid">' + items.map(libCard).join('') + '</div>' : items.map(libRow).join(''));
     return '<div class="lib-head"><div class="lib-avatar">' + icon('person', 'width:22px;height:22px') + '</div><h1 style="text-align:left">Your Library</h1>'
       + '<button class="iconbtn" data-act="lib-search" aria-label="Search library">' + icon('search') + '</button>'
@@ -716,7 +735,7 @@ const App = (() => {
     const playIcon = isCurrent && Player.isPlaying ? 'pause' : 'play';
     const featPlaylists = (S._pls || []).filter(p => p.trackIds.some(tid => { const t = S.byId.get(tid); return t && trackArtistKeys(t).includes(akey); }));
     const fans = artists().filter(x => artistKey(x.name) !== akey).sort((x, y) => y.tracks.length - x.tracks.length).slice(0, 8);
-    const statLine = stats ? fmtListeners(stats.listeners) : `${a.tracks.length} song${a.tracks.length === 1 ? '' : 's'} in the SDB`;
+    const statLine = stats ? fmtListeners(stats.listeners) : `${a.tracks.length} song${a.tracks.length === 1 ? '' : 's'}`;
     const music = `
       <div class="sectionhead ax-section"><h2>Popular</h2></div>
       ${shownTop.map((t, i) => artistTrackRow(t, i)).join('')}
@@ -789,10 +808,10 @@ const App = (() => {
   }
   function vSongs() {
     const ts = [...S.tracks].sort((a, b) => a.title.localeCompare(b.title));
-    S.viewCtx = { kicker: 'PLAYING FROM SDB', name: 'Songs', kind: 'songs', id: 'songs' };
-    // v7.0: no play-all/shuffle-all here — the SDB is browsable, never a play context.
+    S.viewCtx = { kicker: 'PLAYING FROM SONGS', name: 'Songs', kind: 'songs', id: 'songs' };
+    // All songs browser: no play-all/shuffle-all — this is browsable, never a play context.
     return `<div class="pagehead"><button class="iconbtn" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><h1>Songs</h1><button class="iconbtn" data-act="import" aria-label="Add music">${icon('plus')}</button></div>`
-      + (ts.length ? `<div class="sdb-note">Browsing the Song DataBase \u2014 tap a song to play it, or save it to your library from \u22ef</div>` + ts.map(t => trackRow(t)).join('') : `<div class="empty"><h3>No songs yet</h3><button class="bigbtn pink" data-act="import">Add music</button></div>`);
+      + (ts.length ? `<div class="sdb-note">Tap a song to play it, or save it to your library from \u22ef</div>` + ts.map(t => trackRow(t)).join('') : `<div class="empty"><h3>No songs yet</h3><button class="bigbtn pink" data-act="import">Add music</button></div>`);
   }
   function vPlaylists() {
     const likedN = Player.state.liked.size;
@@ -813,11 +832,180 @@ const App = (() => {
     return `<div class="pagehead"><button class="iconbtn" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><h1>Artists</h1><span style="width:44px"></span></div>
     ${as.map(a => `<div class="trow" data-act="open-artist" data-id="${esc(a.name)}"><div class="art" style="border-radius:50%;overflow:hidden">${artImg(a.art, '')}</div><div class="tmeta"><div class="ttitle">${esc(a.name)}</div><div class="tsub">Artist</div></div></div>`).join('') || `<div class="empty"><p>No artists yet.</p></div>`}`;
   }
-  function vMadeForYou() {
-    // "On Repeat"-style: 25 most-played = most recently added fallback
-    const plays = DB ? null : null;
-    return `<div class="pagehead"><button class="iconbtn" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><h1>Made For You</h1><span style="width:44px"></span></div>
-    <div class="empty">${icon('sun', 'width:64px;height:64px;color:var(--pink)')}<h3>On Repeat</h3><p>Your most-played songs will gather here.</p></div>`;
+  /* ================= Made by Splotify =================
+     Curated playlists, computed on render from local signals only:
+     play counts, last-played, follows, genres, recency. Week/day-seeded
+     so a mix is stable inside its refresh window. Cold start (no plays)
+     = unbiased samplers across the collection; taste weighting grows
+     as listening accumulates. */
+  function mulberry32(a) {
+    return function () {
+      a |= 0; a = a + 0x6D2B79F5 | 0;
+      let t = Math.imul(a ^ a >>> 15, 1 | a);
+      t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+      return ((t ^ t >>> 14) >>> 0) / 4294967296;
+    };
+  }
+  function hashStr(s) { let h = 0; s = String(s); for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return Math.abs(h); }
+  function weekSeed() {
+    const d = new Date(), onejan = new Date(d.getFullYear(), 0, 1);
+    const week = Math.ceil((((d - onejan) / 86400000) + onejan.getDay() + 1) / 7);
+    return d.getFullYear() * 100 + week;
+  }
+  function daySeed() { const d = new Date(); return d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate(); }
+  function seededSample(rng, arr, n) {
+    const a = arr.slice(), out = [];
+    while (a.length && out.length < n) out.push(a.splice(Math.floor(rng() * a.length), 1)[0]);
+    return out;
+  }
+  function tasteProfile() {
+    const aW = {}, gW = {};
+    let total = 0;
+    for (const t of S.tracks) {
+      const n = (S.playCounts && S.playCounts[t.id]) || 0;
+      if (!n) continue;
+      total += n;
+      trackArtistKeys(t).forEach(k => { aW[k] = (aW[k] || 0) + n; });
+      const g = String(t.genre || '').trim();
+      if (g) gW[g] = (gW[g] || 0) + n;
+    }
+    const top = o => Object.entries(o).sort((a, b) => b[1] - a[1]).map(e => e[0]);
+    return { topArtists: top(aW).slice(0, 12), topGenres: top(gW).slice(0, 8), totalPlays: total };
+  }
+  function mixSub(ts) {
+    const c = {};
+    ts.forEach(t => {
+      const a = String(t.artist || '').split(',')[0].trim();
+      if (a && !/^unknown/i.test(a)) c[a] = (c[a] || 0) + 1;
+    });
+    return Object.entries(c).sort((a, b) => b[1] - a[1]).slice(0, 3).map(e => e[0]).join(', ');
+  }
+  function dailyMixGenres() {
+    const c = {};
+    for (const t of S.tracks) {
+      const g = String(t.genre || '').trim();
+      if (!g || /^unknown$/i.test(g)) continue;
+      c[g] = (c[g] || 0) + 1 + 3 * ((S.playCounts && S.playCounts[t.id]) || 0);
+    }
+    return Object.entries(c).sort((a, b) => b[1] - a[1]).slice(0, 4).map(e => e[0]);
+  }
+  function decadeGroups() {
+    const groups = {};
+    for (const t of S.tracks) {
+      const y = parseInt(String(t.year || '').slice(0, 4), 10);
+      if (!y || y < 1950 || y > 2100) continue;
+      const d = Math.floor(y / 10) * 10;
+      (groups[d] = groups[d] || []).push(t);
+    }
+    return Object.entries(groups)
+      .filter(([, ts]) => ts.length >= 5)
+      .sort((a, b) => b[0] - a[0])
+      .map(([d, ts]) => [Number(d), ts]);
+  }
+  const MIX_BANNERS = ['#c9a7eb', '#a8e6b0', '#f5c518', '#f49ac1', '#9ecfff', '#ffb37e'];
+  function curatedMixes() {
+    if (!S.tracks.length) return [];
+    const taste = tasteProfile();
+    const mixes = [
+      { id: 'discover-weekly', name: 'Discover Weekly', kind: 'discover', banner: MIX_BANNERS[0] },
+      { id: 'release-radar', name: 'Release Radar', kind: 'radar', banner: MIX_BANNERS[1] },
+    ];
+    if (taste.totalPlays > 0) mixes.push({ id: 'on-repeat', name: 'On Repeat', kind: 'repeat', banner: MIX_BANNERS[3] });
+    dailyMixGenres().forEach((g, i) => mixes.push({ id: 'dailymix-' + i, name: g + ' Mix', kind: 'dailymix', genre: g, banner: MIX_BANNERS[(i + 2) % MIX_BANNERS.length] }));
+    decadeGroups().forEach(([dec], i) => mixes.push({ id: 'decade-' + dec, name: dec + 's Mix', kind: 'decade', decade: dec, banner: MIX_BANNERS[(i + 4) % MIX_BANNERS.length] }));
+    return mixes;
+  }
+  function curatedTracks(mix) {
+    const rng = mulberry32((mix.kind === 'dailymix' ? daySeed() : weekSeed()) + hashStr(mix.id));
+    const taste = tasteProfile();
+    const plays = id => (S.playCounts && S.playCounts[id]) || 0;
+    switch (mix.kind) {
+      case 'discover': {
+        const unplayed = S.tracks.filter(t => !plays(t.id));
+        const pool = unplayed.length ? unplayed : S.tracks;
+        return pool.map(t => {
+          let s = rng();
+          if (trackArtistKeys(t).some(k => taste.topArtists.includes(k))) s += 2;
+          const g = String(t.genre || '').trim();
+          if (g && taste.topGenres.includes(g)) s += 1.5;
+          return [s, t];
+        }).sort((a, b) => b[0] - a[0]).slice(0, 30).map(e => e[1]);
+      }
+      case 'radar': {
+        const tier = t => {
+          const aks = trackArtistKeys(t);
+          if (aks.some(k => S.followedArtists.has(k))) return 2;
+          if (aks.some(k => taste.topArtists.includes(k))) return 1;
+          return 0;
+        };
+        return [...S.tracks]
+          .sort((a, b) => (tier(b) - tier(a)) || ((b.dateAdded || 0) - (a.dateAdded || 0)))
+          .slice(0, 30);
+      }
+      case 'repeat': {
+        return S.tracks.filter(t => plays(t.id) > 0)
+          .sort((a, b) => (plays(b.id) - plays(a.id)) || ((S.lastPlayed[b.id] || 0) - (S.lastPlayed[a.id] || 0)))
+          .slice(0, 30);
+      }
+      case 'dailymix': {
+        const inG = S.tracks.filter(t => String(t.genre || '').trim() === mix.genre);
+        const fam = inG.filter(t => plays(t.id) > 0).sort((a, b) => plays(b.id) - plays(a.id));
+        const fresh = inG.filter(t => !(plays(t.id) > 0));
+        const n = Math.min(30, inG.length);
+        const nFam = Math.min(fam.length, Math.round(n * 0.7));
+        const nFresh = Math.min(fresh.length, n - nFam);
+        // No fresh tracks to round it out? Top up with more familiar ones.
+        const topUp = Math.min(fam.length - nFam, n - nFam - nFresh);
+        const pick = fam.slice(0, nFam + topUp).concat(seededSample(rng, fresh, nFresh));
+        return seededSample(rng, pick, pick.length);
+      }
+      case 'decade': {
+        const g = decadeGroups().find(([d]) => d === mix.decade);
+        if (!g) return [];
+        return seededSample(rng, g[1], Math.min(50, g[1].length));
+      }
+    }
+    return [];
+  }
+  function mixTracksArts(mix, n) {
+    const tracks = curatedTracks(mix);
+    const urls = [];
+    for (const t of tracks) {
+      const u = artURL(t);
+      if (u && !urls.includes(u)) urls.push(u);
+      if (urls.length >= n) break;
+    }
+    return { tracks, urls };
+  }
+  function mixArtInner(mix, urls) {
+    const inner = urls.length >= 4
+      ? `<div class="mixmosaic">${urls.slice(0, 4).map(u => `<img src="${u}" alt="" loading="lazy" onerror="App.artErr(this)">`).join('')}</div>`
+      : urls.length
+        ? `<img class="mixsingle" src="${urls[0]}" alt="" loading="lazy" onerror="App.artErr(this)">`
+        : `<div class="mixph">${icon('note', 'width:52px;height:52px')}</div>`;
+    return `${inner}<div class="mixbanner" style="background:${mix.banner}">${esc(mix.name)}</div><div class="mixlogo"><img src="icons/icon-192.png" alt=""></div>`;
+  }
+  function mixCard(mix) {
+    const { tracks, urls } = mixTracksArts(mix, 4);
+    if (!tracks.length) return '';
+    const sub = mixSub(tracks) || 'Made by Splotify';
+    return `<div class="mixcard" data-act="open-curated" data-id="${mix.id}"><div class="mixart">${mixArtInner(mix, urls)}</div><div class="t">${esc(mix.name)}</div><div class="s">${esc(sub)}</div></div>`;
+  }
+  function madeBySplotify() {
+    const mixes = curatedMixes();
+    if (!mixes.length) return '';
+    const cards = mixes.map(mixCard).filter(Boolean).join('');
+    if (!cards) return '';
+    return `<div class="sectionhead"><h2>Made by Splotify</h2></div><div class="rail">${cards}</div>`;
+  }
+  function vCurated(id) {
+    const mix = curatedMixes().find(m => m.id === id);
+    if (!mix) return vHome();
+    const { tracks, urls } = mixTracksArts(mix, 4);
+    const ids = tracks.map(t => t.id);
+    S.viewCtx = { kicker: 'PLAYING FROM PLAYLIST', name: mix.name, kind: 'curated', id: mix.id };
+    return detailHead('go-back', `<div class="mixart hero">${mixArtInner(mix, urls)}</div>`, mix.name, `Playlist \u2022 ${ids.length} song${ids.length === 1 ? '' : 's'} \u2022 Made by Splotify`)
+      + (ids.length ? playRow(ids) + tracks.map(t => trackRow(t)).join('') : `<div class="empty"><h3>Nothing here yet</h3><p>Play some music and this mix will fill in.</p></div>`);
   }
   function vStub(title, ic, msg) {
     return `<div class="pagehead"><button class="iconbtn" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><h1>${title}</h1><span style="width:44px"></span></div>
@@ -1538,7 +1726,7 @@ const App = (() => {
     home: vHome, search: vSearch, library: vLibrary, settings: vSettings,
     playlist: id => vPlaylist(id), album: id => vAlbum(id), artist: id => vArtist(id), artistReleases: id => vArtistReleases(id),
     liked: vLiked, songs: vSongs, playlists: vPlaylists, albums: vAlbums, artists: vArtists,
-    madeforyou: vMadeForYou, genre: id => vGenre(id),
+    curated: id => vCurated(id), genre: id => vGenre(id),
     notifs: () => vStub('Notifications', 'bell', "You're all caught up."),
     history: () => vStub('Listening history', 'history', 'Your recent plays live in Your Library.'),
     stations: () => vStub('Stations', 'radio', 'Stations need streaming — your library is local-only.'),
@@ -1751,7 +1939,7 @@ const App = (() => {
       <div class="sheet-item" data-act="sheet-info" data-id="${id}">${icon('info')}Track info</div>
       <div class="sheet-item" data-act="sheet-fixtags" data-id="${id}">${icon('tag')}utag</div>
       <div class="sheet-item" data-act="sheet-download" data-id="${id}">${icon('download')}Download to this iPhone</div>
-      <div class="sheet-item danger" data-act="sheet-delete" data-id="${id}">${icon('trash')}Delete from SDB</div>`);
+      <div class="sheet-item danger" data-act="sheet-delete" data-id="${id}">${icon('trash')}Delete permanently</div>`);
   }
   function artistSheet(name) {
     const a = artistByName(name); if (!a) return;
@@ -2131,7 +2319,7 @@ const App = (() => {
       case 'open-playlists': nav('playlists'); break;
       case 'open-albums': nav('albums'); break;
       case 'open-artists': nav('artists'); break;
-      case 'open-madeforyou': nav('madeforyou'); break;
+      case 'open-curated': nav('curated', id); break;
       case 'open-stations': nav('stations'); break;
       case 'open-podcasts': nav('podcasts'); break;
       case 'open-videos': nav('videos'); break;
@@ -2307,7 +2495,7 @@ const App = (() => {
           }
           break;
         }
-        if (confirm('Permanently delete this song file from the SDB? This cannot be undone.')) {
+        if (confirm('Permanently delete this song file? This cannot be undone.')) {
           await DB.delTrack(tid);
           Player.forgetTrack(tid);
           await libraryRemove(tid);
@@ -2631,7 +2819,7 @@ const App = (() => {
   }
 
   return {
-    boot, nav, toast, logRecent,
+    boot, nav, toast, logRecent, logPlay,
     artURL, artImg, artErr,
     libraryAdd, libraryRemove, libraryHas,
     upsertArtist, setArtistFollowed, notePlaylist,

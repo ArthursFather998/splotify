@@ -382,3 +382,24 @@ input{font:inherit}
 .sp-review-sdb{border-top:1px dashed var(--line);padding-top:8px}
 .sp-review-btns{display:flex;gap:10px;margin-top:12px}
 .sp-review-btns .bigbtn{flex:1}
+
+/* Made by Splotify — mix cards (banner-art style) */
+.mixcard{flex:none;width:152px}
+.mixart{position:relative;width:152px;height:152px;overflow:hidden;background:#1e1e1e;border-radius:6px}
+.mixart img.mixsingle{width:152px;height:152px;object-fit:cover;display:block}
+.mixmosaic{display:grid;grid-template-columns:1fr 1fr;width:152px;height:152px}
+.mixmosaic img{width:76px;height:76px;object-fit:cover;display:block}
+.mixph{display:flex;align-items:center;justify-content:center;width:152px;height:152px;color:var(--sub)}
+.mixbanner{position:absolute;left:0;right:0;top:50%;transform:translateY(-50%);padding:8px 6px;text-align:center;font-weight:800;font-size:15px;line-height:1.2;color:#161616;letter-spacing:.2px}
+.mixlogo{position:absolute;top:8px;left:8px;width:24px;height:24px;border-radius:50%;overflow:hidden;background:#000;box-shadow:0 1px 5px rgba(0,0,0,.55)}
+.mixlogo img{width:24px;height:24px;object-fit:cover;display:block}
+.mixcard .t{font-size:14px;font-weight:600;margin-top:9px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mixcard .s{font-size:13px;color:var(--sub);margin-top:4px;line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.mixart.hero{width:208px;height:208px;box-shadow:0 12px 40px rgba(0,0,0,.6)}
+.mixart.hero img.mixsingle{width:208px;height:208px}
+.mixart.hero .mixmosaic{width:208px;height:208px}
+.mixart.hero .mixmosaic img{width:104px;height:104px}
+.mixart.hero .mixph{width:208px;height:208px}
+.mixart.hero .mixbanner{font-size:19px;padding:10px 6px}
+.mixart.hero .mixlogo{width:30px;height:30px}
+.mixart.hero .mixlogo img{width:30px;height:30px}

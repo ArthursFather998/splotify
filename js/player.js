@@ -18,6 +18,7 @@ const Player = (() => {
     trackCache: new Map(),
   };
   const curId = () => (S.order ? S.list[S.order[S.pos]] : S.list[S.pos]);
+  let lastCountedId = null; // play-count dedupe: one count per track start
 
   async function ensureTrack(id) {
     if (S.trackCache.has(id)) return S.trackCache.get(id);
@@ -44,6 +45,7 @@ const Player = (() => {
     audio.src = t._url;
     setMediaSession(t);
     emit('track', t);
+    if (autoplay && t.id !== lastCountedId) { lastCountedId = t.id; try { App.logPlay(t.id); } catch (e) {} }
     if (autoplay) { try { await audio.play(); } catch (e) { /* iOS needs gesture; UI reflects */ } }
     syncPlayState();
     saveNow();
