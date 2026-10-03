@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v7.8';
+  const APP_VERSION = 'v7.9';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -1042,6 +1042,8 @@ const App = (() => {
     <div class="setgroup"><h2>Metadata</h2>
       <div class="setrow"><div>fanart.tv API key<div class="sub">Extra artwork source for the utag fixer — stored only on this iPhone, never uploaded</div></div></div>
       <div style="padding:0 16px 14px"><input id="fanart-key" type="text" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="Paste key here" style="width:100%;box-sizing:border-box;padding:10px 12px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--text);font-size:15px"></div>
+      <div class="setrow"><div>AcoustID API key<div class="sub">Last-resort song ID for the utag fixer (identifies songs by sound when tags and filenames are both useless) — stored only on this iPhone, never uploaded</div></div></div>
+      <div style="padding:0 16px 14px"><input id="acoustid-key" type="text" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="Paste key here" style="width:100%;box-sizing:border-box;padding:10px 12px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--text);font-size:15px"></div>
     </div>
     <div class="setgroup"><h2>App</h2>
       <div class="setrow" id="update-row" data-act="check-update"><div>App updates<div class="sub" id="update-sub">Checking for updates…</div></div><span class="updpill" id="update-pill">…</span></div>
@@ -1765,6 +1767,18 @@ const App = (() => {
             DB.kvSet('fanartKey', fi.value.trim()).then(() => toast('fanart.tv key saved')).catch(() => {});
           });
         }
+        // AcoustID key: same device-local pattern, never in the repo.
+        DB.kvGet('acoustidKey', '').then(v => {
+          const i = document.getElementById('acoustid-key');
+          if (i && document.activeElement !== i) i.value = v || '';
+        }).catch(() => {});
+        const ai = document.getElementById('acoustid-key');
+        if (ai && !ai._akeyBound) {
+          ai._akeyBound = true;
+          ai.addEventListener('change', () => {
+            DB.kvSet('acoustidKey', ai.value.trim()).then(() => toast('AcoustID key saved')).catch(() => {});
+          });
+        }
       } catch (e) {}
     }
     S._lastViewKey = cur.v + '|' + (cur.id || '');
@@ -2054,7 +2068,7 @@ const App = (() => {
     set('fix-matched', String(d.matched));
     set('fix-fixed', String(d.fixed));
     const vs = d.via || {};
-    set('fix-sources', 'Apple Music: ' + (vs.apple || 0) + ' · Deezer: ' + (vs.deezer || 0) + ' · MusicBrainz: ' + (vs.musicbrainz || 0) + ' · Spotify: ' + (vs.spotify || 0));
+    set('fix-sources', 'Apple Music: ' + (vs.apple || 0) + ' · Deezer: ' + (vs.deezer || 0) + ' · MusicBrainz: ' + (vs.musicbrainz || 0) + ' · Spotify: ' + (vs.spotify || 0) + ' · AcoustID: ' + (vs.acoustid || 0));
     try { Importer.memCount().then(n => set('fix-memory', n > 0 ? 'Remembers ' + n + ' fix' + (n === 1 ? '' : 'es') + ' — recognized songs skip the search next time' : '')); } catch (e) {}
     set('fix-status', fixUI.running
       ? 'Fixing ' + fixUI.album + '…'
@@ -2100,7 +2114,7 @@ const App = (() => {
       <div id="fix-sources" style="color:var(--sub);font-size:13px;margin-top:10px"></div>
       <div id="fix-memory" style="color:var(--sub);font-size:13px;margin-top:4px"></div>
       <div style="text-align:center"><button id="fix-run-btn" class="bigbtn pink" data-act="fix-run" style="margin:20px 0 8px">Fix all songs</button>
-      <p class="sub" style="margin:0 0 8px">Goes through every song, checks its tags against the artist roster, Apple Music, Deezer, and MusicBrainz — if one doesn\u2019t recognize it, the next gets a turn. Confident fixes apply on their own; the rest come to you for review.</p></div>
+      <p class="sub" style="margin:0 0 8px">Goes through every song, checks its tags against the artist roster, Apple Music, Deezer, and MusicBrainz — if one doesn\u2019t recognize it, the next gets a turn. Confident fixes apply on their own; the rest come to you for review. Songs nothing recognizes get identified by sound (fingerprinting) once you add an AcoustID key in Settings, Metadata.</p></div>
       <div id="fix-review-cta" style="margin:4px 0 8px"></div>
       <h2 style="font-size:16px;margin:22px 0 6px">All songs</h2>
       <input id="fixlist-q" placeholder="Filter songs…" autocomplete="off" autocapitalize="off" spellcheck="false"
@@ -2252,7 +2266,7 @@ const App = (() => {
     if (!list.length) { toast('No songs to fix'); return; }
     const roster = [...S.artists.values()];
     S.tagReview = S.tagReview || [];
-    Object.assign(fixUI, { running: true, album: '', albumIdx: 0, albumCount: list.length, scanned: 0, matched: 0, fixed: 0, notFound: 0, log: [], via: { apple: 0, deezer: 0, musicbrainz: 0, spotify: 0, memory: 0 } });
+    Object.assign(fixUI, { running: true, album: '', albumIdx: 0, albumCount: list.length, scanned: 0, matched: 0, fixed: 0, notFound: 0, log: [], via: { apple: 0, deezer: 0, musicbrainz: 0, spotify: 0, memory: 0, acoustid: 0 } });
     buildFixList(list);
     paintFixUI();
     const queueReview = (queued) => {
@@ -2265,6 +2279,7 @@ const App = (() => {
     const countVia = (t) => {
       const tv = t.tagsVia || '';
       if (tv.includes('memory')) fixUI.via.memory++;
+      else if (tv.includes('AcoustID')) fixUI.via.acoustid++;
       else if (tv.includes('Deezer')) fixUI.via.deezer++;
       else if (tv.includes('Apple')) fixUI.via.apple++;
       else if (tv.includes('MusicBrainz')) fixUI.via.musicbrainz++;
@@ -2303,6 +2318,8 @@ const App = (() => {
         paintFixRow(t.id, 'scanning');
         paintFixUI();
       },
+      // v7.9: the fixer only fingerprints tracks nothing else recognized.
+      onFingerprint: (t) => { paintFixRow(t.id, 'fingerprinting'); },
       onDone: (t, res) => {
         fixUI.scanned++; fixUI.albumIdx++;
         if (res) {
@@ -2355,6 +2372,7 @@ const App = (() => {
   }
   const FX_STATUS = {
     scanning: ['<span class="fx-dot"></span>Fixing…', 'scanning'],
+    fingerprinting: ['<span class="fx-dot"></span>Fingerprinting…', 'scanning'],
     fixed: ['✓ Fixed', 'fixed'],
     review: ['→ Review', 'review'],
     ok: ['✓ Checked', 'ok'],

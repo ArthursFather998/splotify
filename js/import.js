@@ -238,20 +238,27 @@ const Importer = (() => {
     }
     // Cover Art Archive + fanart.tv need a MusicBrainz release id. The MB
     // lookup is cached and polite (1/sec), so a repeat query costs nothing.
+    // v7.9: a fingerprinted track already knows its release MBID — go
+    // straight to Cover Art Archive without spending the MB search.
+    let releaseId = tr.mbReleaseId || null;
     try {
-      const recs = await mbSearchRecording(tr.title, tr.artist);
-      const pick = mbPick(recs, tr);
-      const rel = pick && (pick.releases || [])[0];
-      const ac = pick && (pick['artist-credit'] || [])[0];
-      const artistId = ac && ac.artist && ac.artist.id;
+      let artistId = null;
+      if (!releaseId) {
+        const recs = await mbSearchRecording(tr.title, tr.artist);
+        const pick = mbPick(recs, tr);
+        const rel = pick && (pick.releases || [])[0];
+        const ac = pick && (pick['artist-credit'] || [])[0];
+        artistId = ac && ac.artist && ac.artist.id;
+        releaseId = (rel && rel.id) || null;
+      }
       let fkey = null;
       try { fkey = await DB.kvGet('fanartKey', null); } catch (e) {}
-      if (rel && rel.id) {
-        cands.push({ url: 'https://coverartarchive.org/release/' + rel.id + '/front', w: 1400, source: 'Cover Art Archive' });
+      if (releaseId) {
+        cands.push({ url: 'https://coverartarchive.org/release/' + releaseId + '/front', w: 1400, source: 'Cover Art Archive' });
         if (fkey) {
           try {
-            const f = await fetchJSON('https://webservice.fanart.tv/v3/music/albums/' + rel.id + '?api_key=' + encodeURIComponent(fkey), 8000);
-            const alb = f && f.albums && f.albums[rel.id];
+            const f = await fetchJSON('https://webservice.fanart.tv/v3/music/albums/' + releaseId + '?api_key=' + encodeURIComponent(fkey), 8000);
+            const alb = f && f.albums && f.albums[releaseId];
             const covers = alb && alb.albumcover;
             if (covers && covers.length && covers[0].url) cands.push({ url: covers[0].url, w: 1000, source: 'fanart.tv' });
           } catch (e) {}
@@ -1413,6 +1420,108 @@ const Importer = (() => {
     });
     return true;
   }
+  // v7.9: acoustic fingerprinting, the last-resort ID for tracks the
+  // catalog chain can't recognize (the "No match" tier). The fingerprint
+  // is computed on-device from the audio (vendored chromaprint wasm,
+  // js/vendor/ — audio never leaves the phone); only the fingerprint +
+  // duration go to AcoustID for lookup.
+  //
+  // KEY HANDLING (fanart.tv pattern): the AcoustID client key lives
+  // device-local only — Settings > Metadata input -> DB.kvGet/kvSet
+  // ('acoustidKey'). Never hardcoded, never committed, never in chat.
+  // With no key set, fingerprinting is skipped silently and the track
+  // stays "No match" exactly as before.
+  //
+  // Safety: fixMyTrack runs first, and looksLikeHis() below is a
+  // belt-and-braces guard — his songs (including unreleased ones,
+  // which AcoustID could never know) never get fingerprinted. A false
+  // match there would be a corruption bug, not a miss.
+  async function acoustidLookupUngated(fp, durSec) {
+    let key = null;
+    try { key = await DB.kvGet('acoustidKey', null); } catch (e) {}
+    if (!key) return null;
+    // POST: long fingerprints choke GET URLs.
+    const body = 'client=' + encodeURIComponent(key) +
+      '&fingerprint=' + encodeURIComponent(fp) +
+      '&duration=' + Math.max(1, Math.round(durSec || 0)) +
+      '&meta=recordings+releasegroups';
+    let d = null;
+    try {
+      const c = new AbortController(); const t = setTimeout(() => c.abort(), 15000);
+      const r = await fetch('https://api.acoustid.org/v2/lookup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body, signal: c.signal,
+      });
+      clearTimeout(t);
+      if (r.ok) d = await r.json();
+    } catch (e) {}
+    if (!d || !d.results || !d.results.length) return null;
+    // Best recording across all results, highest AcoustID score wins.
+    let best = null;
+    for (const res of d.results) {
+      const s = Number(res.score || 0);
+      for (const rec of (res.recordings || [])) {
+        if (!best || s > best.score) best = { score: s, rec };
+      }
+    }
+    return best;
+  }
+  async function looksLikeHis(t) {
+    try {
+      const a = norm(t.artist || '');
+      if (a.indexOf('skyler green') !== -1) return true;
+      const disco = await loadDiscography();
+      if (disco && matchMySingle(t, disco)) return true;
+    } catch (e) {}
+    return false;
+  }
+  // Returns { proposals, releaseId } or null. Proposals flow through the
+  // same auto/review split as every other source, with confidence derived
+  // from the AcoustID score. The album proposal is always review-tier
+  // (titleOnlyAlbum): the fingerprint IDs the song, not its release.
+  async function fingerprintTrack(t, opts) {
+    opts = opts || {};
+    try { if (await looksLikeHis(t)) return null; } catch (e) { return null; }
+    let key = null;
+    try { key = await DB.kvGet('acoustidKey', null); } catch (e) {}
+    if (!key) return null;
+    const fpMod = (typeof window !== 'undefined' && window.SplotifyFingerprint) || null;
+    if (!fpMod || !fpMod.compute) return null;
+    const file = t.file;
+    if (!file || !file.size) return null;
+    let fp = null, dur = 0;
+    try {
+      if (opts.onFingerprint) { try { opts.onFingerprint(t); } catch (e) {} }
+      const r = await withTimeout(fpMod.compute(file, { maxSeconds: 60 }), 90000, 'fingerprint ' + (t.fileName || 'track'));
+      fp = r && r.fingerprint; dur = (r && r.duration) || 0;
+    } catch (e) { return null; }
+    if (!fp) return null;
+    let hit = null;
+    try { hit = await acoustidQuery(fp, dur); } catch (e) {}
+    if (!hit || !hit.rec) return null;
+    const rec = hit.rec;
+    const score = hit.score;
+    // Duration veto: the match's recording must be near the file's length.
+    const recDur = Number(rec.duration || 0);
+    const fileDur = Number(dur || t.duration || 0);
+    if (recDur > 0 && fileDur > 0 && Math.abs(recDur - fileDur) > Math.max(10, 0.2 * fileDur)) return null;
+    const artists = (rec.artists || []).map(a => a && a.name).filter(Boolean).join(', ');
+    const rel = (rec.releasegroups || [])[0] || null;
+    const conf = Math.min(0.99, Math.max(0, Number(score) || 0));
+    const out = [];
+    if (rec.title && rec.title !== t.title && norm(rec.title) !== norm(t.title)) {
+      out.push({ field: 'title', from: t.title, to: rec.title, confidence: Math.min(conf, 0.92), source: 'AcoustID' });
+    }
+    if (artists && artists !== t.artist && norm(artists) !== norm(t.artist)) {
+      out.push({ field: 'artist', from: t.artist, to: artists, confidence: Math.min(conf, 0.9), source: 'AcoustID' });
+    }
+    if (rel && rel.title && rel.title !== t.album && norm(rel.title) !== norm(t.album || '')) {
+      out.push({ field: 'album', from: t.album || 'Unknown Album', to: rel.title, confidence: Math.min(conf, 0.87), source: 'AcoustID', titleOnlyAlbum: true });
+    }
+    if (!out.length) return null;
+    return { proposals: out, releaseId: (rel && rel.id) || null };
+  }
   async function auditTrack(t, roster) {
     const proposals = [];
     let verified = false;
@@ -1470,12 +1579,36 @@ const Importer = (() => {
      review screen. Title-only album changes never auto-apply (safety rule).
      Never touches correct tags. */
   const FIX_LABEL = { title: 'Title', artist: 'Artist', album: 'Album', albumArtist: 'Album artist', genre: 'Genre' };
-  async function fixTrack(t, roster) {
+  async function fixTrack(t, roster, opts) {
+    opts = opts || {};
     const notes = [];
     let fixed = 0;
     const queued = [];
     let verified = false;
     const before = memFixOf(t);
+    // v7.8: per-source adaptive auto-apply thresholds, cached for the run.
+    const thrCache = new Map();
+    const thrFor = async (source) => {
+      if (!thrCache.has(source)) thrCache.set(source, await autoThresholdFor(source));
+      return thrCache.get(source);
+    };
+    // Route scored proposals through the same auto/review split for every
+    // source (roster/Apple/Deezer/MusicBrainz/AcoustID). Title-only album
+    // changes never auto-apply: a safety rule, not a threshold.
+    const routeProposals = async (proposals) => {
+      for (const p of proposals) {
+        const thr = await thrFor(p.source);
+        if (p.confidence >= thr && !(p.field === 'album' && p.titleOnlyAlbum)) {
+          try {
+            await applyAuditProposal(t, p);
+            fixed++;
+            notes.push((FIX_LABEL[p.field] || p.field) + ': ' + p.from + ' → ' + p.to);
+          } catch (e) {}
+        } else if (p.confidence >= 0.55) {
+          queued.push({ trackId: t.id, title: t.title, artist: t.artist, proposal: p });
+        }
+      }
+    };
     // Tag memory first: if we've fixed this song before, just apply what we
     // already know is correct — no searching needed.
     try {
@@ -1503,26 +1636,7 @@ const Importer = (() => {
     try {
       const ar = await auditTrack(t, roster);
       verified = ar.verified;
-      // v7.8: per-source adaptive auto-apply thresholds, cached for the run.
-      const thrCache = new Map();
-      const thrFor = async (source) => {
-        if (!thrCache.has(source)) thrCache.set(source, await autoThresholdFor(source));
-        return thrCache.get(source);
-      };
-      for (const p of ar.proposals) {
-        const thr = await thrFor(p.source);
-        // Title-only album changes never auto-apply: a safety rule, not a
-        // threshold — the album-first pass is what disambiguates those.
-        if (p.confidence >= thr && !(p.field === 'album' && p.titleOnlyAlbum)) {
-          try {
-            await applyAuditProposal(t, p);
-            fixed++;
-            notes.push((FIX_LABEL[p.field] || p.field) + ': ' + p.from + ' → ' + p.to);
-          } catch (e) {}
-        } else if (p.confidence >= 0.55) {
-          queued.push({ trackId: t.id, title: t.title, artist: t.artist, proposal: p });
-        }
-      }
+      await routeProposals(ar.proposals);
     } catch (e) {}
     // Fill pass for anything still missing.
     // autoTag is fill-only, so present-but-wrong fields are never clobbered,
@@ -1547,10 +1661,39 @@ const Importer = (() => {
         }
       } catch (e) {}
     }
+    let status = fixed ? 'fixed' : queued.length ? 'review' : verified ? 'ok' : 'nomatch';
+    // v7.9: acoustic fingerprinting, last resort. Runs ONLY on tracks that
+    // reached the "No match" tier — never speculatively (it's CPU-heavy).
+    // His songs never get here: fixMyTrack claimed them first, and
+    // fingerprintTrack re-checks with looksLikeHis().
+    if (status === 'nomatch') {
+      try {
+        const fg = await fingerprintTrack(t, opts);
+        if (fg && fg.proposals && fg.proposals.length) {
+          await routeProposals(fg.proposals);
+          status = fixed ? 'fixed' : queued.length ? 'review' : 'nomatch';
+          // The release MBID feeds the v7.7 artwork chain (Cover Art
+          // Archive) — wired through mbReleaseId so the MB search is
+          // skipped. Hand-set art stays untouched.
+          if (status !== 'nomatch' && !t.art && !t.artManual && fg.releaseId) {
+            try {
+              const tr = { ...t, mbReleaseId: fg.releaseId };
+              if (await artChainExtra(tr)) {
+                const upd = { art: tr.art, artSource: tr.artSource, tagged: true, tagsVia: tr.tagsVia };
+                await persistFix(t.id, { ...t, ...upd });
+                Object.assign(t, upd);
+                fixed++;
+                notes.push('artwork: ' + (tr.artSource || 'Cover Art Archive'));
+              }
+            } catch (e) {}
+          }
+        }
+      } catch (e) {}
+    }
     const note = notes.join('; ');
     // Remember what we got right, so next time we just know.
     if (fixed > 0) { try { await learnFix(before, t); } catch (e) {} }
-    return { fixed, queued, verified, note, status: fixed ? 'fixed' : queued.length ? 'review' : verified ? 'ok' : 'nomatch' };
+    return { fixed, queued, verified, note, status };
   }
   // Full-library audit. Confident corrections auto-apply (v7.8 adaptive
   // per-source thresholds); the rest return for the review screen.
@@ -1857,7 +2000,7 @@ const Importer = (() => {
         const t = list[i];
         if (opts.onStart) { try { opts.onStart(t); } catch (e) {} }
         let res = null;
-        try { res = await fixTrack(t, roster); } catch (e) { res = null; }
+        try { res = await fixTrack(t, roster, opts); } catch (e) { res = null; }
         if (opts.onDone) { try { opts.onDone(t, res); } catch (e) {} }
       }
     };
@@ -1922,5 +2065,7 @@ const Importer = (() => {
   const autoTagQuery = (tr, q) => catalogGate(() => autoTagQueryUngated(tr, q));
   const appleAuditQuery = (qq, t) => catalogGate(() => appleAuditQueryUngated(qq, t));
   const deezerAuditQuery = (qq, t) => catalogGate(() => deezerAuditQueryUngated(qq, t));
-  return { bind, open: () => { if (!busy) picker().click(); }, openZip: () => { if (!busy) zippicker().click(); }, fmtDur, healLibrary, fixAlbum, recordSingles, singleOrder, singleArt, mySingleArt, parseOne, auditLibrary, fixTrack, learnFix, memCount, logCalib, artChainExtra, fixAlbumClusters, fixTrackPool, fileNameCandidates, autoThresholdFor };
+  // AcoustID shares the 3-in-flight gate: polite under the parallel pool.
+  const acoustidQuery = (fp, dur) => catalogGate(() => acoustidLookupUngated(fp, dur));
+  return { bind, open: () => { if (!busy) picker().click(); }, openZip: () => { if (!busy) zippicker().click(); }, fmtDur, healLibrary, fixAlbum, recordSingles, singleOrder, singleArt, mySingleArt, parseOne, auditLibrary, fixTrack, fingerprintTrack, learnFix, memCount, logCalib, artChainExtra, fixAlbumClusters, fixTrackPool, fileNameCandidates, autoThresholdFor };
 })();

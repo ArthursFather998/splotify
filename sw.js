@@ -1,9 +1,10 @@
 /* Splotify service worker — offline app shell. Audio stays in IndexedDB, never in the cache. */
-const CACHE = 'splotify-v7.8';
+const CACHE = 'splotify-v7.9';
 const SHELL = [
   './', './index.html', './manifest.json',
   './css/app.css',
   './js/icons.js', './js/db.js', './js/player.js', './js/import.js', './js/artist-stats.js', './js/app.js', './js/plimport.js', './js/spotify-import.js', './js/vendor/mm.js', './js/vendor/jszip.min.js',
+  './js/vendor/chromaprint-shim.js', './js/vendor/chromaprint-glue.js', './js/vendor/chromaprint.wasm',
   './js/discography.json', './js/placeholder-artists.json', './js/artist-art/d4vd.jpg',
   './js/disco-art/Stargazing.jpg', './js/disco-art/Harlot.jpg', './js/disco-art/Hiraeth.jpg',
   './js/disco-art/Tired.jpg', './js/disco-art/Intervals.jpg', './js/disco-art/Drain.jpg',
