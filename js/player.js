@@ -95,20 +95,21 @@ const Player = (() => {
     DB.kvSet('now', { trackId: S.track.id, rawPos, shuffle: S.shuffle, repeat: S.repeat, ctx: S.ctx, list: S.list.slice(0, 500), at: audio.currentTime }).catch(() => {});
   }
 
+  /* MediaSession: every action gets its own guarded registration — one rejected
+     action must never silently block the rest (e.g. previous/next track). */
+  const msFailed = [];
   if ('mediaSession' in navigator) {
-    /* Clear the iOS 10s skip buttons FIRST, in their own guarded block, so a
-       throw on any other action below can't leave them registered — iOS shows
-       them over previous/next track whenever they're set. */
-    ['seekbackward', 'seekforward'].forEach(a => {
-      try { navigator.mediaSession.setActionHandler(a, null); } catch (e) { /* noop */ }
-    });
-    try {
-      navigator.mediaSession.setActionHandler('play', () => api.toggle());
-      navigator.mediaSession.setActionHandler('pause', () => api.toggle());
-      navigator.mediaSession.setActionHandler('previoustrack', () => api.prev());
-      navigator.mediaSession.setActionHandler('nexttrack', () => api.next());
-      navigator.mediaSession.setActionHandler('seekto', d => { if (d.seekTime != null) api.seek(d.seekTime); });
-    } catch (e) { /* noop */ }
+    const setH = (action, handler) => {
+      try { navigator.mediaSession.setActionHandler(action, handler); }
+      catch (e) { msFailed.push(action); }
+    };
+    setH('seekbackward', null);
+    setH('seekforward', null);
+    setH('play', () => api.toggle());
+    setH('pause', () => api.toggle());
+    setH('previoustrack', () => api.prev());
+    setH('nexttrack', () => api.next());
+    setH('seekto', d => { if (d.seekTime != null) api.seek(d.seekTime); });
   }
 
   const api = {
@@ -117,6 +118,7 @@ const Player = (() => {
     get audio() { return audio; },
     get current() { return S.track; },
     get isPlaying() { return S.playing; },
+    get msFailed() { return msFailed.slice(); },
 
     async init() {
       const liked = await DB.kvGet('liked', []);

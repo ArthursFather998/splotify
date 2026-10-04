@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v8.7';
+  const APP_VERSION = 'v8.8';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -2179,9 +2179,11 @@ const App = (() => {
       '<div style="background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px">' +
       '<div id="' + id + '" style="font-size:24px;font-weight:800">—</div>' +
       '<div style="color:var(--sub);font-size:12px;margin-top:4px">' + label + '</div></div>';
+    let msDiag = 'ms:n/a';
+    try { const f = Player.msFailed; msDiag = 'ms:' + (f.length ? 'rejected ' + f.join(',') : 'all ok'); } catch (e) { /* noop */ }
     return `<div class="pagehead"><button class="iconbtn" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><h1>utag fixer</h1><span style="width:44px"></span></div>
     <div style="padding:4px 20px 48px">
-      <div style="color:var(--sub);font-size:12px;margin:2px 0 0">${APP_VERSION}</div>
+      <div style="color:var(--sub);font-size:12px;margin:2px 0 0">${APP_VERSION} · ${msDiag}</div>
       <div id="fix-scope" style="color:var(--pink);font-size:13px;font-weight:700;margin:6px 0 0"></div>
       <div id="fix-status" style="font-size:15px;font-weight:700;margin:10px 0 2px"></div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px">
