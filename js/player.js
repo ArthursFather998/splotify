@@ -96,7 +96,10 @@ const Player = (() => {
   }
 
   /* MediaSession: every action gets its own guarded registration — one rejected
-     action must never silently block the rest (e.g. previous/next track). */
+     action must never silently block the rest (e.g. previous/next track).
+     v8.9: no 'seekto' registration — it is the only seek-flavored action we set
+     and iOS keys the +/-10s lock-screen buttons off it, displacing prev/next.
+     (In-app seek bar is unaffected; it calls api.seek() directly.) */
   const msFailed = [];
   if ('mediaSession' in navigator) {
     const setH = (action, handler) => {
@@ -109,7 +112,6 @@ const Player = (() => {
     setH('pause', () => api.toggle());
     setH('previoustrack', () => api.prev());
     setH('nexttrack', () => api.next());
-    setH('seekto', d => { if (d.seekTime != null) api.seek(d.seekTime); });
   }
 
   const api = {
