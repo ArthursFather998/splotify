@@ -17,18 +17,18 @@ jobs:
 
       - run: npm run ios:sync
 
-      - name: Archive (unsigned)
+      - name: Build (unsigned)
         run: |
           cd ios/App
-          xcodebuild -project App.xcodeproj -scheme App
+          xcodebuild -project App.xcodeproj -scheme App -configuration Release \
             -destination 'generic/platform=iOS' \
-            -archivePath "$RUNNER_TEMP/App.xcarchive" \
-            CODE_SIGNING_ALLOWED=NO archive
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" build
 
       - name: Package unsigned IPA
         run: |
-          APP_PATH="$RUNNER_TEMP/App.xcarchive/Products/Applications/App.app"
-          test -d "$APP_PATH" || { echo "App.app missing after archive"; exit 1; }
+          APP_PATH="$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos/App.app"
+          test -d "$APP_PATH" || { echo "App.app missing after build"; exit 1; }
           mkdir -p "$RUNNER_TEMP/Payload"
           cp -R "$APP_PATH" "$RUNNER_TEMP/Payload/"
           cd "$RUNNER_TEMP" && zip -qr splotify-unsigned.ipa Payload
