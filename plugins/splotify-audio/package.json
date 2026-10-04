@@ -1,0 +1,1 @@
+{"capacitor":{"ios":{"src":"ios"}},"description":"Native audio output for the Splotify iOS shell: AVPlayer playback with real lock-screen previous/play/next controls.","keywords":[],"license":"ISC","name":"splotify-audio","version":"1.0.0"}

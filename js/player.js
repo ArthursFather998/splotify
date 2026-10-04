@@ -1,7 +1,44 @@
-/* Splotify player engine — local <audio>, queue, shuffle/repeat, MediaSession. */
+/* Splotify player engine — queue, shuffle/repeat, audio output, MediaSession.
+ * Audio output is a seam: on the web it's the <audio> element; inside the
+ * native iOS shell it's window.SplotifyNativeOut() (js/native-audio.js),
+ * which drives the native AVPlayer plugin with real lock-screen controls. */
 const Player = (() => {
-  const audio = new Audio();
-  audio.preload = 'auto';
+  const NATIVE_MODE = (typeof window.SplotifyNativeOut === 'function');
+  function makeWebOut() {
+    const audio = new Audio();
+    audio.preload = 'auto';
+    const subs = {};
+    const on = (t, f) => { (subs[t] = subs[t] || []).push(f); };
+    ['play', 'pause', 'ended', 'timeupdate', 'loadedmetadata'].forEach(ev =>
+      audio.addEventListener(ev, () => (subs[ev] || []).forEach(f => { try { f(); } catch (e) {} })));
+    let lastUrl = null;
+    return {
+      isNative: false,
+      on,
+      get paused() { return audio.paused; },
+      get ended() { return audio.ended; },
+      get currentTime() { return audio.currentTime; },
+      set currentTime(v) { try { audio.currentTime = v; } catch (e) {} },
+      get duration() { return audio.duration || 0; },
+      get muted() { return audio.muted; },
+      set muted(m) { audio.muted = !!m; },
+      get volume() { return audio.volume; },
+      set volume(v) { try { audio.volume = v; } catch (e) {} },
+      async setTrack(t) {
+        if (lastUrl) { try { URL.revokeObjectURL(lastUrl); } catch (e) {} lastUrl = null; }
+        lastUrl = URL.createObjectURL(t.file);
+        t._url = lastUrl;
+        audio.src = lastUrl;
+      },
+      async clear() {
+        if (lastUrl) { try { URL.revokeObjectURL(lastUrl); } catch (e) {} lastUrl = null; }
+        try { audio.removeAttribute('src'); audio.load(); } catch (e) {}
+      },
+      play() { return audio.play(); },
+      pause() { audio.pause(); }
+    };
+  }
+  const out = NATIVE_MODE ? window.SplotifyNativeOut() : makeWebOut();
   const listeners = { state: [], track: [], time: [], queue: [], duration: [], volume: [] };
   const emit = (ev, d) => listeners[ev].forEach(f => { try { f(d); } catch (e) { console.error(e); } });
 
@@ -39,19 +76,18 @@ const Player = (() => {
   async function load(id, autoplay) {
     const t = await ensureTrack(id);
     if (!t) return false;
-    if (S.track && S.track._url) URL.revokeObjectURL(S.track._url);
     S.track = t;
-    t._url = URL.createObjectURL(t.file);
-    audio.src = t._url;
+    await out.setTrack(t);
     setMediaSession(t);
     emit('track', t);
     if (autoplay && t.id !== lastCountedId) { lastCountedId = t.id; try { App.logPlay(t.id); } catch (e) {} }
-    if (autoplay) { try { await audio.play(); } catch (e) { /* iOS needs gesture; UI reflects */ } }
+    if (autoplay) { try { await out.play(); } catch (e) { /* iOS needs gesture; UI reflects */ } }
     syncPlayState();
     saveNow();
     return true;
   }
   function setMediaSession(t) {
+    if (NATIVE_MODE) return; // native remote commands own the lock screen
     if (!('mediaSession' in navigator)) return;
     try {
       const art = [];
@@ -60,39 +96,39 @@ const Player = (() => {
     } catch (e) { /* noop */ }
   }
   function syncPlayState() {
-    S.playing = !audio.paused && !audio.ended;
+    S.playing = !out.paused && !out.ended;
     emit('state', { playing: S.playing, track: S.track });
   }
 
-  audio.addEventListener('play', syncPlayState);
-  audio.addEventListener('pause', syncPlayState);
-  audio.addEventListener('ended', () => {
-    if (S.repeat === 'one') { audio.currentTime = 0; audio.play(); return; }
+  out.on('play', syncPlayState);
+  out.on('pause', syncPlayState);
+  out.on('ended', () => {
+    if (S.repeat === 'one') { out.currentTime = 0; out.play(); return; }
     api.next(true);
   });
-  audio.addEventListener('timeupdate', () => {
-    emit('time', { cur: audio.currentTime, dur: audio.duration || S.track?.duration || 0 });
+  out.on('timeupdate', () => {
+    emit('time', { cur: out.currentTime, dur: out.duration || S.track?.duration || 0 });
   });
-  audio.addEventListener('loadedmetadata', () => {
-    if (S.track && !S.track.duration && audio.duration) {
+  out.on('loadedmetadata', () => {
+    if (S.track && !S.track.duration && out.duration) {
       // The player often learns the duration before the record has one
       // (e.g. imported while the tag reader was unavailable). Persist it so
       // Track Info and the singles duration veto see it after reload.
-      S.track.duration = audio.duration;
-      DB.updateTrack(S.track.id, { duration: audio.duration }).catch(() => {});
-      emit('duration', { id: S.track.id, duration: audio.duration });
+      S.track.duration = out.duration;
+      DB.updateTrack(S.track.id, { duration: out.duration }).catch(() => {});
+      emit('duration', { id: S.track.id, duration: out.duration });
     }
-    emit('time', { cur: audio.currentTime, dur: audio.duration || 0 });
+    emit('time', { cur: out.currentTime, dur: out.duration || 0 });
   });
   let saveT = 0;
-  audio.addEventListener('timeupdate', () => {
+  out.on('timeupdate', () => {
     const n = Date.now();
     if (n - saveT > 8000) { saveT = n; saveNow(); }
   });
   function saveNow() {
     if (!S.track) return;
     const rawPos = S.order ? S.order[S.pos] : S.pos;
-    DB.kvSet('now', { trackId: S.track.id, rawPos, shuffle: S.shuffle, repeat: S.repeat, ctx: S.ctx, list: S.list.slice(0, 500), at: audio.currentTime }).catch(() => {});
+    DB.kvSet('now', { trackId: S.track.id, rawPos, shuffle: S.shuffle, repeat: S.repeat, ctx: S.ctx, list: S.list.slice(0, 500), at: out.currentTime }).catch(() => {});
   }
 
   /* MediaSession: every action gets its own guarded registration — one rejected
@@ -101,7 +137,7 @@ const Player = (() => {
      and iOS keys the +/-10s lock-screen buttons off it, displacing prev/next.
      (In-app seek bar is unaffected; it calls api.seek() directly.) */
   const msFailed = [];
-  if ('mediaSession' in navigator) {
+  if (!NATIVE_MODE && 'mediaSession' in navigator) {
     const setH = (action, handler) => {
       try { navigator.mediaSession.setActionHandler(action, handler); }
       catch (e) { msFailed.push(action); }
@@ -117,7 +153,7 @@ const Player = (() => {
   const api = {
     on(ev, fn) { listeners[ev].push(fn); },
     get state() { return S; },
-    get audio() { return audio; },
+    get audio() { return out; },
     get current() { return S.track; },
     get isPlaying() { return S.playing; },
     get msFailed() { return msFailed.slice(); },
@@ -130,11 +166,12 @@ const Player = (() => {
       S.volume = Math.max(0, Math.min(1, (await DB.kvGet('pvolume', 1)) ?? 1));
       S.muted = !!(await DB.kvGet('pmuted', false));
       S.preMute = S.volume > 0 ? S.volume : 0.8;
-      /* Mute goes through the element: iOS honors audio.muted (it ignores
-         audio.volume). No Web Audio routing — iOS suspends AudioContext in
-         the background, which would kill the keep-alive playback. */
-      audio.muted = S.muted;
-      try { audio.volume = S.volume; } catch (e) {}
+      /* Mute goes through the output: on the web iOS honors audio.muted (it
+         ignores audio.volume). No Web Audio routing — iOS suspends
+         AudioContext in the background, which would kill keep-alive
+         playback. In the native shell mute maps to the AVPlayer volume. */
+      out.muted = S.muted;
+      out.volume = S.volume;
       if (navigator.audioSession) { try { navigator.audioSession.type = 'playback'; } catch (e) {} }
       const now = await DB.kvGet('now', null);
       if (now && now.trackId) {
@@ -143,7 +180,7 @@ const Player = (() => {
         S.pos = Math.min(raw, Math.max(0, S.list.length - 1));
         if (S.shuffle && S.list.length > 1) { S.order = shuffledOrder(S.list.length, S.pos); S.pos = 0; }
         await load(now.trackId, false);
-        if (now.at > 5) { try { audio.currentTime = now.at; } catch (e) {} }
+        if (now.at > 5) { out.currentTime = now.at; }
       }
       emit('queue', null);
     },
@@ -169,43 +206,43 @@ const Player = (() => {
         await api.playContext({ kicker: 'PLAYING FROM SONGS', name: '', kind: 'single', id: 'single' }, [id], id);
       }
     },
-    toggle() { if (!S.track) return; if (audio.paused) audio.play().catch(() => {}); else audio.pause(); },
-    play() { if (S.track) audio.play().catch(() => {}); },
-    pause() { audio.pause(); },
+    toggle() { if (!S.track) return; if (out.paused) out.play().catch(() => {}); else out.pause(); },
+    play() { if (S.track) out.play().catch(() => {}); },
+    pause() { out.pause(); },
     async next(auto) {
       if (!S.list.length) return;
       if (S.pos < (S.order ? S.order.length : S.list.length) - 1) { S.pos++; await load(curId(), true); }
       else if (S.repeat === 'all') {
         if (S.shuffle) S.order = shuffledOrder(S.list.length);
         S.pos = 0; await load(curId(), true);
-      } else { audio.pause(); try { audio.currentTime = 0; } catch (e) {} syncPlayState(); }
+      } else { out.pause(); out.currentTime = 0; syncPlayState(); }
       emit('queue', null);
     },
     async prev() {
       if (!S.list.length) return;
-      if (audio.currentTime > 3) { audio.currentTime = 0; return; }
+      if (out.currentTime > 3) { out.currentTime = 0; return; }
       if (S.pos > 0) { S.pos--; await load(curId(), true); }
-      else { audio.currentTime = 0; }
+      else { out.currentTime = 0; }
       emit('queue', null);
     },
     seek(sec) {
       if (!S.track) return;
-      const d = audio.duration || S.track.duration || 0;
-      audio.currentTime = Math.max(0, Math.min(d, sec));
+      const d = out.duration || S.track.duration || 0;
+      out.currentTime = Math.max(0, Math.min(d, sec));
     },
     get volume() { return S.volume == null ? 1 : S.volume; },
     get muted() { return !!S.muted; },
     setVolume(v) {
       S.volume = Math.max(0, Math.min(1, v));
-      if (S.volume > 0) { S.muted = false; S.preMute = S.volume; audio.muted = false; }
-      try { audio.volume = S.volume; } catch (e) {}
+      if (S.volume > 0) { S.muted = false; S.preMute = S.volume; out.muted = false; }
+      out.volume = S.volume;
       DB.kvSet('pvolume', S.volume).catch(() => {});
       DB.kvSet('pmuted', S.muted).catch(() => {});
       emit('volume', { volume: S.volume, muted: S.muted });
     },
     toggleMute() {
       S.muted = !S.muted;
-      audio.muted = S.muted;
+      out.muted = S.muted;
       DB.kvSet('pmuted', S.muted).catch(() => {});
       emit('volume', { volume: S.volume, muted: S.muted });
     },
@@ -259,10 +296,15 @@ const Player = (() => {
         S.list.splice(i, 1);
         if (S.order) { S.order = S.order.map(x => x > i ? x - 1 : x).filter(x => x !== i); if (S.pos >= S.order.length) S.pos = Math.max(0, S.order.length - 1); }
         else if (S.pos > i) S.pos--;
-        if (S.track && S.track.id === id) { S.track = null; audio.removeAttribute('src'); audio.load(); syncPlayState(); }
+        if (S.track && S.track.id === id) { S.track = null; try { out.clear(); } catch (e) {} syncPlayState(); }
         emit('queue', null); saveNow();
       }
     }
   };
+  if (NATIVE_MODE) {
+    // Lock-screen / Control Center commands from the native plugin.
+    out.on('remote-prev', () => api.prev());
+    out.on('remote-next', () => api.next());
+  }
   return api;
 })();

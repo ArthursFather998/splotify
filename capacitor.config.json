@@ -1,0 +1,8 @@
+{
+  "appId": "com.skylergreen.splotify",
+  "appName": "Splotify",
+  "ios": {
+    "contentInset": "always"
+  },
+  "webDir": "www-ios"
+}

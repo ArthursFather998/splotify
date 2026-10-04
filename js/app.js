@@ -1637,6 +1637,10 @@ const App = (() => {
       pill.textContent = pillText;
       row.dataset.act = act;
     };
+    if (window.SplotifyNative) {
+      paint(false, 'Native app build — updates come with a new install', APP_VERSION + ' native', 'check-update');
+      return;
+    }
     if (!('serviceWorker' in navigator)) {
       paint(false, 'App updates are not supported in this browser', APP_VERSION, 'check-update');
       return;
@@ -2180,7 +2184,10 @@ const App = (() => {
       '<div id="' + id + '" style="font-size:24px;font-weight:800">—</div>' +
       '<div style="color:var(--sub);font-size:12px;margin-top:4px">' + label + '</div></div>';
     let msDiag = 'ms:n/a';
-    try { const f = Player.msFailed; msDiag = 'ms:' + (f.length ? 'rejected ' + f.join(',') : 'all ok'); } catch (e) { /* noop */ }
+    try {
+      if (window.SplotifyNative) msDiag = 'ms:native';
+      else { const f = Player.msFailed; msDiag = 'ms:' + (f.length ? 'rejected ' + f.join(',') : 'all ok'); }
+    } catch (e) { /* noop */ }
     return `<div class="pagehead"><button class="iconbtn" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><h1>utag fixer</h1><span style="width:44px"></span></div>
     <div style="padding:4px 20px 48px">
       <div style="color:var(--sub);font-size:12px;margin:2px 0 0">${APP_VERSION} · ${msDiag}</div>
