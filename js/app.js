@@ -506,7 +506,7 @@ const App = (() => {
   }
 
   /* ================= VIEWS ================= */
-  function greeting() { const h = new Date().getHours(); return h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening'; }
+  function greeting() { const h = new Date().getHours(); return h < 12 ? 'Morning, Bitch' : h < 18 ? 'I know your ass is just now waking up' : 'Go To Bed Bitch'; }
 
   function vHome() {
     S.viewCtx = null;
@@ -527,6 +527,8 @@ const App = (() => {
       <div style="display:flex;gap:10px;justify-content:center;margin-top:14px;flex-wrap:wrap"><button class="bigbtn pink" data-act="tab" data-tab="search">Search songs</button><button class="bigbtn" data-act="open-create-sheet">Create a playlist</button></div></div>
       ${madeBySplotify()}`;
     const cards = recentCards();
+
+    
     // Library-first fallbacks (never the raw SDB).
     const libTracks = S.library.map(id => S.byId.get(id)).filter(Boolean);
     const libAlbumCards = albums()
