@@ -377,7 +377,9 @@ input{font:inherit}
 .lib-card .liked-heart-tile.lib-liked svg{width:34%;height:34%}
 
 /* v7.0 player sprites (Sakura recolors of Skyler's art) */
-#np-shuffle .sprite, #np-repeat .sprite { width: 30px; height: 30px; object-fit: contain; display: block; }
+#np-shuffle .sprite { width: 46px; height: 46px; object-fit: contain; display: block; }
+#np-shuffle.iconbtn { width: 58px; height: 58px; } /* v8.7: enlarged shuffle button */
+#np-repeat .sprite { width: 30px; height: 30px; object-fit: contain; display: block; }
 #np-shuffle .sprite-off, #np-repeat .sprite-off { opacity: .32; filter: grayscale(1); }
 .sdb-note{padding:10px 16px 4px;color:var(--sub);font-size:13px}
 

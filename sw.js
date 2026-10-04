@@ -1,5 +1,5 @@
 /* Splotify service worker — offline app shell. Audio stays in IndexedDB, never in the cache. */
-const CACHE = 'splotify-v8.6r1';
+const CACHE = 'splotify-v8.7';
 const SHELL = [
   './', './index.html', './manifest.json',
   './css/app.css',
