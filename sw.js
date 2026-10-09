@@ -1,10 +1,9 @@
 /* Splotify service worker — offline app shell. Audio stays in IndexedDB, never in the cache. */
-const CACHE = 'splotify-v8.9';
+const CACHE = 'splotify-v9.0';
 const SHELL = [
   './', './index.html', './manifest.json',
   './css/app.css',
-  './js/icons.js', './js/db.js', './js/player.js', './js/import.js', './js/artist-stats.js', './js/app.js', './js/plimport.js', './js/spotify-import.js', './js/vendor/mm.js', './js/vendor/jszip.min.js',
-  './js/vendor/chromaprint-shim.js', './js/vendor/chromaprint-glue.js', './js/vendor/chromaprint.wasm',
+  './js/icons.js', './js/db.js', './js/utag.js', './js/player.js', './js/import.js', './js/artist-stats.js', './js/app.js', './js/plimport.js', './js/spotify-import.js', './js/vendor/mm.js', './js/vendor/jszip.min.js',
   './js/discography.json', './js/placeholder-artists.json', './js/artist-art/d4vd.jpg',
   './js/disco-art/Stargazing.jpg', './js/disco-art/Harlot.jpg', './js/disco-art/Hiraeth.jpg',
   './js/disco-art/Tired.jpg', './js/disco-art/Intervals.jpg', './js/disco-art/Drain.jpg',

@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v8.9';
+  const APP_VERSION = 'v9.0';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -1093,17 +1093,14 @@ const App = (() => {
       <div class="setrow" data-act="export-hub"><div>Export music<div class="sub">Back up your songs to a link or Google Drive</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
       <div class="setrow" data-act="open-spotify-import"><div>Import from Spotify<div class="sub" id="spimport-sub">Playlists, Liked Songs &amp; followed artists</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
       <div class="setrow" data-act="open-plimport"><div>Download Spotify playlist<div class="sub" id="plimport-sub">Turn a playlist into SDB downloads</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
-      <div class="setrow" data-act="fix-all-tags"><div>utag fixer<div class="sub">Retag your library, watch it work, edit tags by hand</div></div><span style="color:var(--sub)">${icon('tag')}</span></div>
+      <div class="setrow" data-act="fix-all-tags"><div>UTAG<div class="sub">Look up tags in the UTAG database, send unknowns to Hermes</div></div><span style="color:var(--sub)">${icon('tag')}</span></div>
       <div class="setrow"><div>Songs in library<div class="sub" id="set-storage">Counting…</div></div><span style="color:var(--sub)">${n}</span></div>
     </div>
     <div class="setgroup"><h2>Playback</h2>
       <div class="setrow" data-act="clear-recent"><div>Clear recently played</div></div>
     </div>
     <div class="setgroup"><h2>Metadata</h2>
-      <div class="setrow"><div>fanart.tv API key<div class="sub">Extra artwork source for the utag fixer — stored only on this iPhone, never uploaded</div></div></div>
-      <div style="padding:0 16px 14px"><input id="fanart-key" type="text" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="Paste key here" style="width:100%;box-sizing:border-box;padding:10px 12px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--text);font-size:15px"></div>
-      <div class="setrow"><div>AcoustID API key<div class="sub">Last-resort song ID for the utag fixer (identifies songs by sound when tags and filenames are both useless) — stored only on this iPhone, never uploaded</div></div></div>
-      <div style="padding:0 16px 14px"><input id="acoustid-key" type="text" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="Paste key here" style="width:100%;box-sizing:border-box;padding:10px 12px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--text);font-size:15px"></div>
+      <div class="setrow"><div>UTAG database<div class="sub" id="set-utag">Checking…</div></div><span style="color:var(--sub)">${icon('tag')}</span></div>
     </div>
     <div class="setgroup"><h2>App</h2>
       <div class="setrow" id="update-row" data-act="check-update"><div>App updates<div class="sub" id="update-sub">Checking for updates…</div></div><span class="updpill" id="update-pill">…</span></div>
@@ -1769,7 +1766,7 @@ const App = (() => {
     const items = [...(S.tagReview || [])].sort((a, b) => ((b.proposal || {}).confidence || 0) - ((a.proposal || {}).confidence || 0));
     return `<div class="pagehead"><button class="iconbtn" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><h1>Review corrections</h1><span style="width:44px"></span></div>
     <div style="padding:8px 16px 48px">
-      <p class="sub" style="margin:0 0 12px">The audit wasn't sure about these. Approve the right ones, skip the rest.</p>
+      <p class="sub" style="margin:0 0 12px">UTAG has not finished verifying these. Approve the right ones, skip the rest.</p>
       ${items.length ? `<button class="bigbtn pink" data-act="tag-review-approve-all" style="width:100%;margin-bottom:14px">Approve all ${items.length}</button>` : ''}
       ${items.length ? items.map((it, i) => `
         <div class="sp-review-row">
@@ -1829,31 +1826,13 @@ const App = (() => {
         .then(() => { buildFixList(); paintFixUI(); }).catch(() => {});
     }
     if (cur.v === 'settings') {
-      // fanart.tv key lives only on this device (kv store) — never in the repo.
+      // UTAG connection status: cached records + submissions waiting to send.
       try {
-        DB.kvGet('fanartKey', '').then(v => {
-          const i = document.getElementById('fanart-key');
-          if (i && document.activeElement !== i) i.value = v || '';
+        UTAG.stats().then(s => {
+          const el = document.getElementById('set-utag');
+          if (el) el.textContent = (s.cached ? s.cached + ' record' + (s.cached === 1 ? '' : 's') + ' cached on this device' : 'No records cached yet') +
+            (s.waiting ? ' · ' + s.waiting + ' waiting to send' : '');
         }).catch(() => {});
-        const fi = document.getElementById('fanart-key');
-        if (fi && !fi._fkeyBound) {
-          fi._fkeyBound = true;
-          fi.addEventListener('change', () => {
-            DB.kvSet('fanartKey', fi.value.trim()).then(() => toast('fanart.tv key saved')).catch(() => {});
-          });
-        }
-        // AcoustID key: same device-local pattern, never in the repo.
-        DB.kvGet('acoustidKey', '').then(v => {
-          const i = document.getElementById('acoustid-key');
-          if (i && document.activeElement !== i) i.value = v || '';
-        }).catch(() => {});
-        const ai = document.getElementById('acoustid-key');
-        if (ai && !ai._akeyBound) {
-          ai._akeyBound = true;
-          ai.addEventListener('change', () => {
-            DB.kvSet('acoustidKey', ai.value.trim()).then(() => toast('AcoustID key saved')).catch(() => {});
-          });
-        }
       } catch (e) {}
     }
     S._lastViewKey = cur.v + '|' + (cur.id || '');
@@ -2114,7 +2093,7 @@ const App = (() => {
 
   /* utag fixer screen (v5.8): a dedicated view showing the auto fixer working
      live — per-song before/after, run stats — plus manual tag editing. */
-  const fixUI = { running: false, album: '', albumIdx: 0, albumCount: 0, scanned: 0, matched: 0, fixed: 0, notFound: 0, log: [], via: { apple: 0, deezer: 0, musicbrainz: 0, spotify: 0, memory: 0 } };
+  const fixUI = { running: false, album: '', albumIdx: 0, albumCount: 0, scanned: 0, matched: 0, fixed: 0, notFound: 0, sent: 0, log: [] };
   const TAG_FIELDS = ['title', 'artist', 'album', 'albumArtist', 'genre'];
   const TAG_LABEL = { title: 'Title', artist: 'Artist', album: 'Album', albumArtist: 'Album artist', genre: 'Genre' };
   const snapTags = t => { const o = {}; TAG_FIELDS.forEach(f => o[f] = t[f] || ''); return o; };
@@ -2134,7 +2113,7 @@ const App = (() => {
       try {
         const last = JSON.parse(localStorage.getItem('splotify-tagfix-last') || 'null');
         if (last && (last.scanned || last.fixed)) {
-          d = { albumIdx: last.albums || 0, albumCount: last.albums || 0, scanned: last.scanned || 0, matched: last.matched || 0, fixed: last.fixed || 0, via: last.via || {} };
+          d = { albumIdx: last.albums || 0, albumCount: last.albums || 0, scanned: last.scanned || 0, matched: last.matched || 0, fixed: last.fixed || 0, sent: last.sent || 0 };
           lastRun = true;
         }
       } catch (e) { /* ignore */ }
@@ -2143,17 +2122,16 @@ const App = (() => {
     set('fix-scanned', String(d.scanned));
     set('fix-matched', String(d.matched));
     set('fix-fixed', String(d.fixed));
-    const vs = d.via || {};
-    set('fix-sources', 'Apple Music: ' + (vs.apple || 0) + ' · Deezer: ' + (vs.deezer || 0) + ' · MusicBrainz: ' + (vs.musicbrainz || 0) + ' · Spotify: ' + (vs.spotify || 0) + ' · AcoustID: ' + (vs.acoustid || 0));
-    try { Importer.memCount().then(n => set('fix-memory', n > 0 ? 'Remembers ' + n + ' fix' + (n === 1 ? '' : 'es') + ' — recognized songs skip the search next time' : '')); } catch (e) {}
+    set('fix-sources', 'UTAG database: ' + (d.fixed || 0) + ' fields fixed · ' + (d.sent || 0) + ' sent to Hermes');
+    try { UTAG.stats().then(s => set('fix-memory', (s.cached ? s.cached + ' record' + (s.cached === 1 ? '' : 's') + ' cached from UTAG' : '') + (s.waiting ? (s.cached ? ' · ' : '') + s.waiting + ' waiting to send to UTAG' : ''))); } catch (e) {}
     try {
       const skipped = (S.tracks || []).filter(t => !trackNeedsFix(t)).length;
       set('fix-skipped', skipped ? skipped + ' song' + (skipped === 1 ? '' : 's') + ' already have metadata — skipped' : '');
     } catch (e) {}
     set('fix-scope', fixUI.scopeTitle ? 'Fixing songs by ' + fixUI.scopeTitle : '');
     set('fix-status', fixUI.running
-      ? 'Fixing ' + fixUI.album + '…'
-      : ((d.albumCount || lastRun) ? 'Last run: fixed ' + d.fixed + ' of ' + d.scanned + ' tracks' : 'Check every song\u2019s tags.'));
+      ? 'Checking ' + fixUI.album + '…'
+      : ((d.albumCount || lastRun) ? 'Last run: fixed ' + d.fixed + ' fields on ' + d.matched + ' songs' : 'Check every song\u2019s tags.'));
     const log = document.getElementById('fix-log');
     if (log) {
       log.innerHTML = fixUI.log.map(e =>
@@ -2164,7 +2142,7 @@ const App = (() => {
     }
     const btn = document.getElementById('fix-run-btn');
     if (btn) {
-      btn.textContent = fixUI.running ? 'Fixing…' : 'Fix all songs';
+      btn.textContent = fixUI.running ? 'Checking…' : 'Check all songs';
       btn.disabled = fixUI.running;
       btn.classList.toggle('pink', !fixUI.running);
       btn.style.opacity = fixUI.running ? 0.5 : 1;
@@ -2188,7 +2166,7 @@ const App = (() => {
       if (window.SplotifyNative) msDiag = 'ms:native';
       else { const f = Player.msFailed; msDiag = 'ms:' + (f.length ? 'rejected ' + f.join(',') : 'all ok'); }
     } catch (e) { /* noop */ }
-    return `<div class="pagehead"><button class="iconbtn" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><h1>utag fixer</h1><span style="width:44px"></span></div>
+    return `<div class="pagehead"><button class="iconbtn" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><h1>UTAG</h1><span style="width:44px"></span></div>
     <div style="padding:4px 20px 48px">
       <div style="color:var(--sub);font-size:12px;margin:2px 0 0">${APP_VERSION} · ${msDiag}</div>
       <div id="fix-scope" style="color:var(--pink);font-size:13px;font-weight:700;margin:6px 0 0"></div>
@@ -2201,8 +2179,8 @@ const App = (() => {
       </div>
       <div id="fix-sources" style="color:var(--sub);font-size:13px;margin-top:10px"></div>
       <div id="fix-memory" style="color:var(--sub);font-size:13px;margin-top:4px"></div>
-      <div style="text-align:center"><button id="fix-run-btn" class="bigbtn pink" data-act="fix-run" style="margin:20px 0 8px">Fix all songs</button>
-      <p class="sub" style="margin:0 0 8px">Goes through songs with missing tags and checks them against the artist roster, Apple Music, Deezer, and MusicBrainz. Confident fixes apply on their own; the rest come to you for review. Songs with complete metadata are skipped — fix those by hand below. Songs nothing recognizes get identified by sound once you add an AcoustID key in Settings, Metadata.</p></div>
+      <div style="text-align:center"><button id="fix-run-btn" class="bigbtn pink" data-act="fix-run" style="margin:20px 0 8px">Check all songs</button>
+      <p class="sub" style="margin:0 0 8px">Checks songs with missing or incomplete tags against the UTAG database. Verified records apply on their own; songs UTAG is still verifying come to you for review; songs UTAG has never seen are sent to Hermes to research. Songs with complete metadata are skipped. Fix those by hand below.</p></div>
       <div id="fix-review-cta" style="margin:4px 0 8px"></div>
       <h2 style="font-size:16px;margin:22px 0 6px">Needs fixing</h2>
       <div id="fix-skipped" style="color:var(--sub);font-size:13px;margin:-2px 0 4px"></div>
@@ -2298,19 +2276,15 @@ const App = (() => {
       paintTagArtPreview(t);
     } catch (e) { toast('Could not read that image'); }
   }
-  // utag fixer: album-first pass, then a parallel per-song pool, with live
-  // per-row painting. The album pass clusters named-album tracks and
-  // resolves each cluster with one listing lookup; whatever it leaves over
-  // (unknown albums, unmatched tracks) goes through the unified fixTrack
-  // engine 5 at a time. Confident fixes apply on their own; the rest come
-  // to you for review, highest confidence first.
-  // v8.5: utag fixer at artist scope — replaces the old album-page button.
-  // Runs the same two-phase engine on the artist's songs (albums, singles,
-  // features), scoped into the fixer screen.
+  // UTAG pass (v9.0): songs are checked against the UTAG database. The old
+  // built-in catalog engine (Apple/Deezer/MusicBrainz/fingerprint) is gone;
+  // UTAG is the one metadata brain and Splotify only calls it.
+  // v8.5: UTAG check at artist scope — runs the same pass on the artist's
+  // songs (albums, singles, features), scoped into the UTAG screen.
   async function fixArtistByKey(name) {
     const a = artistByName(name);
     if (!a || !(a.tracks || []).length) { toast('No songs by this artist yet'); return; }
-    if (S.fixing || fixUI.running) { toast('The fixer is already running'); return; }
+    if (S.fixing || fixUI.running) { toast('A UTAG check is already running'); return; }
     closeSheet();
     nav('tagFixer');
     await fixAllSongs({ tracks: a.tracks, title: a.name });
@@ -2330,9 +2304,8 @@ const App = (() => {
     const base = opts.tracks || [...S.tracks];
     const list = base.filter(trackNeedsFix).sort((a, b) => String(a.title || '').localeCompare(String(b.title || '')));
     if (!list.length) { toast(scopeTitle ? `All of ${scopeTitle}'s songs already have metadata` : 'All songs already have metadata'); return; }
-    const roster = [...S.artists.values()];
     S.tagReview = S.tagReview || [];
-    Object.assign(fixUI, { running: true, album: '', scopeTitle, albumIdx: 0, albumCount: list.length, scanned: 0, matched: 0, fixed: 0, notFound: 0, log: [], lastProgressAt: Date.now(), via: { apple: 0, deezer: 0, musicbrainz: 0, spotify: 0, memory: 0, acoustid: 0 } });
+    Object.assign(fixUI, { running: true, album: '', scopeTitle, albumIdx: 0, albumCount: list.length, scanned: 0, matched: 0, fixed: 0, notFound: 0, sent: 0, log: [], lastProgressAt: Date.now() });
     const markProgress = () => { fixUI.lastProgressAt = Date.now(); };
     buildFixList(list);
     paintFixUI();
@@ -2344,85 +2317,44 @@ const App = (() => {
         }
       });
     };
-    const countVia = (t) => {
-      const tv = t.tagsVia || '';
-      if (tv.includes('memory')) fixUI.via.memory++;
-      else if (tv.includes('AcoustID')) fixUI.via.acoustid++;
-      else if (tv.includes('Deezer')) fixUI.via.deezer++;
-      else if (tv.includes('Apple')) fixUI.via.apple++;
-      else if (tv.includes('MusicBrainz')) fixUI.via.musicbrainz++;
-      else if (tv.includes('Spotify')) fixUI.via.spotify++;
-    };
     const logFixed = (t, note) => {
       fixUI.log.unshift({ id: t.id, title: t.title, artist: t.artist, changes: note });
       if (fixUI.log.length > 60) fixUI.log.pop();
-      countVia(t);
     };
-    const knownAlbums = albums()
-      .filter(x => x.name && x.name !== 'Unknown Album')
-      .map(x => ({ name: x.name, artist: x.artist }));
-    const rosterNames = roster.map(r => r.name).filter(x => x && x !== 'Unknown Artist');
-    // Phase 1 — album-first: named-album clusters resolve from one listing
-    // lookup each; memory-known tracks skip the network entirely.
-    // v8.1: the status names the live album so a slow run is diagnosable.
-    fixUI.album = 'albums';
-    paintFixUI();
-    let leftover = list;
-    try {
-      const cr = await Importer.fixAlbumClusters(list, knownAlbums, rosterNames, (t, status, note) => {
+    // UTAG pass (v9.0): every queued song is checked against the UTAG
+    // database, three at a time. Verified records apply on their own;
+    // records UTAG is still verifying queue for review; songs UTAG has
+    // never seen are submitted for Hermes to research.
+    const queue = [...list];
+    const worker = async () => {
+      while (queue.length) {
+        if (!fixUI.running) return;
+        const t = queue.shift();
         markProgress();
-        if (status === 'scanning') {
-          fixUI.album = (t.album && t.album !== 'Unknown Album' ? t.album : 'albums');
-          paintFixRow(t.id, 'scanning'); paintFixUI(); return;
-        }
-        fixUI.scanned++; fixUI.albumIdx++;
-        if (status === 'fixed') { fixUI.fixed++; fixUI.matched++; logFixed(t, note); }
-        else if (status === 'ok') { fixUI.matched++; }
-        paintFixRow(t.id, status, note);
-        paintFixUI();
-      });
-      leftover = cr.leftover;
-    } catch (e) { console.warn('album-first pass failed', e); }
-    // Phase 2 — parallel fix pool for everything the album pass left over.
-    // v8.1: inside the run try/finally so a throw can never leave the
-    // button wedged on "Fixing…".
-    // v8.4: skipHandle lets the Skip button interrupt a track mid-flight.
-    const skipHandle = {};
-    fixUI.skipNow = null;
-    await Importer.fixTrackPool(leftover, roster, {
-      concurrency: 5,
-      skipHandle,
-      isSkipped: (tid) => { const tr = S.byId.get(tid); return tr ? isTrackSkipped(tr) : false },
-      onStart: (t) => {
-        markProgress();
-        if (!fixUI.skipNow && skipHandle.now) fixUI.skipNow = skipHandle.now;
         fixUI.album = t.title || 'Unknown Title';
         paintFixRow(t.id, 'scanning');
         paintFixUI();
-      },
-      // v7.9: the fixer only fingerprints tracks nothing else recognized.
-      onFingerprint: (t) => { markProgress(); paintFixRow(t.id, 'fingerprinting'); },
-      onDone: (t, res) => {
-        markProgress();
+        let res = null;
+        try { res = await UTAG.fixTrack(t); } catch (e) { console.warn('UTAG check failed', e); }
         fixUI.scanned++; fixUI.albumIdx++;
-        if (res) {
-          if (res.fixed) { fixUI.fixed += res.fixed; fixUI.matched++; }
-          queueReview(res.queued);
-          paintFixRow(t.id, res.status, res.note);
-          if (res.fixed && res.note) logFixed(t, res.note);
-        } else {
+        if (!res) {
           paintFixRow(t.id, 'nomatch');
+        } else {
+          if (res.fixed) { fixUI.fixed += res.fixed; fixUI.matched++; logFixed(t, res.note); }
+          if (res.queued && res.queued.length) { fixUI.matched++; queueReview(res.queued); }
+          if (res.status === 'sent') fixUI.sent++;
+          paintFixRow(t.id, res.status, res.note);
         }
         paintFixUI();
-      },
-    });
+      }
+    };
+    await Promise.all([worker(), worker(), worker()]);
     // v7.8 review triage: highest confidence first, in the queue and on screen.
     S.tagReview.sort((a, b) => ((b.proposal || {}).confidence || 0) - ((a.proposal || {}).confidence || 0));
     try {
       localStorage.setItem('splotify-tagfix-last', JSON.stringify({
         when: Date.now(), scanned: fixUI.scanned, matched: fixUI.matched,
-        fixed: fixUI.fixed, notFound: fixUI.notFound, albums: fixUI.albumCount,
-        via: fixUI.via,
+        fixed: fixUI.fixed, sent: fixUI.sent, albums: fixUI.albumCount,
       }));
     } catch (e) { /* ignore */ }
     try { await refreshTracks(); render(); paintMini(); } catch (e) {}
@@ -2430,8 +2362,8 @@ const App = (() => {
     paintFixUI();
     const nq = (S.tagReview || []).length;
     toast(fixUI.scanned
-      ? `utag fixer: fixed ${fixUI.fixed} of ${fixUI.scanned} tracks` + (nq ? `, ${nq} to review` : '')
-      : 'utag fixer: tags already look good');
+      ? `UTAG: fixed ${fixUI.fixed} fields on ${fixUI.matched} songs` + (nq ? `, ${nq} to review` : '') + (fixUI.sent ? `, ${fixUI.sent} sent to Hermes` : '')
+      : 'UTAG: tags already look good');
     } finally {
       // v8.1: the run can never wedge the button on "Fixing…" again.
       fixUI.running = false; fixUI.album = ''; fixUI.skipNow = null; fixUI.scopeTitle = '';
@@ -2481,12 +2413,12 @@ const App = (() => {
     applyFixFilter();
   }
   const FX_STATUS = {
-    scanning: ['<span class="fx-dot"></span>Fixing…', 'scanning'],
-    fingerprinting: ['<span class="fx-dot"></span>Fingerprinting…', 'scanning'],
+    scanning: ['<span class="fx-dot"></span>Checking UTAG…', 'scanning'],
     fixed: ['✓ Fixed', 'fixed'],
     review: ['→ Review', 'review'],
     ok: ['✓ Checked', 'ok'],
     nomatch: ['No match', 'nomatch'],
+    sent: ['Sent to UTAG', 'ok'],
     skipped: ['Skipped', 'skipped'],
   };
   function paintFixRow(id, status, note) {
@@ -2688,14 +2620,9 @@ const App = (() => {
               tr.tagsVia = (t.tagsVia ? t.tagsVia + '+' : '') + 'audit(' + it.proposal.source + ')';
               await DB.updateTrack(t.id, { [it.proposal.field]: it.proposal.to, tagsVia: tr.tagsVia, tagged: true });
               Object.assign(t, { [it.proposal.field]: it.proposal.to, tagsVia: tr.tagsVia, tagged: true });
-              // v7.7 calibration: remember what was approved and how sure the
-              // fixer was, so a later hand-edit can log a rejection signal.
-              t.autoConf = { ...(t.autoConf || {}), [it.proposal.field]: it.proposal.confidence };
-              t.autoSource = { ...(t.autoSource || {}), [it.proposal.field]: it.proposal.source };
-              try { Importer.learnFix(before, t); } catch (e) {}
+              try { UTAG.learn(before, t); } catch (e) {}
             }
           } catch (e) {}
-          try { Importer.logCalib(it.proposal.source, it.proposal.confidence, true); } catch (e) {}
           S.tagReview.splice(i, 1);
         }
         render();
@@ -2704,7 +2631,6 @@ const App = (() => {
       case 'tag-review-skip': {
         try {
           const it = S.tagReview[Number(el.dataset.idx)];
-          if (it) Importer.logCalib(it.proposal.source, it.proposal.confidence, false);
         } catch (e) {}
         S.tagReview.splice(Number(el.dataset.idx), 1); render();
         break;
@@ -2719,15 +2645,12 @@ const App = (() => {
               const tagsVia = (t.tagsVia ? t.tagsVia + '+' : '') + 'audit(' + it.proposal.source + ')';
               await DB.updateTrack(t.id, { [it.proposal.field]: it.proposal.to, tagsVia, tagged: true });
               Object.assign(t, { [it.proposal.field]: it.proposal.to, tagsVia, tagged: true });
-              t.autoConf = { ...(t.autoConf || {}), [it.proposal.field]: it.proposal.confidence };
-              t.autoSource = { ...(t.autoSource || {}), [it.proposal.field]: it.proposal.source };
-              try { Importer.logCalib(it.proposal.source, it.proposal.confidence, true); } catch (e) {}
             }
           } catch (e) {}
         }
         for (const [bid, before] of befores) {
           const t = S.byId.get(bid);
-          if (t) { try { Importer.learnFix(before, t); } catch (e) {} }
+          if (t) { try { UTAG.learn(before, t); } catch (e) {} }
         }
         S.tagReview = [];
         await refreshTracks(); render();
@@ -2757,18 +2680,7 @@ const App = (() => {
           const beforeTags = t0 ? { ...t0 } : null;
           await DB.updateTrack(tid, patch);
           const t = S.byId.get(tid); if (t) Object.assign(t, patch);
-          if (beforeTags && t) { try { Importer.learnFix(beforeTags, t); } catch (e) {} }
-          // v7.7 calibration: hand-editing a field the fixer auto-set is a
-          // rejection signal at that confidence (best-effort, in-session).
-          try {
-            if (beforeTags && t && t.autoConf) {
-              for (const f of ['title', 'artist', 'album', 'albumArtist', 'genre']) {
-                if (t.autoConf[f] !== undefined && String(patch[f] ?? '') !== String(beforeTags[f] ?? '')) {
-                  Importer.logCalib((t.autoSource || {})[f] || 'unknown', t.autoConf[f], false);
-                }
-              }
-            }
-          } catch (e) {}
+          if (beforeTags && t) { try { UTAG.learn(beforeTags, t); } catch (e) {} }
           try { S.artURLs.delete(tid); } catch (e) {}
           closeSheet(); await refreshTracks(); render(); paintMini();
           paintFixUI();
@@ -2789,23 +2701,23 @@ const App = (() => {
         break;
       }
       case 'sheet-fixtags': {
-        // v8.5: the fixer no longer works at album scope — retag just this track.
+        // v9.0: retag just this track, from the UTAG database.
         const t = S.byId.get(Number(id));
         closeSheet();
         if (!t) break;
         if (S.fixing) break;
-        const knownAlbums = albums().filter(x => x.name && !x.single).map(x => ({ name: x.name, artist: x.artist }));
-        const knownArtists = [...new Set(S.tracks.map(x => x.artist).filter(x => x && x !== 'Unknown Artist'))];
-        toast('Fixing tags…');
+        toast('Checking UTAG…');
         S.fixing = 'track-' + t.id; render();
         let res = null;
-        try { res = await Importer.fixAlbum([t], knownAlbums, knownArtists); } catch (e) { console.warn('fix-track failed', e); }
+        try { res = await UTAG.fixTrack(t); } catch (e) { console.warn('UTAG fix-track failed', e); }
         S.fixing = null;
         try {
           await refreshTracks(); render(); paintMini();
-          if (res && res.fixed > 0) toast('Tags fixed');
-          else if (res && res.notFound) toast('Couldn\u2019t find tags for this song');
-          else if (res) toast('Tags already look good');
+          if (res && res.fixed > 0) toast('Tags fixed from UTAG');
+          else if (res && res.status === 'review') toast('UTAG is still verifying this one');
+          else if (res && res.status === 'sent') toast('Sent to UTAG for research');
+          else if (res && res.status === 'skipped') toast('This song is skipped');
+          else if (res) toast('Tags already match UTAG');
           else toast('Fix failed, try again');
         } catch (e) { console.warn('fix-track render failed', e); }
         break;
@@ -3030,6 +2942,7 @@ const App = (() => {
     // Quietly fix missing tags on tracks already in the library (no re-import needed),
     // then register single releases from the bundled discography.
     setTimeout(() => {
+      try { UTAG.migrate(); UTAG.drain(); } catch (e) {}
       Importer.healLibrary().then(async ({ fixed: n, changed }) => {
         const c = await Importer.recordSingles([...S.tracks]);
         if (changed > 0 || c > 0) {
