@@ -1101,14 +1101,7 @@ const App = (() => {
     </div>
     <div class="setgroup"><h2>Metadata</h2>
       <div class="setrow"><div>UTAG database<div class="sub" id="set-utag">Checking…</div></div><span style="color:var(--sub)">${icon('tag')}</span></div>
-      <div class="setrow"><div>utag fixer<div class="sub">Keys are stored only on this iPhone — the audio never leaves it</div></div></div>
-      <div style="padding:2px 16px 6px"><input id="set-acoustid" placeholder="AcoustID API key" autocomplete="off" autocapitalize="off" spellcheck="false"
-        style="width:100%;box-sizing:border-box;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;color:var(--txt);font-size:15px" /></div>
-      <div style="padding:2px 16px 6px"><input id="set-fanart" placeholder="fanart.tv API key" autocomplete="off" autocapitalize="off" spellcheck="false"
-        style="width:100%;box-sizing:border-box;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;color:var(--txt);font-size:15px" /></div>
-      <div style="padding:2px 16px 12px"><input id="set-utagpw" type="password" placeholder="UTAG site password" autocomplete="off" autocapitalize="off" spellcheck="false"
-        style="width:100%;box-sizing:border-box;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;color:var(--txt);font-size:15px" />
-        <div class="sub" style="margin-top:6px">Lets the fixer save results to the UTAG library and log to its Activity tab. Stored only on this iPhone.</div></div>
+      <div class="setrow" data-act="open-fixer-keys"><div>utag fixer keys<div class="sub">AcoustID, fanart.tv and the UTAG site password</div></div><span style="color:var(--sub)">${icon('chevR', 'width:20px;height:20px')}</span></div>
     </div>
     <div class="setgroup"><h2>App</h2>
       <div class="setrow" id="update-row" data-act="check-update"><div>App updates<div class="sub" id="update-sub">Checking for updates…</div></div><span class="updpill" id="update-pill">…</span></div>
@@ -1119,6 +1112,46 @@ const App = (() => {
       <div class="setrow"><a href="terms.html" style="color:inherit;text-decoration:none;width:100%">Terms of Use</a></div>
       <div class="setrow" data-act="wipe" style="color:#ff7b7b"><div>Delete all music &amp; data</div></div>
     </div>`;
+  }
+  /* utag fixer keys: AcoustID + fanart.tv for the engine, and the UTAG site
+     password for library saves + Activity logging. The engine reads
+     utag_acoustid_key / utag_fanart_key from this origin's localStorage.
+     Everything here is stored only on this iPhone. */
+  function vFixerKeys() {
+    const inp = (id, label, sub, type) =>
+      '<div style="margin:14px 0"><label style="display:block;font-size:13px;font-weight:700;margin:0 0 6px">' + label + '</label>' +
+      '<input id="' + id + '" type="' + (type || 'text') + '" autocomplete="off" autocapitalize="off" spellcheck="false"' +
+      ' style="width:100%;box-sizing:border-box;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;color:var(--txt);font-size:15px" />' +
+      (sub ? '<div class="sub" style="margin-top:6px">' + sub + '</div>' : '') + '</div>';
+    return `<div class="pagehead"><button class="iconbtn" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><h1>utag fixer keys</h1><span style="width:44px"></span></div>
+    <div style="padding:4px 20px 48px">
+      <p class="sub" style="margin:6px 0 4px">The fixer runs on this iPhone — audio never leaves it. These keys unlock its sources. Stored only on this device, never uploaded.</p>
+      ${inp('set-acoustid', 'AcoustID API key', 'Identifies songs by their sound when tags and file names are both useless.')}
+      ${inp('set-fanart', 'fanart.tv API key', 'Extra artwork source for the fixer.')}
+      ${inp('set-utagpw', 'UTAG site password', 'Lets the fixer save results to the UTAG library and log to its Activity tab.', 'password')}
+    </div>`;
+  }
+  function bindFixerKeys() {
+    try {
+      const ka = document.getElementById('set-acoustid');
+      const kf = document.getElementById('set-fanart');
+      const kp = document.getElementById('set-utagpw');
+      if (ka && !ka.dataset.bound) {
+        ka.dataset.bound = '1';
+        ka.value = localStorage.getItem('utag_acoustid_key') || '';
+        ka.addEventListener('change', () => { try { localStorage.setItem('utag_acoustid_key', ka.value.trim()); toast('AcoustID key saved on this iPhone'); } catch (e) {} });
+      }
+      if (kf && !kf.dataset.bound) {
+        kf.dataset.bound = '1';
+        kf.value = localStorage.getItem('utag_fanart_key') || '';
+        kf.addEventListener('change', () => { try { localStorage.setItem('utag_fanart_key', kf.value.trim()); toast('fanart.tv key saved on this iPhone'); } catch (e) {} });
+      }
+      if (kp && !kp.dataset.bound) {
+        kp.dataset.bound = '1';
+        kp.value = UTAG.utagPassword();
+        kp.addEventListener('change', () => { try { UTAG.setUtagPassword(kp.value); toast('UTAG site password saved on this iPhone'); } catch (e) {} });
+      }
+    } catch (e) {}
   }
   /* ---- Library export: one streamed backup ZIP of every saved track ----
      Entries are stored (no compression), written one track at a time with a
@@ -1814,6 +1847,7 @@ const App = (() => {
     exportHub: () => vExportHub(),
     deviceExport: () => vDeviceExport(),
     tagFixer: () => vTagFixer(),
+    fixerKeys: () => vFixerKeys(),
   };
   function render() {
     const cur = S.stack[S.stack.length - 1] || { v: 'home' };
@@ -1825,6 +1859,7 @@ const App = (() => {
     view().onscroll = null;
     if (cur.v === 'artist') bindArtistScroll();
     if (cur.v === 'driveBackup') paintDbBgMode();
+    if (cur.v === 'fixerKeys') bindFixerKeys();
     if (cur.v === 'tagFixer') {
       paintTagFixResults();
       // v8.4: skip buttons need the skip set; render immediately, then again
@@ -1841,29 +1876,6 @@ const App = (() => {
           if (el) el.textContent = (s.cached ? s.cached + ' record' + (s.cached === 1 ? '' : 's') + ' cached on this device' : 'No records cached yet') +
             (s.waiting ? ' · ' + s.waiting + ' waiting to send' : '');
         }).catch(() => {});
-      } catch (e) {}
-      // utag fixer keys: the engine reads utag_acoustid_key / utag_fanart_key
-      // from this origin's localStorage; the site password unlocks library
-      // saves + Activity logging. All device-local.
-      try {
-        const ka = document.getElementById('set-acoustid');
-        const kf = document.getElementById('set-fanart');
-        const kp = document.getElementById('set-utagpw');
-        if (ka && !ka.dataset.bound) {
-          ka.dataset.bound = '1';
-          ka.value = localStorage.getItem('utag_acoustid_key') || '';
-          ka.addEventListener('change', () => { try { localStorage.setItem('utag_acoustid_key', ka.value.trim()); } catch (e) {} });
-        }
-        if (kf && !kf.dataset.bound) {
-          kf.dataset.bound = '1';
-          kf.value = localStorage.getItem('utag_fanart_key') || '';
-          kf.addEventListener('change', () => { try { localStorage.setItem('utag_fanart_key', kf.value.trim()); } catch (e) {} });
-        }
-        if (kp && !kp.dataset.bound) {
-          kp.dataset.bound = '1';
-          kp.value = UTAG.utagPassword();
-          kp.addEventListener('change', () => { try { UTAG.setUtagPassword(kp.value); toast('UTAG site password saved on this iPhone'); } catch (e) {} });
-        }
       } catch (e) {}
     }
     S._lastViewKey = cur.v + '|' + (cur.id || '');
@@ -2536,6 +2548,7 @@ const App = (() => {
       case 'open-plimport': nav('plimport'); break;
       /* v7.0 Spotify transfer */
       case 'open-spotify-import': nav('spotifyImport'); break;
+      case 'open-fixer-keys': nav('fixerKeys'); break;
       case 'sp-oauth': SpImport.oauthStart(); break;
       case 'sp-pick-zip': { const zi = document.getElementById('sp-zip'); if (zi) zi.click(); break; }
       case 'sp-review-approve': {
