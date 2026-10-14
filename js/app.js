@@ -1093,7 +1093,7 @@ const App = (() => {
       <div class="setrow" data-act="export-hub"><div>Export music<div class="sub">Back up your songs to a link or Google Drive</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
       <div class="setrow" data-act="open-spotify-import"><div>Import from Spotify<div class="sub" id="spimport-sub">Playlists, Liked Songs &amp; followed artists</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
       <div class="setrow" data-act="open-plimport"><div>Download Spotify playlist<div class="sub" id="plimport-sub">Turn a playlist into SDB downloads</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
-      <div class="setrow" data-act="fix-all-tags"><div>UTAG<div class="sub">Look up tags in the UTAG database, send unknowns to Hermes</div></div><span style="color:var(--sub)">${icon('tag')}</span></div>
+      <div class="setrow" data-act="fix-all-tags"><div>utag fixer<div class="sub">Scan the UTAG database, auto-fix the rest, update both</div></div><span style="color:var(--sub)">${icon('tag')}</span></div>
       <div class="setrow"><div>Songs in library<div class="sub" id="set-storage">Counting…</div></div><span style="color:var(--sub)">${n}</span></div>
     </div>
     <div class="setgroup"><h2>Playback</h2>
@@ -1101,6 +1101,14 @@ const App = (() => {
     </div>
     <div class="setgroup"><h2>Metadata</h2>
       <div class="setrow"><div>UTAG database<div class="sub" id="set-utag">Checking…</div></div><span style="color:var(--sub)">${icon('tag')}</span></div>
+      <div class="setrow"><div>utag fixer<div class="sub">Keys are stored only on this iPhone — the audio never leaves it</div></div></div>
+      <div style="padding:2px 16px 6px"><input id="set-acoustid" placeholder="AcoustID API key" autocomplete="off" autocapitalize="off" spellcheck="false"
+        style="width:100%;box-sizing:border-box;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;color:var(--txt);font-size:15px" /></div>
+      <div style="padding:2px 16px 6px"><input id="set-fanart" placeholder="fanart.tv API key" autocomplete="off" autocapitalize="off" spellcheck="false"
+        style="width:100%;box-sizing:border-box;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;color:var(--txt);font-size:15px" /></div>
+      <div style="padding:2px 16px 12px"><input id="set-utagpw" type="password" placeholder="UTAG site password" autocomplete="off" autocapitalize="off" spellcheck="false"
+        style="width:100%;box-sizing:border-box;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;color:var(--txt);font-size:15px" />
+        <div class="sub" style="margin-top:6px">Lets the fixer save results to the UTAG library and log to its Activity tab. Stored only on this iPhone.</div></div>
     </div>
     <div class="setgroup"><h2>App</h2>
       <div class="setrow" id="update-row" data-act="check-update"><div>App updates<div class="sub" id="update-sub">Checking for updates…</div></div><span class="updpill" id="update-pill">…</span></div>
@@ -1834,6 +1842,29 @@ const App = (() => {
             (s.waiting ? ' · ' + s.waiting + ' waiting to send' : '');
         }).catch(() => {});
       } catch (e) {}
+      // utag fixer keys: the engine reads utag_acoustid_key / utag_fanart_key
+      // from this origin's localStorage; the site password unlocks library
+      // saves + Activity logging. All device-local.
+      try {
+        const ka = document.getElementById('set-acoustid');
+        const kf = document.getElementById('set-fanart');
+        const kp = document.getElementById('set-utagpw');
+        if (ka && !ka.dataset.bound) {
+          ka.dataset.bound = '1';
+          ka.value = localStorage.getItem('utag_acoustid_key') || '';
+          ka.addEventListener('change', () => { try { localStorage.setItem('utag_acoustid_key', ka.value.trim()); } catch (e) {} });
+        }
+        if (kf && !kf.dataset.bound) {
+          kf.dataset.bound = '1';
+          kf.value = localStorage.getItem('utag_fanart_key') || '';
+          kf.addEventListener('change', () => { try { localStorage.setItem('utag_fanart_key', kf.value.trim()); } catch (e) {} });
+        }
+        if (kp && !kp.dataset.bound) {
+          kp.dataset.bound = '1';
+          kp.value = UTAG.utagPassword();
+          kp.addEventListener('change', () => { try { UTAG.setUtagPassword(kp.value); toast('UTAG site password saved on this iPhone'); } catch (e) {} });
+        }
+      } catch (e) {}
     }
     S._lastViewKey = cur.v + '|' + (cur.id || '');
     document.querySelectorAll('.tab').forEach(b => {
@@ -2122,7 +2153,7 @@ const App = (() => {
     set('fix-scanned', String(d.scanned));
     set('fix-matched', String(d.matched));
     set('fix-fixed', String(d.fixed));
-    set('fix-sources', 'UTAG database: ' + (d.fixed || 0) + ' fields fixed · ' + (d.sent || 0) + ' sent to Hermes');
+    set('fix-sources', 'utag fixer: ' + (d.fixed || 0) + ' fields fixed · ' + (d.sent || 0) + ' sent to Hermes');
     try { UTAG.stats().then(s => set('fix-memory', (s.cached ? s.cached + ' record' + (s.cached === 1 ? '' : 's') + ' cached from UTAG' : '') + (s.waiting ? (s.cached ? ' · ' : '') + s.waiting + ' waiting to send to UTAG' : ''))); } catch (e) {}
     try {
       const skipped = (S.tracks || []).filter(t => !trackNeedsFix(t)).length;
@@ -2166,7 +2197,7 @@ const App = (() => {
       if (window.SplotifyNative) msDiag = 'ms:native';
       else { const f = Player.msFailed; msDiag = 'ms:' + (f.length ? 'rejected ' + f.join(',') : 'all ok'); }
     } catch (e) { /* noop */ }
-    return `<div class="pagehead"><button class="iconbtn" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><h1>UTAG</h1><span style="width:44px"></span></div>
+    return `<div class="pagehead"><button class="iconbtn" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><h1>utag fixer</h1><span style="width:44px"></span></div>
     <div style="padding:4px 20px 48px">
       <div style="color:var(--sub);font-size:12px;margin:2px 0 0">${APP_VERSION} · ${msDiag}</div>
       <div id="fix-scope" style="color:var(--pink);font-size:13px;font-weight:700;margin:6px 0 0"></div>
@@ -2180,7 +2211,7 @@ const App = (() => {
       <div id="fix-sources" style="color:var(--sub);font-size:13px;margin-top:10px"></div>
       <div id="fix-memory" style="color:var(--sub);font-size:13px;margin-top:4px"></div>
       <div style="text-align:center"><button id="fix-run-btn" class="bigbtn pink" data-act="fix-run" style="margin:20px 0 8px">Check all songs</button>
-      <p class="sub" style="margin:0 0 8px">Checks songs with missing or incomplete tags against the UTAG database. Verified records apply on their own; songs UTAG is still verifying come to you for review; songs UTAG has never seen are sent to Hermes to research. Songs with complete metadata are skipped. Fix those by hand below.</p></div>
+      <p class="sub" style="margin:0 0 8px">First the UTAG database is checked and its knowledge applied. Every song the database has never seen is then run through the utag fixer automatically — the same fix as uploading the file on the UTAG site — and the result is saved both here and in the UTAG library. Everything is logged in the fixer's Activity tab. Songs with complete metadata are skipped. Fix those by hand below.</p></div>
       <div id="fix-review-cta" style="margin:4px 0 8px"></div>
       <h2 style="font-size:16px;margin:22px 0 6px">Needs fixing</h2>
       <div id="fix-skipped" style="color:var(--sub);font-size:13px;margin:-2px 0 4px"></div>
@@ -2284,7 +2315,7 @@ const App = (() => {
   async function fixArtistByKey(name) {
     const a = artistByName(name);
     if (!a || !(a.tracks || []).length) { toast('No songs by this artist yet'); return; }
-    if (S.fixing || fixUI.running) { toast('A UTAG check is already running'); return; }
+    if (S.fixing || fixUI.running) { toast('The utag fixer is already running'); return; }
     closeSheet();
     nav('tagFixer');
     await fixAllSongs({ tracks: a.tracks, title: a.name });
@@ -2309,6 +2340,16 @@ const App = (() => {
     const markProgress = () => { fixUI.lastProgressAt = Date.now(); };
     buildFixList(list);
     paintFixUI();
+    // Every run is logged in the utag fixer's Activity tab: one job for the
+    // run, one event per song the engine touches.
+    let fixJobId = null;
+    try {
+      const jr = await UTAG.fixerLog('start', {
+        title: 'utag fixer (Splotify)' + (scopeTitle ? ' — ' + scopeTitle : ''),
+        file_name: list.length + ' songs',
+      });
+      fixJobId = jr && jr.job_id ? jr.job_id : null;
+    } catch (e) {}
     try {
     const queueReview = (queued) => {
       (queued || []).forEach(q => {
@@ -2323,8 +2364,9 @@ const App = (() => {
     };
     // UTAG pass (v9.0): every queued song is checked against the UTAG
     // database, three at a time. Verified records apply on their own;
-    // records UTAG is still verifying queue for review; songs UTAG has
-    // never seen are submitted for Hermes to research.
+    // records UTAG is still verifying queue for review; every song the
+    // database has never seen is auto-fixed by the utag fixer engine and
+    // saved both here and in the UTAG library.
     const queue = [...list];
     const worker = async () => {
       while (queue.length) {
@@ -2335,7 +2377,7 @@ const App = (() => {
         paintFixRow(t.id, 'scanning');
         paintFixUI();
         let res = null;
-        try { res = await UTAG.fixTrack(t); } catch (e) { console.warn('UTAG check failed', e); }
+        try { res = await UTAG.fixTrack(t, { jobId: fixJobId }); } catch (e) { console.warn('utag fixer failed', e); }
         fixUI.scanned++; fixUI.albumIdx++;
         if (!res) {
           paintFixRow(t.id, 'nomatch');
@@ -2361,9 +2403,17 @@ const App = (() => {
     buildFixList();
     paintFixUI();
     const nq = (S.tagReview || []).length;
+    try {
+      await UTAG.fixerLog('done', {
+        job_id: fixJobId,
+        status: 'done',
+        result: 'Fixed ' + fixUI.fixed + ' fields on ' + fixUI.matched + ' of ' + fixUI.scanned + ' songs' +
+          (nq ? ', ' + nq + ' to review' : '') + (fixUI.sent ? ', ' + fixUI.sent + ' sent to Hermes' : '') + '.',
+      });
+    } catch (e) {}
     toast(fixUI.scanned
-      ? `UTAG: fixed ${fixUI.fixed} fields on ${fixUI.matched} songs` + (nq ? `, ${nq} to review` : '') + (fixUI.sent ? `, ${fixUI.sent} sent to Hermes` : '')
-      : 'UTAG: tags already look good');
+      ? `utag fixer: fixed ${fixUI.fixed} fields on ${fixUI.matched} songs` + (nq ? `, ${nq} to review` : '') + (fixUI.sent ? `, ${fixUI.sent} sent to Hermes` : '')
+      : 'utag fixer: tags already look good');
     } finally {
       // v8.1: the run can never wedge the button on "Fixing…" again.
       fixUI.running = false; fixUI.album = ''; fixUI.skipNow = null; fixUI.scopeTitle = '';
@@ -2413,7 +2463,7 @@ const App = (() => {
     applyFixFilter();
   }
   const FX_STATUS = {
-    scanning: ['<span class="fx-dot"></span>Checking UTAG…', 'scanning'],
+    scanning: ['<span class="fx-dot"></span>Checking utag fixer…', 'scanning'],
     fixed: ['✓ Fixed', 'fixed'],
     review: ['→ Review', 'review'],
     ok: ['✓ Checked', 'ok'],
@@ -2701,19 +2751,31 @@ const App = (() => {
         break;
       }
       case 'sheet-fixtags': {
-        // v9.0: retag just this track, from the UTAG database.
+        // utag fixer: retag just this track — database first, then the
+        // engine automatically on a miss. Logged as its own Activity job.
         const t = S.byId.get(Number(id));
         closeSheet();
         if (!t) break;
         if (S.fixing) break;
-        toast('Checking UTAG…');
+        toast('Checking utag fixer…');
         S.fixing = 'track-' + t.id; render();
-        let res = null;
-        try { res = await UTAG.fixTrack(t); } catch (e) { console.warn('UTAG fix-track failed', e); }
+        let res = null, oneJobId = null;
+        try {
+          const jr = await UTAG.fixerLog('start', { title: 'utag fixer (Splotify) — 1 song', file_name: t.fileName || t.title || '' });
+          oneJobId = jr && jr.job_id ? jr.job_id : null;
+        } catch (e) {}
+        try { res = await UTAG.fixTrack(t, { jobId: oneJobId }); } catch (e) { console.warn('utag fixer failed', e); }
+        try {
+          await UTAG.fixerLog('done', {
+            job_id: oneJobId,
+            status: res && res.fixed ? 'done' : 'done',
+            result: res && res.note ? res.note : 'No changes.',
+          });
+        } catch (e) {}
         S.fixing = null;
         try {
           await refreshTracks(); render(); paintMini();
-          if (res && res.fixed > 0) toast('Tags fixed from UTAG');
+          if (res && res.fixed > 0) toast('Tags fixed by utag fixer');
           else if (res && res.status === 'review') toast('UTAG is still verifying this one');
           else if (res && res.status === 'sent') toast('Sent to UTAG for research');
           else if (res && res.status === 'skipped') toast('This song is skipped');

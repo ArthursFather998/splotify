@@ -8,7 +8,9 @@
 const UTAG = (() => {
   const BASE = 'https://akusfgoeplfqwrrrywfl.supabase.co/rest/v1';
   const ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFrdXNmZ29lcGxmcXdycnJ5d2ZsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE0Mjg5OTUsImV4cCI6MjEwNzAwNDk5NX0.Hrgft3FuI5DRZsYe8fFdvCZhiXtRMBDPNUP6aJkShvg';
-  const LABEL = { title: 'Title', artist: 'Artist', album: 'Album', year: 'Year' };
+  const FN_URL = 'https://akusfgoeplfqwrrrywfl.supabase.co/functions/v1/utag-control';
+  const UTAG_SITE = 'https://arthursfather998.github.io/utag';
+  const LABEL = { title: 'Title', artist: 'Artist', album: 'Album', year: 'Year', genre: 'Genre' };
   const norm = s => (s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
   const keyFor = (a, t) => norm(a) + '|' + norm(t);
   const memKeyFile = t => 'f:' + (t.fileName || '') + '::' + (t.fileSize || 0);
@@ -122,15 +124,15 @@ const UTAG = (() => {
   }
 
   /* The one entry point the UTAG screen and per-track action use.
-     -> { fixed, queued, status, note } with status in
-        fixed | ok | review | sent | skipped */
-  async function fixTrack(t) {
+     Pass 1: check the UTAG database. Pass 2: every DB miss runs the UTAG
+     site's fixer engine automatically (same chain as uploading the audio
+     file on the UTAG fixer, headless). -> { fixed, queued, status, note }
+     with status in fixed | ok | review | sent | skipped */
+  async function fixTrack(t, opts) {
+    opts = opts || {};
     if (await isSkipped(t)) return { fixed: 0, queued: [], status: 'skipped', note: 'Skipped' };
     const hit = await lookup(t.artist, t.title);
-    if (!hit) {
-      await submit('miss', { artist: t.artist || '', title: t.title || '', album: t.album || '', fileName: t.fileName || '', fileSize: t.fileSize || 0 });
-      return { fixed: 0, queued: [], status: 'sent', note: 'Sent to UTAG' };
-    }
+    if (!hit) return autoFix(t, opts);
     if (hit.confidence === 'verified' || hit.confidence === 'high_confidence') {
       const before = { title: t.title, artist: t.artist, album: t.album, year: t.year };
       const changed = await applyHit(t, hit, { persist: true });
@@ -147,6 +149,175 @@ const UTAG = (() => {
       }
     }
     return { fixed: 0, queued, status: 'review', note: 'UTAG is still verifying' };
+  }
+
+  /* ---- pass 2: the UTAG fixer engine, called from the website ----
+     The engine lives ONLY on the UTAG site (fixer.js). Splotify loads it
+     live at runtime — never duplicated here. API keys are read by the
+     engine from this origin's localStorage (utag_acoustid_key /
+     utag_fanart_key), set in Splotify's settings. */
+  let enginePromise = null;
+  function loadScript(src) {
+    return new Promise((res, rej) => {
+      if (document.querySelector('script[data-utagfx="' + src + '"]')) return res();
+      const s = document.createElement('script');
+      s.src = src; s.dataset.utagfx = src;
+      s.onload = res; s.onerror = () => rej(new Error('Could not load ' + src));
+      document.head.appendChild(s);
+    });
+  }
+  function ensureEngine() {
+    if (enginePromise) return enginePromise;
+    enginePromise = (async () => {
+      if (!window.mm || !window.mm.parseBlob) await loadScript('vendor/mm.js');
+      await loadScript('vendor/chromaprint-shim.js');
+      await loadScript(UTAG_SITE + '/fixer.js');
+      if (!window.UtagFixer) throw new Error('UtagFixer engine did not load');
+      return window.UtagFixer;
+    })();
+    return enginePromise;
+  }
+
+  /* UTAG site password (device-local). utag-control gates every write on
+     it; without it Splotify can only read the database. */
+  function utagPassword() {
+    try { return localStorage.getItem('splotify_utag_pw') || ''; } catch (e) { return ''; }
+  }
+  function setUtagPassword(v) {
+    try { localStorage.setItem('splotify_utag_pw', (v || '').trim()); } catch (e) {}
+  }
+
+  /* Call the UTAG site's control function (fixer_save / fixer_log). */
+  async function fnCall(payload) {
+    const c = new AbortController();
+    const tm = setTimeout(() => c.abort(), 25000);
+    try {
+      const r = await fetch(FN_URL, {
+        method: 'POST', signal: c.signal,
+        headers: { apikey: ANON, Authorization: 'Bearer ' + ANON, 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok || !data.ok) {
+        const e = data.error;
+        throw new Error(typeof e === 'string' && e ? e : 'UTAG library call failed (HTTP ' + r.status + ')');
+      }
+      return data;
+    } finally { clearTimeout(tm); }
+  }
+  /* Best-effort Activity-tab logging. Needs the site password; without it
+     there is nothing to log to, so it silently no-ops. */
+  async function fixerLog(op, data) {
+    const pw = utagPassword();
+    if (!pw) return null;
+    try { return await fnCall({ action: 'fixer_log', op, password: pw, ...(data || {}) }); }
+    catch (e) { return null; }
+  }
+
+  function missPayload(t) {
+    return { artist: t.artist || '', title: t.title || '', album: t.album || '', fileName: t.fileName || '', fileSize: t.fileSize || 0 };
+  }
+
+  /* Pass 2: every DB miss runs the fixer engine automatically and fully
+     automatically applies what it finds — the same function as uploading
+     the audio file on the UTAG fixer. Updates the Splotify track AND the
+     UTAG library; every step is logged to the fixer's Activity tab. */
+  const AUTO_FIELDS = ['title', 'artist', 'album', 'genre', 'year'];
+  async function autoFix(t, opts) {
+    opts = opts || {};
+    const jobId = opts.jobId || null;
+    const log = (level, event, message) => fixerLog('event', { job_id: jobId, level, event, message });
+    const file = (t.file && t.file.size) ? t.file : null;
+    if (!file) {
+      await submit('miss', missPayload(t));
+      return { fixed: 0, queued: [], status: 'sent', note: 'Sent to UTAG' };
+    }
+    let eng;
+    try { eng = await ensureEngine(); }
+    catch (e) {
+      await log('error', 'fixer:auto', '"' + (t.title || 'Unknown Title') + '": fixer engine failed to load — queued for Hermes.');
+      await submit('miss', missPayload(t));
+      return { fixed: 0, queued: [], status: 'sent', note: 'Sent to UTAG' };
+    }
+    let info, audit;
+    try {
+      const f = file.name ? file : new File([file], t.fileName || 'track.mp3', { type: file.type || 'audio/mpeg' });
+      info = await eng.parseFile(f);
+      audit = await eng.auditFile(info, [], () => {});
+    } catch (e) {
+      await log('error', 'fixer:auto', '"' + (t.title || 'Unknown Title') + '": engine error — queued for Hermes.');
+      await submit('miss', missPayload(t));
+      return { fixed: 0, queued: [], status: 'sent', note: 'Sent to UTAG' };
+    }
+    const proposals = (audit && audit.proposals) || [];
+    if (!proposals.length && !(audit && audit.art)) {
+      await log('warn', 'fixer:auto', '"' + (info.title || t.title) + '" by ' + (info.artist || t.artist) + ': engine found nothing — queued for Hermes.');
+      await submit('miss', missPayload(t));
+      return { fixed: 0, queued: [], status: 'sent', note: 'Sent to UTAG' };
+    }
+    /* Fully automatic: every proposal applies. */
+    const before = {};
+    AUTO_FIELDS.forEach(f => { before[f] = t[f] || ''; });
+    const changed = [];
+    for (const p of proposals) {
+      if (!AUTO_FIELDS.includes(p.field) || p.to === undefined || p.to === null || p.to === '') continue;
+      if (String(t[p.field] == null ? '' : t[p.field]) !== String(p.to)) {
+        t[p.field] = p.to;
+        changed.push(p.field);
+      }
+    }
+    if (audit && audit.art && audit.art.blob && !t.artManual) {
+      t.art = audit.art.blob;
+      t.artSource = audit.art.source || 'utag fixer';
+      changed.push('art');
+    }
+    const notes = changed.filter(f => f !== 'art').map(f => LABEL[f] + ': ' + (before[f] || '—') + ' → ' + (t[f] || '—'));
+    if (changed.includes('art')) notes.push('Artwork: utag fixer');
+    if (changed.length) {
+      t.tagged = true;
+      t.tagsVia = (t.tagsVia ? t.tagsVia + '+' : '') + 'Fixer';
+      if (t.id != null) {
+        try {
+          const upd = { title: t.title, artist: t.artist, album: t.album, year: t.year, tagged: true, tagsVia: t.tagsVia };
+          if (changed.includes('genre')) upd.genre = t.genre;
+          if (changed.includes('art')) { upd.art = t.art; upd.artSource = t.artSource; }
+          await DB.updateTrack(t.id, upd);
+        } catch (e) {}
+      }
+    }
+    /* The phone's result joins the UTAG library, so the database learns it. */
+    const payload = {
+      artist: t.artist || '', title: t.title || '', album: t.album || '',
+      year: t.year || '', genre: t.genre || '',
+      track_no: (info && info.trackNo) || null, disc_no: (info && info.discNo) || 1,
+      duration_ms: info && info.duration ? Math.round(info.duration * 1000) : null,
+      verified: !!(audit && audit.verified),
+      art_url: (audit && audit.art && audit.art.url) || '',
+      art_source: (audit && audit.art && audit.art.source) || '',
+      fileName: t.fileName || '', fileSize: t.fileSize || 0,
+    };
+    let savedUtag = false, queuedUtag = false;
+    const pw = utagPassword();
+    if (pw) {
+      try { await fnCall({ action: 'fixer_save', password: pw, ...payload }); savedUtag = true; }
+      catch (e) { await submit('fixer_save', payload); queuedUtag = true; }
+    } else {
+      await submit('fixer_save', payload);
+      queuedUtag = true;
+    }
+    /* Teach the on-device cache too, so pass 1 hits next time. */
+    try {
+      await cachePut(t.artist, t.title, {
+        title: t.title, artist: t.artist, album: t.album || '',
+        year: t.year || null, art: '', confidence: 'verified',
+      });
+    } catch (e) {}
+    const note = (notes.join('; ') || 'Checked by utag fixer') +
+      (savedUtag ? ' · saved to UTAG' : queuedUtag ? ' · UTAG save queued' : '');
+    await log(changed.length ? 'success' : 'info', 'fixer:auto',
+      '"' + t.title + '" by ' + t.artist + ': ' + (changed.length ? changed.length + ' field' + (changed.length === 1 ? '' : 's') + ' fixed' : 'already correct') +
+      (savedUtag ? ', saved to UTAG library.' : ', UTAG save queued.'));
+    return { fixed: changed.length, queued: [], status: changed.length ? 'fixed' : 'ok', note };
   }
 
   /* Import path: fill missing fields only. Misses are submitted once. */
@@ -178,6 +349,17 @@ const UTAG = (() => {
     try {
       const all = await DB.outAll();
       for (const r of all || []) {
+        /* Queued UTAG-library saves from the auto fixer: applied the moment
+           the site password exists. */
+        if (r.kind === 'fixer_save') {
+          const pw = utagPassword();
+          if (!pw) break;
+          try {
+            await fnCall({ action: 'fixer_save', password: pw, ...(r.payload || {}) });
+            await DB.outDel(r.id);
+          } catch (e) { break; }
+          continue;
+        }
         try {
           const c = new AbortController();
           const tm = setTimeout(() => c.abort(), 9000);
@@ -241,5 +423,5 @@ const UTAG = (() => {
   }
 
   try { window.addEventListener('online', () => drain()); } catch (e) {}
-  return { lookup, fixTrack, enrich, learn, submit, drain, migrate, stats, norm };
+  return { lookup, fixTrack, enrich, learn, submit, drain, migrate, stats, norm, fixerLog, setUtagPassword, utagPassword };
 })();
