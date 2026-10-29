@@ -149,7 +149,7 @@ input{font:inherit}
 #nowplaying{position:absolute;inset:0;z-index:50;transform:translateY(102%);transition:transform .38s cubic-bezier(.32,.72,.35,1),visibility 0s linear .38s;overflow:hidden;background:#1c2126;visibility:hidden;pointer-events:none}
 #nowplaying.open{transform:translateY(0);visibility:visible;pointer-events:auto;transition:transform .38s cubic-bezier(.32,.72,.35,1)}
 #np-bg{position:absolute;inset:0;background:linear-gradient(180deg,#3d4a55 0%,#232a31 45%,#14181c 100%);transition:background .6s ease}
-#np-inner{position:relative;height:100%;display:flex;flex-direction:column;padding:var(--sat) 0 var(--sab)}
+#np-inner{position:relative;height:100%;display:flex;flex-direction:column;padding:var(--sat) 0 var(--sab);overflow-y:auto;-webkit-overflow-scrolling:touch}
 #np-top{display:flex;align-items:flex-start;padding:10px 8px 0}
 #np-close{color:#cfd6dc}
 #np-close svg{width:30px;height:30px}
@@ -190,12 +190,42 @@ input{font:inherit}
 #np-bottom .iconbtn svg{width:25px;height:25px}
 #np-lyrics-btn.on{color:var(--pink)}
 #np-lyrics-btn.dim{opacity:.35}
-#np-lyrics{display:none;flex:1;min-height:0;overflow-y:auto;padding:6px 30px 10px;-webkit-overflow-scrolling:touch}
-#nowplaying.lyrics-open #np-artwrap{display:none}
-#nowplaying.lyrics-open #np-lyrics{display:block}
-#np-lyrics .lyr-line{font-size:17px;line-height:1.6;color:rgba(255,255,255,.45);padding:4px 0}
-#np-lyrics .lyr-line.active{color:var(--pink);font-weight:700}
-#np-lyrics .lyr-note{font-size:15px;color:rgba(255,255,255,.6);padding:24px 0;text-align:center}
+/* ---------- lyrics preview + full lyrics view ---------- */
+/* Background color is set inline from the cover art's dominant color;
+   #757670 here is only the fallback, matching the Withered screenshot. */
+#np-lyrics-preview{margin:22px 16px 8px;padding:24px 24px 20px;border-radius:28px;background:#757670;flex:none}
+#np-lyrics-preview-head{font-size:22px;font-weight:700;color:#fff;margin-bottom:20px}
+#np-lyrics-preview-lines{max-height:330px;overflow:hidden;-webkit-mask-image:linear-gradient(to bottom,#000 70%,transparent 98%);mask-image:linear-gradient(to bottom,#000 70%,transparent 98%)}
+#np-lyrics-preview-lines .lyr-prev-line{font-size:30px;line-height:1.25;font-weight:800;letter-spacing:-.3px;color:#111;margin:0 0 26px;cursor:pointer}
+#np-lyrics-preview-lines .lyr-prev-line.active{color:#fff}
+#np-lyrics-preview-lines .lyr-prev-note{font-size:18px;font-weight:600;color:rgba(255,255,255,.85);padding:8px 0 20px}
+#np-lyrics-preview-btn{margin-top:2px;background:#fff;color:#111;border:0;border-radius:999px;padding:12px 22px;font-size:19px;font-weight:700;cursor:pointer}
+#np-lyrics-preview-btn:active{transform:scale(.96)}
+#lyrics-full{position:absolute;inset:0;z-index:55;display:none;flex-direction:column;background:#757670;padding:var(--sat) 0 var(--sab);overflow:hidden}
+#lyrics-full.open{display:flex}
+#lyrics-full-top{display:flex;align-items:flex-start;padding:10px 16px 0;flex:none}
+#lyrics-full-close{color:#fff;flex:none}
+#lyrics-full-close svg{width:30px;height:30px}
+#lyrics-full-meta{flex:1;text-align:center;min-width:0;padding-top:2px}
+#lyrics-full-title{font-size:22px;font-weight:800;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#lyrics-full-artist{font-size:18px;color:rgba(255,255,255,.75);margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#lyrics-full-spacer{width:44px;flex:none}
+#lyrics-full-lines{flex:1;min-height:0;overflow-y:auto;padding:36px 24px 20px;-webkit-overflow-scrolling:touch}
+#lyrics-full-lines .lyr-full-line{font-size:32px;line-height:1.28;font-weight:800;letter-spacing:-.3px;color:#111;margin:0 0 30px;cursor:pointer}
+#lyrics-full-lines .lyr-full-line.active{color:#fff}
+#lyrics-full-lines .lyr-full-note{font-size:20px;font-weight:600;color:rgba(255,255,255,.85);text-align:center;padding:40px 0}
+#lyrics-full-bottom{padding:18px 24px 6px;flex:none}
+#lyrics-full-actions{display:flex;justify-content:space-between;align-items:center;padding:0 4px 22px}
+#lyrics-full-actions .iconbtn{color:#fff}
+#lyrics-full-actions .iconbtn svg{width:28px;height:28px}
+#lyrics-full-bar{height:22px;display:flex;align-items:center;cursor:pointer;touch-action:none}
+#lyrics-full-track{position:relative;height:4px;flex:1;background:rgba(255,255,255,.35);border-radius:2px}
+#lyrics-full-fill{position:absolute;left:0;top:0;bottom:0;width:0%;background:#fff;border-radius:2px}
+#lyrics-full-times{display:flex;justify-content:space-between;font-size:15px;color:rgba(255,255,255,.85);margin-top:6px}
+#lyrics-full-play{display:flex;margin:18px auto 0;width:96px;height:96px;border-radius:50%;background:#fff;border:0;align-items:center;justify-content:center;box-shadow:0 6px 24px rgba(0,0,0,.4);flex:none;cursor:pointer}
+#lyrics-full-play svg{width:42px;height:42px;color:#111}
+#lyrics-full-play:not(.playing) svg{margin-left:4px}
+#lyrics-full-play:active{transform:scale(.95)}
 
 /* ---------- bottom sheet ---------- */
 #sheet-scrim{position:absolute;inset:0;background:rgba(0,0,0,.6);z-index:60;opacity:1;visibility:hidden;transition:opacity .25s,visibility 0s linear .25s}

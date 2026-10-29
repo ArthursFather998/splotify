@@ -39,7 +39,6 @@
         <button id="np-menu" class="iconbtn" aria-label="More options"></button>
       </header>
       <div id="np-artwrap"><img id="np-art" alt="Album artwork"><div id="np-ph" class="art-ph" aria-hidden="true"></div></div>
-      <div id="np-lyrics" aria-label="Lyrics"></div>
       <div id="np-titlerow">
         <div id="np-titlemeta"><div id="np-title"></div><div id="np-artist"></div></div>
         <button id="np-like" class="iconbtn" aria-label="Like"></button>
@@ -61,6 +60,31 @@
         <button id="np-lyrics-btn" class="iconbtn" aria-label="Lyrics"></button>
         <button id="np-queue" class="iconbtn" aria-label="Queue"></button>
       </footer>
+      <div id="np-lyrics-preview" aria-label="Lyrics preview">
+        <div id="np-lyrics-preview-head">Lyrics preview</div>
+        <div id="np-lyrics-preview-lines"></div>
+        <button id="np-lyrics-preview-btn">Show lyrics</button>
+      </div>
+    </div>
+    <div id="lyrics-full" aria-hidden="true" aria-label="Lyrics">
+      <header id="lyrics-full-top">
+        <button id="lyrics-full-close" class="iconbtn" aria-label="Back to Now Playing"></button>
+        <div id="lyrics-full-meta"><div id="lyrics-full-title"></div><div id="lyrics-full-artist"></div></div>
+        <span id="lyrics-full-spacer" aria-hidden="true"></span>
+      </header>
+      <div id="lyrics-full-lines"></div>
+      <div id="lyrics-full-bottom">
+        <div id="lyrics-full-actions">
+          <button id="lyrics-full-share" class="iconbtn" aria-label="More options"></button>
+          <span aria-hidden="true"></span>
+          <button id="lyrics-full-menu" class="iconbtn" aria-label="More options"></button>
+        </div>
+        <div id="lyrics-full-seek">
+          <div id="lyrics-full-bar" role="slider" aria-label="Seek" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" tabindex="0"><div id="lyrics-full-track"><div id="lyrics-full-fill"></div></div></div>
+          <div id="lyrics-full-times"><span id="lyrics-full-cur">0:00</span><span id="lyrics-full-rem">-0:00</span></div>
+        </div>
+        <button id="lyrics-full-play" aria-label="Play or pause"></button>
+      </div>
     </div>
   </section>
   <div id="sheet-scrim" class="hidden"></div>
