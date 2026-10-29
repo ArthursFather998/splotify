@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v9.7';
+  const APP_VERSION = 'v9.8';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -3455,17 +3455,6 @@ const App = (() => {
     bar.addEventListener('pointerdown', ev => { seeking = true; bar.setPointerCapture(ev.pointerId); setFromEvent(ev); });
     bar.addEventListener('pointermove', ev => { if (seeking) setFromEvent(ev); });
     bar.addEventListener('pointerup', ev => { if (seeking) { seeking = false; Player.seek(setFromEvent(ev)); } });
-    // mute toggle: silences the song while it keeps playing (the keep-alive
-    // trick). No volume slider: iOS ignores JS volume, and routing audio
-    // through Web Audio for a slider would get the context suspended in the
-    // background, killing playback.
-    const paintMute = () => {
-      const m = document.getElementById('np-mute');
-      if (m) m.innerHTML = `<img src="icons/volume.png" class="sprite${Player.muted ? ' sprite-off' : ''}" alt="Mute">`;
-    };
-    document.getElementById('np-mute').addEventListener('click', () => Player.toggleMute());
-    Player.on('volume', paintMute);
-    paintMute();
     // Seamless swipe-down to minimize: the screen follows the finger, then
     // either finishes closing or springs back on release. The progress bar
     // keeps priority (seeking), horizontal swipes are ignored.
