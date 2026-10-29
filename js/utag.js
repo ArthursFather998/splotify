@@ -558,6 +558,34 @@ const UTAG = (() => {
     return { cached, waiting };
   }
 
+  /* DATUM / SDB: list audio linked to UTAG tracks (track_audio table).
+     Returns null when the table is not migrated yet or UTAG is
+     unreachable, so the SDB view can say so instead of crashing.
+     Audio bytes are never listed here, only metadata and paths. */
+  async function listAudio() {
+    try {
+      const rows = await fetchJSON(BASE + '/track_audio?select=id,storage_path,file_name,source,created_at,tracks(title,artists(canonical_name))&order=created_at.desc&limit=200', 12000);
+      return (rows || []).map(r => ({
+        id: r.id, storage_path: r.storage_path, file_name: r.file_name || '',
+        source: r.source || 'datum', created_at: r.created_at || '',
+        title: (r.tracks && r.tracks.title) || '',
+        artist: (r.tracks && r.tracks.artists && r.tracks.artists.canonical_name) || '',
+      }));
+    } catch (e) { return null; }
+  }
+
+  /* DATUM / SDB: signed URL for one track_audio row, via utag-control.
+     Gated by the UTAG site password already stored on this iPhone.
+     Without it, or before utag-control is redeployed with audio_url,
+     this throws a readable error for the SDB view to show. */
+  async function audioUrl(audioId) {
+    const pw = utagPassword();
+    if (!pw) throw new Error('Add the UTAG site password in utag fixer keys first');
+    const data = await fnCall({ action: 'audio_url', password: pw, audio_id: audioId });
+    if (!data.signed_url) throw new Error('UTAG did not return a download link');
+    return data.signed_url;
+  }
+
   try { window.addEventListener('online', () => drain()); } catch (e) {}
-  return { lookup, fixTrack, enrich, ensureLyrics, learn, submit, drain, migrate, stats, norm, fixerLog, setUtagPassword, utagPassword };
+  return { lookup, fixTrack, enrich, ensureLyrics, learn, submit, drain, migrate, stats, norm, fixerLog, setUtagPassword, utagPassword, listAudio, audioUrl };
 })();

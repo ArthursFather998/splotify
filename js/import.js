@@ -611,5 +611,5 @@ const Importer = (() => {
     } catch (e) { console.warn('healLibrary failed', e); }
     return { fixed: 0, changed: touched };
   }
-  return { bind, open: () => { if (!busy) picker().click(); }, openZip: () => { if (!busy) zippicker().click(); }, fmtDur, healLibrary, recordSingles, singleOrder, singleArt, mySingleArt, parseOne, needsFix, memAll: () => DB.memAll(), memCount, skipKeyFor, recallSkip, skipTrack, unskipTrack, fileNameCandidates };
+  return { bind, open: () => { if (!busy) picker().click(); }, openZip: () => { if (!busy) zippicker().click(); }, importFiles: files => run([...(files || [])]), importZip: file => runZip(file), fmtDur, healLibrary, recordSingles, singleOrder, singleArt, mySingleArt, parseOne, needsFix, memAll: () => DB.memAll(), memCount, skipKeyFor, recallSkip, skipTrack, unskipTrack, fileNameCandidates };
 })();
