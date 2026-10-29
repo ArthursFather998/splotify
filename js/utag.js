@@ -582,10 +582,40 @@ const UTAG = (() => {
     const pw = utagPassword();
     if (!pw) throw new Error('Add the UTAG site password in utag fixer keys first');
     const data = await fnCall({ action: 'audio_url', password: pw, audio_id: audioId });
+    if (!data.signed_url && !data.mega_url) throw new Error('UTAG did not return a download link');
+    return data.mega_url || data.signed_url;
+  }
+
+  /* DATUM / SDB: download bytes for one track_audio row, as a Blob.
+     Supabase rows: plain fetch of the signed URL, as before.
+     Mega rows: a Mega link is NOT a direct file URL, so fetch()
+     would just return a web page. Instead, megajs downloads the
+     encrypted chunks and decrypts them in the browser, and the
+     decrypted bytes become the Blob that Importer.importFiles
+     saves to SDB. After that import, playback is local, so the
+     Mega download delay is paid once per song, not on every play.
+     megajs is loaded lazily from a CDN only when a Mega row is
+     actually imported, so Supabase imports never load it. This
+     path is written, not yet phone-tested: it needs a real Mega
+     link from a real Mega upload before it can be claimed live. */
+  async function audioBlob(audioId) {
+    const pw = utagPassword();
+    if (!pw) throw new Error('Add the UTAG site password in utag fixer keys first');
+    const data = await fnCall({ action: 'audio_url', password: pw, audio_id: audioId });
+    if (data.mega_url) {
+      try {
+        const mega = await import('https://esm.sh/megajs');
+        const file = mega.File.fromURL(data.mega_url);
+        const buf = await file.downloadBuffer();
+        return new Blob([buf], { type: 'audio/mpeg' });
+      } catch (e) { throw new Error('Mega download failed: ' + (e && e.message ? e.message : 'unknown error')); }
+    }
     if (!data.signed_url) throw new Error('UTAG did not return a download link');
-    return data.signed_url;
+    const r = await fetch(data.signed_url);
+    if (!r.ok) throw new Error('UTAG download failed');
+    return await r.blob();
   }
 
   try { window.addEventListener('online', () => drain()); } catch (e) {}
-  return { lookup, fixTrack, enrich, ensureLyrics, learn, submit, drain, migrate, stats, norm, fixerLog, setUtagPassword, utagPassword, listAudio, audioUrl };
+  return { lookup, fixTrack, enrich, ensureLyrics, learn, submit, drain, migrate, stats, norm, fixerLog, setUtagPassword, utagPassword, listAudio, audioUrl, audioBlob };
 })();

@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v9.4';
+  const APP_VERSION = 'v9.5';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -2761,10 +2761,9 @@ const App = (() => {
             if (prog()) prog().textContent = `Importing ${i + 1} of ${list.length}…`;
             if (row.file_name && existing.has(row.file_name)) { skipped++; continue; }
             try {
-              const url = await UTAG.audioUrl(row.id);
-              const r = await fetch(url);
-              if (!r.ok) throw new Error('UTAG download failed');
-              const blob = await r.blob();
+              const blob = (typeof UTAG.audioBlob === 'function')
+                ? await UTAG.audioBlob(row.id)
+                : await (async () => { const url = await UTAG.audioUrl(row.id); const r = await fetch(url); if (!r.ok) throw new Error('UTAG download failed'); return await r.blob(); })();
               const file = new File([blob], row.file_name || 'track.mp3', { type: blob.type || 'audio/mpeg' });
               await Importer.importFiles([file]);
               imported++;
