@@ -121,12 +121,26 @@ const Importer = (() => {
       }
     } catch (e) { diag = 'parse-error: ' + ((e && e.message) || String(e)); console.warn('parse failed for', file.name, e); }
     const fb = splitArtistTitle(file.name);
+    // Mega folder imports carry their folder path on the File:
+    // "Artist/Album/Song.mp3" or "Album/Song.mp3". Use it only when tags
+    // and the file name give nothing better.
+    let folderArtist = '', folderAlbum = '';
+    const megaPath = (file && (file._megaPath || file.webkitRelativePath)) || '';
+    if (megaPath) {
+      const parts = String(megaPath).split('/').filter(p => p && p.trim());
+      if (parts.length >= 3) { folderArtist = parts[parts.length - 3]; folderAlbum = parts[parts.length - 2]; }
+      else if (parts.length === 2) { folderAlbum = parts[0]; }
+      // Wrapper folders from linking above SSDB (DATUM, SSDB) are not an
+      // artist or an album, even when they land in those positions.
+      if (/^(ssdb|datum)$/i.test(folderArtist)) folderArtist = '';
+      if (/^(ssdb|datum)$/i.test(folderAlbum)) folderAlbum = '';
+    }
     let art = null;
     const pic = common.picture && common.picture[0];
     if (pic && pic.data) {
       try { art = new Blob([pic.data], { type: pic.format || 'image/jpeg' }); } catch (e) {}
     }
-    const artist0 = (common.artist || common.albumartist || fb.artist || 'Unknown Artist').toString();
+    const artist0 = (common.artist || common.albumartist || (fb.artist !== 'Unknown Artist' ? fb.artist : '') || folderArtist || 'Unknown Artist').toString();
     const title0 = (common.title || fb.title || 'Unknown Title').toString();
     // v9.0: no curated fixes on-device anymore. The UTAG database holds
     // every ruling; imports ask UTAG instead (see UTAG.enrich in run()).
@@ -134,7 +148,7 @@ const Importer = (() => {
     const tagged = !!(common.title || common.artist || common.albumartist || common.album || pic);
     return {
       title, artist, tagsVia,
-      album: (common.album || 'Unknown Album').toString(),
+      album: (common.album || folderAlbum || 'Unknown Album').toString(),
       albumArtist: (common.albumartist || artist).toString(),
       genre: (common.genre && common.genre[0]) || '',
       year: common.year || (common.date || '').toString().slice(0, 4) || '',

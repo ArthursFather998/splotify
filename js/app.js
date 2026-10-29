@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v9.9';
+  const APP_VERSION = 'v10.0';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -1128,6 +1128,12 @@ const App = (() => {
       <div class="sub" style="padding:0 4px 8px">Audio ripped by DATUM and linked to UTAG tracks. Needs the UTAG site password in utag fixer keys.</div>
       <div id="sdb-utag-list"><div class="sub" style="padding:8px 4px">Loading UTAG audio…</div></div>
     </div>
+    <div class="setgroup"><h2>Import from Mega folder</h2>
+      <div class="sub" style="padding:0 4px 8px">Link the DATUM/SSDB folder, not the empty root SSDB folder. The link is stored only on this iPhone.</div>
+      <input id="sdb-mega-link" placeholder="Mega folder link" autocomplete="off" autocapitalize="off" spellcheck="false" style="width:100%;box-sizing:border-box;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;color:var(--txt);font-size:15px;margin:0 0 8px" />
+      <div class="setrow" data-act="sdb-import-mega-folder"><div>Import folder from Mega<div class="sub">Download every song in the folder into the SDB</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
+      <div id="sdb-mega-progress" class="sub" style="padding:8px 4px"></div>
+    </div>
     <div class="setgroup"><h2>Connect to Server</h2>
       <div class="setrow" data-act="sdb-server-placeholder" style="opacity:.55"><div>Connect to Server<div class="sub">Coming soon</div></div><span style="color:var(--sub)">${icon('chevR', 'width:20px;height:20px')}</span></div>
     </div>
@@ -1138,6 +1144,15 @@ const App = (() => {
   async function paintSDB() {
     const box = document.getElementById('sdb-utag-list');
     if (!box) return;
+    const megaInp = document.getElementById('sdb-mega-link');
+    if (megaInp) {
+      const savedLink = (typeof UTAG.megaFolderLink === 'function') ? UTAG.megaFolderLink() : '';
+      if (!megaInp.dataset.bound) {
+        megaInp.dataset.bound = '1';
+        megaInp.value = savedLink;
+        megaInp.addEventListener('change', () => { if (typeof UTAG.setMegaFolderLink === 'function') UTAG.setMegaFolderLink(megaInp.value); toast('Mega folder link saved on this iPhone'); });
+      } else if (!megaInp.value) { megaInp.value = savedLink; }
+    }
     let list = null;
     try { list = await UTAG.listAudio(); } catch (e) { list = null; }
     if (!list) {
@@ -2915,6 +2930,46 @@ const App = (() => {
           toast(`UTAG import done: ${imported} imported, ${skipped} skipped, ${failed} failed`);
         } catch (e) { toast('Could not import from UTAG: ' + (e && e.message ? e.message : 'unknown error')); }
         finally { S.sdbImportingAll = false; }
+        break;
+      }
+      case 'sdb-import-mega-folder': {
+        if (S.sdbImportingMega) { toast('Mega folder import is already running'); break; }
+        const megaInp = document.getElementById('sdb-mega-link');
+        let megaLink = megaInp ? megaInp.value.trim() : '';
+        if (megaLink && typeof UTAG.setMegaFolderLink === 'function') UTAG.setMegaFolderLink(megaLink);
+        else if (!megaLink && typeof UTAG.megaFolderLink === 'function') megaLink = UTAG.megaFolderLink();
+        if (!megaLink) { toast('Paste a Mega folder link first'); break; }
+        if (typeof UTAG.listMegaFolder !== 'function') { toast('Mega folder import needs the latest app version — update Splotify and try again'); break; }
+        S.sdbImportingMega = true;
+        try {
+          const prog = () => document.getElementById('sdb-mega-progress');
+          if (prog()) prog().textContent = 'Listing Mega folder…';
+          let list = null, listErr = null;
+          try { list = await UTAG.listMegaFolder(megaLink); } catch (e) { listErr = e; }
+          if (listErr) { if (prog()) prog().textContent = listErr.message; toast(listErr.message); }
+          else if (!list.length) { if (prog()) prog().textContent = 'No audio files found — check you linked DATUM/SSDB, not the empty root SSDB folder.'; toast('No audio files found in that Mega folder'); }
+          else {
+            const existing = new Set((S.tracks || []).map(t => t.fileName).filter(Boolean));
+            let imported = 0, skipped = 0, failed = 0;
+            for (let i = 0; i < list.length; i++) {
+              const entry = list[i];
+              if (prog()) prog().textContent = `Importing ${i + 1} of ${list.length}…`;
+              if (entry.name && existing.has(entry.name)) { skipped++; continue; }
+              try {
+                const blob = await UTAG.megaFolderBlob(entry);
+                const file = new File([blob], entry.name, { type: blob.type || 'audio/mpeg' });
+                try { file._megaPath = entry.path; } catch (e) {}
+                await Importer.importFiles([file]);
+                imported++;
+                if (entry.name) existing.add(entry.name);
+              } catch (e) { failed++; }
+            }
+            await refreshTracks();
+            if (prog()) prog().textContent = '';
+            toast(`Mega folder import done: ${imported} imported, ${skipped} skipped, ${failed} failed`);
+          }
+        } catch (e) { toast('Could not import Mega folder: ' + (e && e.message ? e.message : 'unknown error')); }
+        finally { S.sdbImportingMega = false; }
         break;
       }
       case 'sp-oauth': SpImport.oauthStart(); break;

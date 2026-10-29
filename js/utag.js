@@ -616,6 +616,73 @@ const UTAG = (() => {
     return await r.blob();
   }
 
+  /* Mega folder import (SDB > Import from Mega folder). No Mega login and
+     no UTAG password needed: a public folder link pasted once, stored only
+     on this device. The link must include the key part after #, otherwise
+     Mega cannot decrypt names. Listing is recursive at any depth, so the
+     album-only layout and the reorganized Artist/Album/Song layout both
+     work. Link the DATUM/SSDB folder, not the empty root SSDB folder.
+     Songs download one at a time with megajs, decrypted in the browser,
+     like the per-track Mega path in audioBlob; playback stays local after
+     import. Written, not yet phone-tested: needs a real folder link first. */
+  const MEGA_AUDIO = /\.(mp3|m4a|m4b|aac|wav|flac|ogg|oga|opus|aiff|aif)$/i;
+  function megaFolderLink() {
+    try { return localStorage.getItem('splotify_mega_folder') || ''; } catch (e) { return ''; }
+  }
+  function setMegaFolderLink(v) {
+    try { localStorage.setItem('splotify_mega_folder', (v || '').trim()); } catch (e) {}
+  }
+  function megaAudioType(name) {
+    const ext = (name.split('.').pop() || '').toLowerCase();
+    return ({ mp3: 'audio/mpeg', m4a: 'audio/mp4', m4b: 'audio/mp4', aac: 'audio/aac', wav: 'audio/wav', flac: 'audio/flac', ogg: 'audio/ogg', oga: 'audio/ogg', opus: 'audio/opus', aiff: 'audio/aiff', aif: 'audio/aiff' })[ext] || 'audio/mpeg';
+  }
+  async function listMegaFolder(url) {
+    const link = (url || '').trim();
+    if (!link) throw new Error('Paste a Mega folder link first');
+    if (link.indexOf('/folder/') === -1) throw new Error('That is not a Mega folder link');
+    if (link.indexOf('#') === -1) throw new Error('That folder link has no decryption key - copy the full link including the part after #');
+    let mega;
+    try { mega = await import(['https:', '', 'esm.sh', 'megajs'].join('/')); }
+    catch (e) { throw new Error('Could not load the Mega library'); }
+    let root;
+    try { root = mega.File.fromURL(link); }
+    catch (e) { throw new Error('Could not read that Mega folder link'); }
+    let selected = root;
+    try {
+      const loaded = await root.loadAttributes();
+      if (loaded) selected = loaded;
+    } catch (e) { throw new Error('Could not open that Mega folder: ' + (e && e.message ? e.message : 'unknown error')); }
+    if (!selected) selected = root;
+    const kids0 = selected.children || [];
+    if (!kids0.length && selected.name && !selected.directory) throw new Error('That link points to a single file, not a folder - paste the folder link');
+    if (!kids0.length && !selected.name) throw new Error('Could not open that Mega folder - check the link includes the full key after #');
+    const out = [];
+    async function walk(node, prefix) {
+      let kids = node.children || [];
+      if (!kids.length && node.directory) {
+        try {
+          const loaded = await node.loadAttributes();
+          if (loaded && loaded.children) kids = loaded.children;
+          else if (node.children) kids = node.children;
+        } catch (e) {}
+      }
+      for (const child of kids) {
+        if (!child || !child.name) continue;
+        if (child.directory || (child.children && child.children.length)) { await walk(child, prefix + child.name + '/'); continue; }
+        if (MEGA_AUDIO.test(child.name)) out.push({ name: child.name, path: prefix + child.name, size: child.size || 0, megaFile: child });
+      }
+    }
+    await walk(selected, '');
+    out.sort((a, b) => (a.path < b.path ? -1 : (a.path > b.path ? 1 : 0)));
+    return out;
+  }
+  async function megaFolderBlob(entry) {
+    try {
+      const buf = await entry.megaFile.downloadBuffer();
+      return new Blob([buf], { type: megaAudioType(entry.name) });
+    } catch (e) { throw new Error('Mega download failed: ' + (e && e.message ? e.message : 'unknown error')); }
+  }
+
   try { window.addEventListener('online', () => drain()); } catch (e) {}
-  return { lookup, fixTrack, enrich, ensureLyrics, learn, submit, drain, migrate, stats, norm, fixerLog, setUtagPassword, utagPassword, listAudio, audioUrl, audioBlob };
+  return { lookup, fixTrack, enrich, ensureLyrics, learn, submit, drain, migrate, stats, norm, fixerLog, setUtagPassword, utagPassword, listAudio, audioUrl, audioBlob, megaFolderLink, setMegaFolderLink, listMegaFolder, megaFolderBlob };
 })();
