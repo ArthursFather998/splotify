@@ -418,6 +418,20 @@ const UTAG = (() => {
     } catch (e) {}
     try {
       const eng = await ensureEngine();
+      if (eng && eng.parseFile && t.file && t.file.size) {
+        const f = t.file.name ? t.file : new File([t.file], t.fileName || 'track.mp3', { type: t.file.type || 'audio/mpeg' });
+        const info = await eng.parseFile(f);
+        if (info && info.lyrics && (info.lyrics.plain || info.lyrics.synced)) {
+          const ly = info.lyrics;
+          t.lyrics = ly.plain || '';
+          t.lyricsSynced = ly.synced || '';
+          t.lyricsSource = ly.source || 'embedded';
+          t.lyricsStatus = ly.status || 'found';
+          await persistLyrics(t);
+          await saveLyricsToUtag(t, ly);
+          return { status: t.lyricsStatus, found: true };
+        }
+      }
       if (eng && eng.lrclibLyrics) {
         const ly = await eng.lrclibLyrics({ title: t.title, artist: t.artist, album: t.album, duration: t.duration });
         if (ly && (ly.plain || ly.synced || ly.status === 'instrumental')) {
