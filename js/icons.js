@@ -21,6 +21,7 @@ chevD:'<path d="m6 9.5 6 6 6-6" fill="none" stroke="currentColor" stroke-width="
 chevR:'<path d="m9.5 6 6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
 devices:'<rect x="2.5" y="5" width="13" height="10" rx="1.5" fill="none" stroke="currentColor" stroke-width="2"/><rect x="18" y="8.5" width="4" height="9" rx="1.5" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="20" cy="12" r="1" fill="currentColor"/><path d="M6 18.5h7" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>',
 queue:'<path d="M4 6.5h11M4 11h11M4 15.5h7" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M17 9.5v9l7-4.5z"/>',
+lyrics:'<path d="M5 5.5h14M5 10h14M5 14.5h10M5 19h7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>',
 plus:'<path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>',
 x:'<path d="M18 6 6 18M6 6l12 12" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>',
 dots:'<circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/>',

@@ -34,20 +34,23 @@ const UTAG = (() => {
   }
 
   /* One verified-or-pending record for (artist, title), or null.
-     Hit: { title, artist, album, year, art, confidence, source: 'cache'|'utag' } */
+     Hit: { title, artist, album, year, art, confidence, lyrics, lyricsSynced,
+       lyricsSource, lyricsStatus, source: 'cache'|'utag' }.
+     A cached hit without lyricsStatus is never returned early: the database
+     is checked so pre-lyrics cache entries do not hide lyrics forever. */
   async function lookup(artist, title) {
     const cached = await cacheGet(artist, title);
-    if (cached) return { ...cached, source: 'cache' };
+    if (cached && cached.lyricsStatus) return { ...cached, source: 'cache' };
     let artists = [];
     try {
       artists = await fetchJSON(BASE + '/artists?select=id,canonical_name&canonical_name=ilike.' + encodeURIComponent(artist || ''), 9000);
-    } catch (e) { return null; }
-    if (!artists || !artists.length) return null;
+    } catch (e) { return cached ? { ...cached, source: 'cache' } : null; }
+    if (!artists || !artists.length) return cached ? { ...cached, source: 'cache' } : null;
     const aid = artists[0].id;
     let tracks = [];
     try {
-      tracks = await fetchJSON(BASE + '/tracks?select=title,confidence,releases!inner(id,title,edition,release_year,artwork(source_url,stored_path,role))&artist_id=eq.' + aid + '&limit=500', 9000);
-    } catch (e) { return null; }
+      tracks = await fetchJSON(BASE + '/tracks?select=id,title,confidence,releases!inner(id,title,edition,release_year,artwork(source_url,stored_path,role))&artist_id=eq.' + aid + '&limit=500', 9000);
+    } catch (e) { return cached ? { ...cached, source: 'cache' } : null; }
     const want = norm(title);
     const bare = want.replace(/ *\([^)]*\) */g, ' ').trim();
     let best = null;
@@ -55,7 +58,7 @@ const UTAG = (() => {
       const nt = norm(tr.title);
       if (nt === want || nt === bare) { best = tr; break; }
     }
-    if (!best) return null;
+    if (!best) return cached ? { ...cached, source: 'cache' } : null;
     const rel = best.releases || {};
     const arts = rel.artwork || [];
     const canon = arts.find(a => a.role === 'canonical') || arts[0];
@@ -65,10 +68,19 @@ const UTAG = (() => {
         ? 'https://akusfgoeplfqwrrrywfl.supabase.co/storage/v1/object/public/artwork/' + canon.stored_path
         : (canon.source_url || '');
     }
+    let lyrics = null;
+    try {
+      const rows = await fetchJSON(BASE + '/track_lyrics?select=plain_text,synced_text,source,status&track_id=eq.' + best.id, 9000);
+      if (rows && rows.length) lyrics = rows[0];
+    } catch (e) { /* track_lyrics table not migrated yet: no lyrics, not a failure */ }
     const hit = {
       title: best.title, artist: artists[0].canonical_name,
       album: rel.title || '', year: rel.release_year || null,
       art, confidence: best.confidence || rel.confidence || 'unknown',
+      lyrics: lyrics ? (lyrics.plain_text || '') : '',
+      lyricsSynced: lyrics ? (lyrics.synced_text || '') : '',
+      lyricsSource: lyrics ? (lyrics.source || '') : '',
+      lyricsStatus: lyrics ? (lyrics.status || '') : '',
     };
     await cachePut(artist, title, hit);
     return { ...hit, source: 'utag' };
@@ -99,6 +111,10 @@ const UTAG = (() => {
     set('artist', hit.artist);
     set('album', hit.album);
     if (hit.year && (!opts.fillOnly || !t.year)) { if (t.year !== hit.year) { t.year = hit.year; changed.push('year'); } }
+    set('lyrics', hit.lyrics);
+    set('lyricsSynced', hit.lyricsSynced);
+    set('lyricsSource', hit.lyricsSource);
+    set('lyricsStatus', hit.lyricsStatus);
     if (hit.art && !t.artManual && (opts.fillOnly ? !t.art : true)) {
       const blob = await artBlob(hit.art);
       const val = blob || hit.art;
@@ -109,10 +125,15 @@ const UTAG = (() => {
       t.tagsVia = (t.tagsVia ? t.tagsVia + '+' : '') + 'UTAG';
       if (opts.persist && t.id != null) {
         try {
-          await DB.updateTrack(t.id, {
+          const upd = {
             title: t.title, artist: t.artist, album: t.album, year: t.year,
             art: t.art, artSource: t.artSource, tagged: true, tagsVia: t.tagsVia,
-          });
+          };
+          if (changed.includes('lyrics')) upd.lyrics = t.lyrics;
+          if (changed.includes('lyricsSynced')) upd.lyricsSynced = t.lyricsSynced;
+          if (changed.includes('lyricsSource')) upd.lyricsSource = t.lyricsSource;
+          if (changed.includes('lyricsStatus')) upd.lyricsStatus = t.lyricsStatus;
+          await DB.updateTrack(t.id, upd);
         } catch (e) {}
       }
     }
@@ -250,7 +271,7 @@ const UTAG = (() => {
       return { fixed: 0, queued: [], status: 'sent', note: 'Sent to UTAG' };
     }
     const proposals = (audit && audit.proposals) || [];
-    if (!proposals.length && !(audit && audit.art)) {
+    if (!proposals.length && !(audit && audit.art) && !(audit && audit.lyrics)) {
       await log('warn', 'fixer:auto', '"' + (info.title || t.title) + '" by ' + (info.artist || t.artist) + ': engine found nothing — queued for Hermes.');
       await submit('miss', missPayload(t));
       return { fixed: 0, queued: [], status: 'sent', note: 'Sent to UTAG' };
@@ -271,8 +292,18 @@ const UTAG = (() => {
       t.artSource = audit.art.source || 'utag fixer';
       changed.push('art');
     }
-    const notes = changed.filter(f => f !== 'art').map(f => LABEL[f] + ': ' + (before[f] || '—') + ' → ' + (t[f] || '—'));
+    let auditLyrics = null;
+    if (audit && audit.lyrics && (audit.lyrics.plain || audit.lyrics.synced || audit.lyrics.status === 'instrumental')) {
+      auditLyrics = audit.lyrics;
+      t.lyrics = auditLyrics.plain || '';
+      t.lyricsSynced = auditLyrics.synced || '';
+      t.lyricsSource = auditLyrics.source || '';
+      t.lyricsStatus = auditLyrics.status || '';
+      changed.push('lyrics');
+    }
+    const notes = changed.filter(f => f !== 'art' && f !== 'lyrics').map(f => LABEL[f] + ': ' + (before[f] || '-') + ' → ' + (t[f] || '-'));
     if (changed.includes('art')) notes.push('Artwork: utag fixer');
+    if (changed.includes('lyrics')) notes.push('Lyrics: ' + (auditLyrics && auditLyrics.source ? auditLyrics.source : 'utag fixer'));
     if (changed.length) {
       t.tagged = true;
       t.tagsVia = (t.tagsVia ? t.tagsVia + '+' : '') + 'Fixer';
@@ -281,6 +312,7 @@ const UTAG = (() => {
           const upd = { title: t.title, artist: t.artist, album: t.album, year: t.year, tagged: true, tagsVia: t.tagsVia };
           if (changed.includes('genre')) upd.genre = t.genre;
           if (changed.includes('art')) { upd.art = t.art; upd.artSource = t.artSource; }
+          if (changed.includes('lyrics')) { upd.lyrics = t.lyrics; upd.lyricsSynced = t.lyricsSynced; upd.lyricsSource = t.lyricsSource; upd.lyricsStatus = t.lyricsStatus; }
           await DB.updateTrack(t.id, upd);
         } catch (e) {}
       }
@@ -294,6 +326,10 @@ const UTAG = (() => {
       verified: !!(audit && audit.verified),
       art_url: (audit && audit.art && audit.art.url) || '',
       art_source: (audit && audit.art && audit.art.source) || '',
+      lyrics_plain: auditLyrics ? (auditLyrics.plain || '') : '',
+      lyrics_synced: auditLyrics ? (auditLyrics.synced || '') : '',
+      lyrics_source: auditLyrics ? (auditLyrics.source || '') : '',
+      lyrics_status: auditLyrics ? (auditLyrics.status || '') : '',
       fileName: t.fileName || '', fileSize: t.fileSize || 0,
     };
     let savedUtag = false, queuedUtag = false;
@@ -310,6 +346,8 @@ const UTAG = (() => {
       await cachePut(t.artist, t.title, {
         title: t.title, artist: t.artist, album: t.album || '',
         year: t.year || null, art: '', confidence: 'verified',
+        lyrics: t.lyrics || '', lyricsSynced: t.lyricsSynced || '',
+        lyricsSource: t.lyricsSource || '', lyricsStatus: t.lyricsStatus || '',
       });
     } catch (e) {}
     const note = (notes.join('; ') || 'Checked by utag fixer') +
@@ -318,6 +356,90 @@ const UTAG = (() => {
       '"' + t.title + '" by ' + t.artist + ': ' + (changed.length ? changed.length + ' field' + (changed.length === 1 ? '' : 's') + ' fixed' : 'already correct') +
       (savedUtag ? ', saved to UTAG library.' : ', UTAG save queued.'));
     return { fixed: changed.length, queued: [], status: changed.length ? 'fixed' : 'ok', note };
+  }
+
+  /* Lyrics only, on demand. Never runs on track change; callers (the Now
+     Playing lyrics button, the lyrics backfill) trigger it explicitly.
+     Order: UTAG database first, then the UTAG site engine's LRCLIB path.
+     A miss is recorded locally only, unless opts.recordMissing (backfill)
+     says UTAG may record it too. */
+  async function persistLyrics(t) {
+    if (t.id != null) {
+      try {
+        await DB.updateTrack(t.id, {
+          lyrics: t.lyrics || '', lyricsSynced: t.lyricsSynced || '',
+          lyricsSource: t.lyricsSource || '', lyricsStatus: t.lyricsStatus || '',
+        });
+      } catch (e) {}
+    }
+    try {
+      const cached = await cacheGet(t.artist, t.title);
+      if (cached) {
+        await cachePut(t.artist, t.title, {
+          ...cached,
+          lyrics: t.lyrics || '', lyricsSynced: t.lyricsSynced || '',
+          lyricsSource: t.lyricsSource || '', lyricsStatus: t.lyricsStatus || '',
+        });
+      }
+    } catch (e) {}
+  }
+  async function saveLyricsToUtag(t, ly) {
+    const payload = {
+      artist: t.artist || '', title: t.title || '', album: t.album || '',
+      year: t.year || '',
+      lyrics_plain: ly.plain || '', lyrics_synced: ly.synced || '',
+      lyrics_source: ly.source || '', lyrics_status: ly.status || '',
+      fileName: t.fileName || '', fileSize: t.fileSize || 0,
+    };
+    const pw = utagPassword();
+    if (pw) {
+      try { await fnCall({ action: 'fixer_save', password: pw, ...payload }); }
+      catch (e) { await submit('fixer_save', payload); }
+    } else {
+      await submit('fixer_save', payload);
+    }
+  }
+  async function ensureLyrics(t, opts) {
+    opts = opts || {};
+    if (!opts.force) {
+      if (t.lyrics) return { status: 'already', found: true };
+      if (t.lyricsStatus === 'found' || t.lyricsStatus === 'instrumental') return { status: 'already', found: true };
+    }
+    try {
+      const hit = await lookup(t.artist, t.title);
+      if (hit && (hit.lyrics || hit.lyricsStatus === 'found' || hit.lyricsStatus === 'instrumental')) {
+        t.lyrics = hit.lyrics || '';
+        t.lyricsSynced = hit.lyricsSynced || '';
+        t.lyricsSource = hit.lyricsSource || '';
+        t.lyricsStatus = hit.lyricsStatus || 'found';
+        await persistLyrics(t);
+        return { status: t.lyricsStatus, found: true };
+      }
+    } catch (e) {}
+    try {
+      const eng = await ensureEngine();
+      if (eng && eng.lrclibLyrics) {
+        const ly = await eng.lrclibLyrics({ title: t.title, artist: t.artist, album: t.album, duration: t.duration });
+        if (ly && (ly.plain || ly.synced || ly.status === 'instrumental')) {
+          t.lyrics = ly.plain || '';
+          t.lyricsSynced = ly.synced || '';
+          t.lyricsSource = ly.source || '';
+          t.lyricsStatus = ly.status || 'found';
+          await persistLyrics(t);
+          await saveLyricsToUtag(t, ly);
+          return { status: t.lyricsStatus, found: true };
+        }
+      }
+    } catch (e) {}
+    t.lyrics = '';
+    t.lyricsSynced = '';
+    t.lyricsSource = t.lyricsSource || '';
+    t.lyricsStatus = 'missing';
+    await persistLyrics(t);
+    if (opts.recordMissing) {
+      try { await saveLyricsToUtag(t, { plain: '', synced: '', source: '', status: 'missing' }); } catch (e) {}
+    }
+    return { status: 'missing', found: false };
   }
 
   /* Import path: fill missing fields only. Misses are submitted once. */
@@ -423,5 +545,5 @@ const UTAG = (() => {
   }
 
   try { window.addEventListener('online', () => drain()); } catch (e) {}
-  return { lookup, fixTrack, enrich, learn, submit, drain, migrate, stats, norm, fixerLog, setUtagPassword, utagPassword };
+  return { lookup, fixTrack, enrich, ensureLyrics, learn, submit, drain, migrate, stats, norm, fixerLog, setUtagPassword, utagPassword };
 })();

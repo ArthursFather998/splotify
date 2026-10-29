@@ -188,6 +188,14 @@ input{font:inherit}
 #np-bottom{display:flex;justify-content:space-between;align-items:center;padding:18px 34px 10px;margin-top:auto}
 #np-bottom .iconbtn{color:rgba(255,255,255,.65)}
 #np-bottom .iconbtn svg{width:25px;height:25px}
+#np-lyrics-btn.on{color:var(--pink)}
+#np-lyrics-btn.dim{opacity:.35}
+#np-lyrics{display:none;flex:1;min-height:0;overflow-y:auto;padding:6px 30px 10px;-webkit-overflow-scrolling:touch}
+#nowplaying.lyrics-open #np-artwrap{display:none}
+#nowplaying.lyrics-open #np-lyrics{display:block}
+#np-lyrics .lyr-line{font-size:17px;line-height:1.6;color:rgba(255,255,255,.45);padding:4px 0}
+#np-lyrics .lyr-line.active{color:var(--pink);font-weight:700}
+#np-lyrics .lyr-note{font-size:15px;color:rgba(255,255,255,.6);padding:24px 0;text-align:center}
 
 /* ---------- bottom sheet ---------- */
 #sheet-scrim{position:absolute;inset:0;background:rgba(0,0,0,.6);z-index:60;opacity:1;visibility:hidden;transition:opacity .25s,visibility 0s linear .25s}

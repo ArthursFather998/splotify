@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v9.1';
+  const APP_VERSION = 'v9.2';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -2033,10 +2033,132 @@ const App = (() => {
     document.getElementById('np-next').innerHTML = icon('next');
     document.getElementById('np-devices').innerHTML = icon('devices');
     document.getElementById('np-queue').innerHTML = icon('queue');
+    if (lyricsTrackId !== null && lyricsTrackId !== t.id) {
+      lyricsOpen = false;
+      const npEl = document.getElementById('nowplaying');
+      if (npEl) npEl.classList.remove('lyrics-open');
+    }
+    lyricsTrackId = t.id;
+    paintLyricsButton();
+    if (lyricsOpen) renderLyrics();
     tint(t);
   }
   function openNP() { paintNowPlaying(); const np = document.getElementById('nowplaying'); np.classList.add('open'); np.setAttribute('aria-hidden', 'false'); }
   function closeNP() { const np = document.getElementById('nowplaying'); np.classList.remove('open'); np.setAttribute('aria-hidden', 'true'); }
+
+  /* ---------- lyrics ---------- */
+  let lyricsOpen = false;
+  let lyricsLines = [];
+  let lyricsTrackId = null;
+  let lyricsManualUntil = 0;
+  let lyricsFetching = false;
+  function parseLrc(lrc) {
+    const out = [];
+    for (const raw of String(lrc || '').split(/\r?\n/)) {
+      let line = raw;
+      const times = [];
+      let m;
+      while ((m = line.match(/^\s*\[(\d+):(\d+(?:\.\d+)?)\]/))) {
+        times.push(parseInt(m[1], 10) * 60 + parseFloat(m[2]));
+        line = line.slice(m[0].length);
+      }
+      if (!times.length) continue;
+      const text = line.trim();
+      if (!text) continue;
+      for (const t of times) out.push({ t, text });
+    }
+    out.sort((a, b) => a.t - b.t);
+    return out;
+  }
+  function paintLyricsButton() {
+    const btn = document.getElementById('np-lyrics-btn');
+    if (!btn) return;
+    const t = Player.current;
+    btn.innerHTML = icon('lyrics');
+    btn.classList.toggle('on', lyricsOpen);
+    const has = !!(t && (t.lyrics || t.lyricsStatus === 'found' || t.lyricsStatus === 'instrumental'));
+    btn.classList.toggle('dim', !has && !(t && t.lyricsStatus));
+  }
+  function renderLyrics() {
+    const panel = document.getElementById('np-lyrics');
+    if (!panel) return;
+    const t = Player.current;
+    if (!t) { panel.innerHTML = ''; lyricsLines = []; return; }
+    lyricsTrackId = t.id;
+    if (!panel.dataset.lyricsBound) {
+      panel.dataset.lyricsBound = '1';
+      panel.addEventListener('scroll', () => { lyricsManualUntil = Date.now() + 8000; }, { passive: true });
+    }
+    if (t.lyricsStatus === 'instrumental') {
+      lyricsLines = [];
+      panel.innerHTML = '<div class="lyr-note">Instrumental</div>';
+    } else if (t.lyricsSynced) {
+      lyricsLines = parseLrc(t.lyricsSynced);
+      if (!lyricsLines.length && t.lyrics) lyricsLines = String(t.lyrics).split(/\r?\n/).filter(x => x.trim()).map(text => ({ t: null, text: text.trim() }));
+      panel.innerHTML = lyricsLines.map((ln, i) => '<div class="lyr-line" data-lyr="' + i + '">' + esc(ln.text) + '</div>').join('') || '<div class="lyr-note">No lyrics yet</div>';
+    } else if (t.lyrics) {
+      lyricsLines = String(t.lyrics).split(/\r?\n/).filter(x => x.trim()).map(text => ({ t: null, text: text.trim() }));
+      panel.innerHTML = lyricsLines.map((ln, i) => '<div class="lyr-line" data-lyr="' + i + '">' + esc(ln.text) + '</div>').join('');
+    } else if (t.lyricsStatus === 'missing') {
+      lyricsLines = [];
+      panel.innerHTML = '<div class="lyr-note">No lyrics found</div>';
+    } else {
+      lyricsLines = [];
+      panel.innerHTML = '<div class="lyr-note">No lyrics yet</div>';
+    }
+    panel.querySelectorAll('.lyr-line').forEach(el => el.addEventListener('click', () => {
+      const ln = lyricsLines[Number(el.dataset.lyr)];
+      if (ln && ln.t != null) { try { Player.seek(ln.t); } catch (e) {} }
+    }));
+    paintLyricsButton();
+  }
+  function highlightLyrics(cur) {
+    if (!lyricsOpen || !lyricsLines.length || lyricsLines[0].t == null) return;
+    const panel = document.getElementById('np-lyrics');
+    if (!panel) return;
+    let idx = 0;
+    for (let i = 0; i < lyricsLines.length; i++) { if (lyricsLines[i].t <= cur + 0.2) idx = i; else break; }
+    panel.querySelectorAll('.lyr-line').forEach((el, i) => el.classList.toggle('active', i === idx));
+    if (Date.now() < lyricsManualUntil) return;
+    const active = panel.querySelector('.lyr-line.active');
+    if (active) { try { active.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (e) {} }
+  }
+  async function toggleLyrics() {
+    const np = document.getElementById('nowplaying');
+    const t = Player.current;
+    if (!np || !t) return;
+    if (lyricsOpen) {
+      lyricsOpen = false;
+      np.classList.remove('lyrics-open');
+      paintLyricsButton();
+      return;
+    }
+    lyricsOpen = true;
+    np.classList.add('lyrics-open');
+    const has = !!(t.lyrics || t.lyricsStatus === 'found' || t.lyricsStatus === 'instrumental');
+    if (has) { renderLyrics(); return; }
+    const panel = document.getElementById('np-lyrics');
+    if (panel) panel.innerHTML = '<div class="lyr-note">Finding lyrics…</div>';
+    paintLyricsButton();
+    if (lyricsFetching) return;
+    lyricsFetching = true;
+    try {
+      const res = await UTAG.ensureLyrics(t);
+      const s = S.byId.get(t.id);
+      if (s && s !== t) { s.lyrics = t.lyrics; s.lyricsSynced = t.lyricsSynced; s.lyricsSource = t.lyricsSource; s.lyricsStatus = t.lyricsStatus; }
+      if (res && res.found) renderLyrics();
+      else {
+        if (panel) panel.innerHTML = '<div class="lyr-note">No lyrics found</div>';
+        toast('No lyrics found');
+      }
+    } catch (e) {
+      if (panel) panel.innerHTML = '<div class="lyr-note">No lyrics yet</div>';
+      toast('Could not fetch lyrics');
+    } finally {
+      lyricsFetching = false;
+      paintLyricsButton();
+    }
+  }
 
   function fmt(s) { if (!s || !isFinite(s)) return '0:00'; s = Math.floor(s); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); }
   function paintTime(cur, dur) {
@@ -2223,6 +2345,8 @@ const App = (() => {
       <div id="fix-sources" style="color:var(--sub);font-size:13px;margin-top:10px"></div>
       <div id="fix-memory" style="color:var(--sub);font-size:13px;margin-top:4px"></div>
       <div style="text-align:center"><button id="fix-run-btn" class="bigbtn pink" data-act="fix-run" style="margin:20px 0 8px">Check all songs</button>
+      <button id="lyrics-backfill-btn" class="bigbtn" data-act="lyrics-backfill" style="margin:0 0 8px">Fetch lyrics for library</button>
+      <div id="lyrics-backfill-status" style="color:var(--sub);font-size:13px;margin:0 0 8px"></div>
       <p class="sub" style="margin:0 0 8px">First the UTAG database is checked and its knowledge applied. Every song the database has never seen is then run through the utag fixer automatically — the same fix as uploading the file on the UTAG site — and the result is saved both here and in the UTAG library. Everything is logged in the fixer's Activity tab. Songs with complete metadata are skipped. Fix those by hand below.</p></div>
       <div id="fix-review-cta" style="margin:4px 0 8px"></div>
       <h2 style="font-size:16px;margin:22px 0 6px">Needs fixing</h2>
@@ -2430,6 +2554,33 @@ const App = (() => {
       // v8.1: the run can never wedge the button on "Fixing…" again.
       fixUI.running = false; fixUI.album = ''; fixUI.skipNow = null; fixUI.scopeTitle = '';
       try { paintFixUI(); } catch (e) {}
+    }
+  }
+  /* Lyrics backfill: on demand only, never a cron or background job.
+     Sequential, one song at a time, so LRCLIB and UTAG are not hammered. */
+  let lyricsBackfillRunning = false;
+  async function lyricsBackfill() {
+    if (lyricsBackfillRunning) { toast('Lyrics backfill already running'); return; }
+    lyricsBackfillRunning = true;
+    let found = 0, instrumental = 0, missing = 0, checked = 0;
+    const list = [...S.tracks].filter(t => !(t.lyrics || t.lyricsStatus === 'found' || t.lyricsStatus === 'instrumental'));
+    try {
+      for (const t of list) {
+        checked++;
+        const el = document.getElementById('lyrics-backfill-status');
+        if (el) el.textContent = 'Fetching lyrics ' + checked + ' of ' + list.length + '…';
+        try {
+          const res = await UTAG.ensureLyrics(t, { recordMissing: true });
+          if (res && res.status === 'found') found++;
+          else if (res && res.status === 'instrumental') instrumental++;
+          else missing++;
+        } catch (e) { missing++; }
+      }
+      const el = document.getElementById('lyrics-backfill-status');
+      if (el) el.textContent = 'Lyrics: ' + found + ' found, ' + instrumental + ' instrumental, ' + missing + ' not found (' + checked + ' checked).';
+      toast('Lyrics backfill done: ' + found + ' found, ' + instrumental + ' instrumental, ' + missing + ' not found');
+    } finally {
+      lyricsBackfillRunning = false;
     }
   }
   // All-songs list for the fixer menu: every song with artwork, filterable,
@@ -2648,6 +2799,7 @@ const App = (() => {
       }
       case 'fix-all-tags': nav('tagFixer'); break;
       case 'fix-run': fixAllSongs(); break;
+      case 'lyrics-backfill': lyricsBackfill(); break;
       case 'fix-artist': fixArtistByKey(id); break;
       case 'fix-skip': {
         const t = S.byId.get(Number(id));
@@ -3043,7 +3195,7 @@ const App = (() => {
       const t = S.byId.get(id);
       if (t && !t.duration) t.duration = duration;
     });
-    Player.on('time', d => paintTime(d.cur, d.dur));
+    Player.on('time', d => { paintTime(d.cur, d.dur); highlightLyrics(d.cur); });
 
     document.addEventListener('click', e => {
       const scrim = e.target.closest('#sheet-scrim');
@@ -3069,6 +3221,7 @@ const App = (() => {
     document.getElementById('np-repeat').addEventListener('click', () => Player.toggleRepeat());
     document.getElementById('np-like').addEventListener('click', () => { const t = Player.current; if (t) Player.toggleLike(t.id); });
     document.getElementById('np-devices').addEventListener('click', () => toast('Playing on this iPhone'));
+    document.getElementById('np-lyrics-btn').addEventListener('click', toggleLyrics);
     document.getElementById('np-queue').addEventListener('click', queueSheet);
     document.getElementById('np-menu').addEventListener('click', () => { const t = Player.current; if (t) trackSheet(t.id); });
     // seek bar drag
