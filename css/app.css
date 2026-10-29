@@ -221,6 +221,28 @@ input{font:inherit}
 #lyrics-full-play svg{width:42px;height:42px;color:#111}
 #lyrics-full-play:not(.playing) svg{margin-left:4px}
 #lyrics-full-play:active{transform:scale(.95)}
+/* Lyrics readability at the extremes: mid backgrounds keep the original
+   white-current / black-upcoming look. Light backgrounds switch to
+   black-current / dark-grey-upcoming, dark backgrounds to
+   white-current / light-grey-upcoming. Background color itself never changes. */
+#lyrics-full.lyrics-light #lyrics-full-close{color:#111}
+#lyrics-full.lyrics-light #lyrics-full-title{color:#111}
+#lyrics-full.lyrics-light #lyrics-full-artist{color:rgba(0,0,0,.75)}
+#lyrics-full.lyrics-light #lyrics-full-lines .lyr-full-line{color:rgba(0,0,0,.55)}
+#lyrics-full.lyrics-light #lyrics-full-lines .lyr-full-line.active{color:#111}
+#lyrics-full.lyrics-light #lyrics-full-lines .lyr-full-note{color:rgba(0,0,0,.75)}
+#lyrics-full.lyrics-light #lyrics-full-track{background:rgba(0,0,0,.25)}
+#lyrics-full.lyrics-light #lyrics-full-fill{background:#111}
+#lyrics-full.lyrics-light #lyrics-full-times{color:rgba(0,0,0,.85)}
+#lyrics-full.lyrics-dark #lyrics-full-lines .lyr-full-line{color:rgba(255,255,255,.55)}
+#lyrics-full.lyrics-dark #lyrics-full-lines .lyr-full-line.active{color:#fff}
+#np-lyrics-preview.lyrics-light #np-lyrics-preview-head{color:#111}
+#np-lyrics-preview.lyrics-light #np-lyrics-preview-lines .lyr-prev-line{color:rgba(0,0,0,.55)}
+#np-lyrics-preview.lyrics-light #np-lyrics-preview-lines .lyr-prev-line.active{color:#111}
+#np-lyrics-preview.lyrics-light #np-lyrics-preview-lines .lyr-prev-note{color:rgba(0,0,0,.75)}
+#np-lyrics-preview.lyrics-light #np-lyrics-preview-btn{background:#111;color:#fff}
+#np-lyrics-preview.lyrics-dark #np-lyrics-preview-lines .lyr-prev-line{color:rgba(255,255,255,.55)}
+#np-lyrics-preview.lyrics-dark #np-lyrics-preview-lines .lyr-prev-line.active{color:#fff}
 
 /* ---------- bottom sheet ---------- */
 #sheet-scrim{position:absolute;inset:0;background:rgba(0,0,0,.6);z-index:60;opacity:1;visibility:hidden;transition:opacity .25s,visibility 0s linear .25s}

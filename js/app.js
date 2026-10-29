@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v9.8';
+  const APP_VERSION = 'v9.9';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -2147,13 +2147,27 @@ const App = (() => {
       else { openLyrics(); }
     }));
   }
+  function lyricsThemeForColor(c) {
+    const m = String(c || '').match(/rgb\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)/);
+    if (!m) return '';
+    const lin = v => { const s = Number(v) / 255; return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4); };
+    const lum = 0.2126 * lin(m[1]) + 0.7152 * lin(m[2]) + 0.0722 * lin(m[3]);
+    if (lum > 0.6) return 'light';
+    if (lum < 0.08) return 'dark';
+    return '';
+  }
   function applyLyricsColor(t) {
     const preview = document.getElementById('np-lyrics-preview');
     const full = document.getElementById('lyrics-full');
     const set = c => {
       lyricsColor = c;
-      if (preview) preview.style.background = c;
-      if (full) full.style.background = c;
+      const theme = lyricsThemeForColor(c);
+      [preview, full].forEach(el => {
+        if (!el) return;
+        el.style.background = c;
+        el.classList.remove('lyrics-light', 'lyrics-dark');
+        if (theme) el.classList.add('lyrics-' + theme);
+      });
     };
     if (!t) return;
     const u = artURL(t);
