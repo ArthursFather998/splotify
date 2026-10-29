@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v9.3';
+  const APP_VERSION = 'v9.4';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -1089,8 +1089,6 @@ const App = (() => {
     return `<div class="pagehead"><button class="iconbtn" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><h1>Settings</h1><span style="width:44px"></span></div>
     <div class="setgroup"><h2>Music</h2>
       <div class="setrow" data-act="open-sdb"><div>SDB<div class="sub">Upload audio, import from UTAG</div></div><span style="color:var(--sub)">${icon('chevR', 'width:20px;height:20px')}</span></div>
-      <div class="setrow" data-act="import"><div>Add music to the SDB<div class="sub">Import audio files from the Files app</div></div><span style="color:var(--sub)">${icon('plus')}</span></div>
-      <div class="setrow" data-act="import-zip"><div>Import ZIP<div class="sub">Pull the songs out of a zip file</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
       <div class="setrow" data-act="export-hub"><div>Export music<div class="sub">Back up your songs to a link or Google Drive</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
       <div class="setrow" data-act="open-spotify-import"><div>Import from Spotify<div class="sub" id="spimport-sub">Playlists, Liked Songs &amp; followed artists</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
       <div class="setrow" data-act="open-plimport"><div>Download Spotify playlist<div class="sub" id="plimport-sub">Turn a playlist into SDB downloads</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
@@ -1116,10 +1114,10 @@ const App = (() => {
   }
   /* SDB tab (Settings > SDB). Upload Audio reuses the existing import
      pickers, so files and ZIPs go through the normal SDB pipeline and
-     UTAG enrichment. Import from UTAG lists DATUM audio linked to
-     UTAG tracks and downloads it with a signed URL from utag-control.
-     Server and Drive rows are placeholders only: no auth, no file
-     access, no importing code behind them. */
+     UTAG enrichment. Import from UTAG is a single button that imports
+     every DATUM-linked track_audio row, downloading each with a signed
+     URL from utag-control. Server and Drive rows are placeholders
+     only: no auth, no file access, no importing code behind them. */
   function vSDB() {
     return `<div class="pagehead"><button class="iconbtn" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><h1>SDB</h1><span style="width:44px"></span></div>
     <div class="setgroup"><h2>Upload Audio</h2>
@@ -1131,10 +1129,10 @@ const App = (() => {
       <div id="sdb-utag-list"><div class="sub" style="padding:8px 4px">Loading UTAG audio…</div></div>
     </div>
     <div class="setgroup"><h2>Connect to Server</h2>
-      <div class="setrow" data-act="sdb-server-placeholder" style="opacity:.55"><div>Connect to Server<div class="sub">Coming later</div></div><span style="color:var(--sub)">${icon('chevR', 'width:20px;height:20px')}</span></div>
+      <div class="setrow" data-act="sdb-server-placeholder" style="opacity:.55"><div>Connect to Server<div class="sub">Coming soon</div></div><span style="color:var(--sub)">${icon('chevR', 'width:20px;height:20px')}</span></div>
     </div>
     <div class="setgroup"><h2>Import from Google Drive</h2>
-      <div class="setrow" data-act="sdb-drive-placeholder" style="opacity:.55"><div>Import from Google Drive<div class="sub">Coming later</div></div><span style="color:var(--sub)">${icon('chevR', 'width:20px;height:20px')}</span></div>
+      <div class="setrow" data-act="sdb-drive-placeholder" style="opacity:.55"><div>Import from Google Drive<div class="sub">Coming soon</div></div><span style="color:var(--sub)">${icon('chevR', 'width:20px;height:20px')}</span></div>
     </div>`;
   }
   async function paintSDB() {
@@ -1151,9 +1149,9 @@ const App = (() => {
       box.innerHTML = `<div class="sub" style="padding:8px 4px">No UTAG audio yet. Rip a song with DATUM first.</div>`;
       return;
     }
-    box.innerHTML = list.map(r =>
-      `<div class="setrow" data-act="sdb-import-utag" data-id="${esc(r.id)}"><div>${esc(r.title || r.file_name || 'Unknown Title')}<div class="sub">${esc(r.artist || 'Unknown Artist')}${r.file_name ? ' · ' + esc(r.file_name) : ''}</div></div><span style="color:var(--sub)">${icon('download')}</span></div>`
-    ).join('');
+    box.innerHTML = `<div class="sub" style="padding:0 4px 8px">${list.length} song${list.length === 1 ? '' : 's'} available from UTAG.</div>
+      <div class="setrow" data-act="sdb-import-all-utag"><div>Import all from UTAG<div class="sub">Download every DATUM song into the SDB</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
+      <div id="sdb-utag-progress" class="sub" style="padding:8px 4px"></div>`;
   }
   /* utag fixer keys: AcoustID + fanart.tv for the engine, and the UTAG site
      password for library saves + Activity logging. The engine reads
@@ -2749,17 +2747,35 @@ const App = (() => {
       case 'sdb-upload-zip': Importer.openZip(); break;
       case 'sdb-server-placeholder': toast('Connect to server is not available yet'); break;
       case 'sdb-drive-placeholder': toast('Import from Google Drive is not available yet'); break;
-      case 'sdb-import-utag': {
+      case 'sdb-import-all-utag': {
+        if (S.sdbImportingAll) { toast('Import from UTAG is already running'); break; }
+        S.sdbImportingAll = true;
         try {
-          toast('Downloading from UTAG…');
-          const url = await UTAG.audioUrl(id);
-          const r = await fetch(url);
-          if (!r.ok) throw new Error('UTAG download failed');
-          const blob = await r.blob();
-          const row = (S.sdbAudio || []).find(x => String(x.id) === String(id));
-          const file = new File([blob], (row && row.file_name) || 'track.mp3', { type: blob.type || 'audio/mpeg' });
-          await Importer.importFiles([file]);
+          const list = S.sdbAudio || [];
+          if (!list.length) { toast('No UTAG audio to import'); break; }
+          const existing = new Set((S.tracks || []).map(t => t.fileName).filter(Boolean));
+          let imported = 0, skipped = 0, failed = 0;
+          const prog = () => document.getElementById('sdb-utag-progress');
+          for (let i = 0; i < list.length; i++) {
+            const row = list[i];
+            if (prog()) prog().textContent = `Importing ${i + 1} of ${list.length}…`;
+            if (row.file_name && existing.has(row.file_name)) { skipped++; continue; }
+            try {
+              const url = await UTAG.audioUrl(row.id);
+              const r = await fetch(url);
+              if (!r.ok) throw new Error('UTAG download failed');
+              const blob = await r.blob();
+              const file = new File([blob], row.file_name || 'track.mp3', { type: blob.type || 'audio/mpeg' });
+              await Importer.importFiles([file]);
+              imported++;
+              if (row.file_name) existing.add(row.file_name);
+            } catch (e) { failed++; }
+          }
+          await refreshTracks();
+          if (prog()) prog().textContent = '';
+          toast(`UTAG import done: ${imported} imported, ${skipped} skipped, ${failed} failed`);
         } catch (e) { toast('Could not import from UTAG: ' + (e && e.message ? e.message : 'unknown error')); }
+        finally { S.sdbImportingAll = false; }
         break;
       }
       case 'sp-oauth': SpImport.oauthStart(); break;
