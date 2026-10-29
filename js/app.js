@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v9.6';
+  const APP_VERSION = 'v9.7';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -2077,7 +2077,6 @@ const App = (() => {
     document.getElementById('np-queue').innerHTML = icon('queue');
     const lyricsTrackChanged = lyricsTrackId !== t.id;
     applyLyricsColor(t);
-    paintLyricsButton();
     if (lyricsTrackChanged) renderLyrics();
     paintLyricsFullPlay();
     tint(t);
@@ -2199,15 +2198,6 @@ const App = (() => {
       img.src = u;
     } catch (e) {}
   }
-  function paintLyricsButton() {
-    const btn = document.getElementById('np-lyrics-btn');
-    if (!btn) return;
-    const t = Player.current;
-    btn.innerHTML = icon('lyrics');
-    btn.classList.toggle('on', lyricsOpen);
-    const has = !!(t && (t.lyrics || t.lyricsStatus === 'found' || t.lyricsStatus === 'instrumental'));
-    btn.classList.toggle('dim', !has && !(t && t.lyricsStatus));
-  }
   function paintLyricsFullMeta(t) {
     const title = document.getElementById('lyrics-full-title');
     const artist = document.getElementById('lyrics-full-artist');
@@ -2268,7 +2258,6 @@ const App = (() => {
     lyricsLines = computeLyricsLines(t);
     renderLyricsPreview();
     renderLyricsFull();
-    paintLyricsButton();
   }
   function highlightLyrics(cur) {
     lyricsLastTime = cur || 0;
@@ -2301,7 +2290,6 @@ const App = (() => {
       lyricsOpen = false;
       full.classList.remove('open');
       full.setAttribute('aria-hidden', 'true');
-      paintLyricsButton();
       return;
     }
     lyricsOpen = true;
@@ -2313,7 +2301,6 @@ const App = (() => {
     if (has) { renderLyrics(); return; }
     const box = document.getElementById('lyrics-full-lines');
     if (box) box.innerHTML = '<div class="lyr-full-note">Finding lyrics…</div>';
-    paintLyricsButton();
     if (lyricsFetching) return;
     lyricsFetching = true;
     try {
@@ -2330,7 +2317,6 @@ const App = (() => {
       toast('Could not fetch lyrics');
     } finally {
       lyricsFetching = false;
-      paintLyricsButton();
     }
   }
 
@@ -3438,16 +3424,11 @@ const App = (() => {
     document.getElementById('np-repeat').addEventListener('click', () => Player.toggleRepeat());
     document.getElementById('np-like').addEventListener('click', () => { const t = Player.current; if (t) Player.toggleLike(t.id); });
     document.getElementById('np-devices').addEventListener('click', () => toast('Playing on this iPhone'));
-    document.getElementById('np-lyrics-btn').addEventListener('click', toggleLyrics);
     document.getElementById('np-lyrics-preview-btn').addEventListener('click', openLyrics);
     document.getElementById('np-lyrics-preview').addEventListener('click', openLyrics);
     document.getElementById('lyrics-full-close').innerHTML = icon('chevD');
-    document.getElementById('lyrics-full-share').innerHTML = icon('share');
-    document.getElementById('lyrics-full-menu').innerHTML = icon('dots');
     document.getElementById('lyrics-full-close').addEventListener('click', closeLyrics);
     document.getElementById('lyrics-full-play').addEventListener('click', () => Player.toggle());
-    document.getElementById('lyrics-full-share').addEventListener('click', () => { const t = Player.current; if (t) trackSheet(t.id); });
-    document.getElementById('lyrics-full-menu').addEventListener('click', () => { const t = Player.current; if (t) trackSheet(t.id); });
     document.getElementById('lyrics-full-bar').addEventListener('click', ev => {
       const track = document.getElementById('lyrics-full-track');
       if (!track) return;
@@ -3480,7 +3461,7 @@ const App = (() => {
     // background, killing playback.
     const paintMute = () => {
       const m = document.getElementById('np-mute');
-      if (m) m.innerHTML = icon(Player.muted ? 'volMute' : 'vol', 'width:22px;height:22px');
+      if (m) m.innerHTML = `<img src="icons/volume.png" class="sprite${Player.muted ? ' sprite-off' : ''}" alt="Mute">`;
     };
     document.getElementById('np-mute').addEventListener('click', () => Player.toggleMute());
     Player.on('volume', paintMute);
