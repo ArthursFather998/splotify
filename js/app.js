@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v10.0';
+  const APP_VERSION = 'v10.1';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -1093,6 +1093,7 @@ const App = (() => {
       <div class="setrow" data-act="open-spotify-import"><div>Import from Spotify<div class="sub" id="spimport-sub">Playlists, Liked Songs &amp; followed artists</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
       <div class="setrow" data-act="open-plimport"><div>Download Spotify playlist<div class="sub" id="plimport-sub">Turn a playlist into SDB downloads</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
       <div class="setrow" data-act="fix-all-tags"><div>utag fixer<div class="sub">Scan the UTAG database, auto-fix the rest, update both</div></div><span style="color:var(--sub)">${icon('tag')}</span></div>
+      <div class="setrow" data-act="adf-run"><div>Anti-duplicate fixer (ADF)<div class="sub">Find and delete duplicate songs</div></div><span style="color:var(--sub)">${icon('trash')}</span></div>
       <div class="setrow"><div>Songs in library<div class="sub" id="set-storage">Counting…</div></div><span style="color:var(--sub)">${n}</span></div>
     </div>
     <div class="setgroup"><h2>Playback</h2>
@@ -3070,6 +3071,7 @@ const App = (() => {
         break;
       }
       case 'fix-all-tags': nav('tagFixer'); break;
+      case 'adf-run': await runADF(); break;
       case 'fix-run': fixAllSongs(); break;
       case 'lyrics-backfill': lyricsBackfill(); break;
       case 'fix-artist': fixArtistByKey(id); break;
@@ -3300,6 +3302,75 @@ const App = (() => {
         }
         break;
     }
+  }
+
+  /* ADF — Anti-Duplicate Fixer (Settings > Music).
+     Two passes over the SDB: first exact files (fileName + fileSize, the
+     import dedup key), then normalized title + artist among the survivors.
+     Keeps one per group (library copy first, then a playlist copy, then
+     first seen), confirms the count, then deletes the rest. Library and
+     playlist entries pointing at a deleted copy are remapped to the kept
+     copy (or dropped only if the kept copy is already there), so a
+     playlist does not lose a song just because its copy was the dup.
+     Permanent: the audio lives in IndexedDB. */
+  async function runADF() {
+    const tracks = [...SDB.all()];
+    if (!tracks.length) { toast('No songs in the SDB'); return; }
+    const score = t => (libraryHas(t.id) ? 2 : 0) + ((S._pls || []).some(p => (p.trackIds || []).includes(t.id)) ? 1 : 0);
+    const pickDups = list => {
+      const groups = new Map();
+      for (const t of list) {
+        const key = t._adfKey;
+        if (!key) continue;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(t);
+      }
+      const delToKeep = new Map();
+      for (const group of groups.values()) {
+        if (group.length < 2) continue;
+        const sorted = [...group].sort((a, b) => (score(b) - score(a)) || (a.id - b.id));
+        for (const t of sorted.slice(1)) delToKeep.set(t.id, sorted[0].id);
+      }
+      return delToKeep;
+    };
+    const withFileKey = tracks.map(t => ({ ...t, _adfKey: (t.fileName && t.fileSize) ? ('f:' + t.fileName + '|' + t.fileSize) : null }));
+    const fileDups = pickDups(withFileKey);
+    const survivors = tracks.filter(t => !fileDups.has(t.id));
+    const withMetaKey = survivors.map(t => {
+      const title = normTitle(t.title), artist = normTitle(t.artist);
+      return { ...t, _adfKey: (title && artist && artist !== 'unknownartist') ? ('m:' + title + '|' + artist) : null };
+    });
+    const metaDups = pickDups(withMetaKey);
+    const delToKeep = new Map([...fileDups, ...metaDups]);
+    const delIds = new Set(delToKeep.keys());
+    if (!delIds.size) { toast('No duplicates found'); return; }
+    if (!confirm(`Found ${delIds.size} duplicate song${delIds.size === 1 ? '' : 's'}. Delete them? This cannot be undone.`)) return;
+    const remap = ids => {
+      const out = [];
+      for (const id of ids) {
+        let mapped = id;
+        const seen = new Set();
+        while (delToKeep.has(mapped) && !seen.has(mapped)) { seen.add(mapped); mapped = delToKeep.get(mapped); }
+        if (!out.includes(mapped)) out.push(mapped);
+      }
+      return out;
+    };
+    for (const id of delIds) {
+      try { await DB.delTrack(id); } catch (e) {}
+      try { Player.forgetTrack(id); } catch (e) {}
+    }
+    if (S.library.some(id => delIds.has(id))) {
+      S.library = remap(S.library);
+      try { await DB.kvSet('library', S.library); } catch (e) {}
+    }
+    for (const pl of (S._pls || [])) {
+      if (pl.trackIds && pl.trackIds.some(id => delIds.has(id))) {
+        pl.trackIds = remap(pl.trackIds);
+        try { await DB.putPlaylist(pl); } catch (e) {}
+      }
+    }
+    await refreshTracks(); paintMini(); render();
+    toast(`Deleted ${delIds.size} duplicate song${delIds.size === 1 ? '' : 's'}`);
   }
 
   /* ================= boot ================= */
