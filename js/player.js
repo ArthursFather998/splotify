@@ -212,7 +212,17 @@ const Player = (() => {
         await api.playContext({ kicker: 'PLAYING FROM SONGS', name: '', kind: 'single', id: 'single' }, [id], id);
       }
     },
-    toggle() { if (!S.track) return; if (out.paused) out.play().catch(() => {}); else out.pause(); },
+    toggle() {
+      if (!S.track) return;
+      // Login gate: lock-screen / MediaSession resume must not restart
+      // audio after sign-out. Pause anything playing, then show auth.
+      if (typeof UTAG !== 'undefined' && UTAG.getSession && !UTAG.getSession()) {
+        try { if (!out.paused) out.pause(); } catch (e) {}
+        try { App.showAuthGate(); } catch (e) {}
+        return;
+      }
+      if (out.paused) out.play().catch(() => {}); else out.pause();
+    },
     play() { if (S.track) out.play().catch(() => {}); },
     pause() { out.pause(); },
     async next(auto) {
