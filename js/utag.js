@@ -1,5 +1,6 @@
-/* UTAG client for Splotify (v9.0).
-   Splotify has no metadata engine of its own: it asks the UTAG database.
+/* UTAG client for Splotify (v10.3).
+   Splotify's fixer engine is in-house (js/fixer.js) since v10.3: it asks
+   the UTAG database first, then runs that engine on a miss.
    Lookup order: local UTAG cache (on-device) -> UTAG database (public read).
    Verified / highly confident records apply. Records UTAG is still working
    on come back as review proposals. Unknowns are submitted to UTAG for
@@ -9,7 +10,6 @@ const UTAG = (() => {
   const BASE = 'https://akusfgoeplfqwrrrywfl.supabase.co/rest/v1';
   const ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFrdXNmZ29lcGxmcXdycnJ5d2ZsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE0Mjg5OTUsImV4cCI6MjEwNzAwNDk5NX0.Hrgft3FuI5DRZsYe8fFdvCZhiXtRMBDPNUP6aJkShvg';
   const FN_URL = 'https://akusfgoeplfqwrrrywfl.supabase.co/functions/v1/utag-control';
-  const UTAG_SITE = 'https://arthursfather998.github.io/utag';
   const LABEL = { title: 'Title', artist: 'Artist', album: 'Album', year: 'Year', genre: 'Genre' };
   const norm = s => (s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
   const keyFor = (a, t) => norm(a) + '|' + norm(t);
@@ -75,6 +75,7 @@ const UTAG = (() => {
     } catch (e) { /* track_lyrics table not migrated yet: no lyrics, not a failure */ }
     const hit = {
       title: best.title, artist: artists[0].canonical_name,
+      trackId: best.id, artistId: aid, releaseId: rel.id || null,
       album: rel.title || '', year: rel.release_year || null,
       art, confidence: best.confidence || rel.confidence || 'unknown',
       lyrics: lyrics ? (lyrics.plain_text || '') : '',
@@ -145,9 +146,9 @@ const UTAG = (() => {
   }
 
   /* The one entry point the UTAG screen and per-track action use.
-     Pass 1: check the UTAG database. Pass 2: every DB miss runs the UTAG
-     site's fixer engine automatically (same chain as uploading the audio
-     file on the UTAG fixer, headless). -> { fixed, queued, status, note }
+     Pass 1: check the UTAG database. Pass 2: every DB miss runs the
+     in-house fixer engine automatically (same chain as uploading the
+     audio file on the UTAG fixer, headless). -> { fixed, queued, status, note }
      with status in fixed | ok | review | sent | skipped */
   async function fixTrack(t, opts) {
     opts = opts || {};
@@ -172,10 +173,11 @@ const UTAG = (() => {
     return { fixed: 0, queued, status: 'review', note: 'UTAG is still verifying' };
   }
 
-  /* ---- pass 2: the UTAG fixer engine, called from the website ----
-     The engine lives ONLY on the UTAG site (fixer.js). Splotify loads it
-     live at runtime — never duplicated here. API keys are read by the
-     engine from this origin's localStorage (utag_acoustid_key /
+  /* ---- pass 2: the fixer engine, in-house since v10.3 ----
+     The engine is a single copy in this codebase (js/fixer.js, copied
+     from the UTAG site's fixer.js — same chain, same guard, no second
+     engine). Splotify loads it locally at runtime. API keys are read by
+     the engine from this origin's localStorage (utag_acoustid_key /
      utag_fanart_key), set in Splotify's settings. */
   let enginePromise = null;
   function loadScript(src) {
@@ -192,7 +194,7 @@ const UTAG = (() => {
     enginePromise = (async () => {
       if (!window.mm || !window.mm.parseBlob) await loadScript('vendor/mm.js');
       await loadScript('vendor/chromaprint-shim.js');
-      await loadScript(UTAG_SITE + '/fixer.js');
+      await loadScript('js/fixer.js');
       if (!window.UtagFixer) throw new Error('UtagFixer engine did not load');
       return window.UtagFixer;
     })();
@@ -418,7 +420,7 @@ const UTAG = (() => {
 
   /* Lyrics only, on demand. Never runs on track change; callers (the Now
      Playing lyrics button, the lyrics backfill) trigger it explicitly.
-     Order: UTAG database first, then the UTAG site engine's LRCLIB path.
+     Order: UTAG database first, then the in-house engine's LRCLIB path.
      A miss is recorded locally only, unless opts.recordMissing (backfill)
      says UTAG may record it too. */
   async function persistLyrics(t) {
@@ -757,6 +759,7 @@ const UTAG = (() => {
       id: tr.id, title: tr.title || '',
       artist: (tr.artists && tr.artists.canonical_name) || '',
       artistId: tr.artist_id || null,
+      releaseId: tr.release_id || rel.id || null,
       album: rel.title || '', year: rel.release_year || null,
       art: catalogArt(rel),
     };
@@ -815,6 +818,204 @@ const UTAG = (() => {
     });
   }
 
+  /* ---- Phase 3: Settings upload review + submit (in-house fixer) ----
+     uploadReview(t): UTAG lookup first, then the in-house engine on a
+     DB miss — the same order as fixTrack/autoFix. A catalog record
+     (verified or still under review) is never overwritten by an engine
+     run. Returns before/after, a short change list, and the catalog
+     ids needed to submit. Nothing here writes to the catalog or
+     changes the local track; submitUpload does that, only on success.
+     Genre/art/lyrics are shown in review, but the Phase 1 proposal
+     handler has no editable field for them on a track, so a standard
+     user's proposals carry only the editable fields (artist name,
+     release title/year, track title). */
+  function disp(v) { return (v === undefined || v === null || v === '') ? '—' : String(v); }
+  function pushChange(changes, field, from, to) {
+    if (String(from == null ? '' : from) !== String(to == null ? '' : to)) changes.push({ field, from: disp(from), to: disp(to) });
+  }
+  async function uploadReview(t) {
+    const before = { title: t.title || '', artist: t.artist || '', album: t.album || '', year: t.year || '', genre: t.genre || '' };
+    const base = { trackId: t.id != null ? t.id : null, fileName: t.fileName || '', fileSize: t.fileSize || 0, before, after: { ...before }, changes: [], artBlob: null, artUrl: '', artSource: '', lyrics: null, info: { trackNo: t.trackNo || 0, discNo: t.discNo || 1, durationMs: t.duration ? Math.round(t.duration * 1000) : null } };
+    const hit = await lookup(t.artist, t.title);
+    if (hit) {
+      const after = { title: hit.title, artist: hit.artist, album: hit.album || '', year: hit.year || '', genre: before.genre };
+      const changes = [];
+      pushChange(changes, 'title', before.title, after.title);
+      pushChange(changes, 'artist', before.artist, after.artist);
+      pushChange(changes, 'album', before.album, after.album);
+      pushChange(changes, 'year', before.year, after.year);
+      let artUrl = '';
+      if (hit.art && !t.artManual && t.art !== hit.art) {
+        artUrl = hit.art;
+        changes.push({ field: 'art', from: t.art ? 'Current artwork' : '—', to: 'New artwork' });
+      }
+      let lyrics = null;
+      if ((hit.lyrics || hit.lyricsStatus === 'found' || hit.lyricsStatus === 'instrumental') &&
+          (hit.lyrics !== (t.lyrics || '') || hit.lyricsSynced !== (t.lyricsSynced || ''))) {
+        lyrics = { plain: hit.lyrics || '', synced: hit.lyricsSynced || '', source: hit.lyricsSource || '', status: hit.lyricsStatus || 'found' };
+        changes.push({ field: 'lyrics', from: t.lyrics ? 'Saved lyrics' : '—', to: lyrics.source || 'Found lyrics' });
+      }
+      return { ...base, after, changes, artUrl, artSource: artUrl ? 'UTAG' : '', lyrics,
+        catalog: { exists: true, trackId: hit.trackId || null, artistId: hit.artistId || null, releaseId: hit.releaseId || null, artistExists: !!hit.artistId, releaseExists: !!hit.releaseId },
+        source: 'utag', verified: hit.confidence === 'verified' || hit.confidence === 'high_confidence' };
+    }
+    const file = (t.file && t.file.size) ? t.file : null;
+    if (!file) {
+      return { ...base, catalog: { exists: false, trackId: null, artistId: null, releaseId: null, artistExists: false, releaseExists: false }, source: 'engine', verified: false, engineFailed: 'No audio file attached to this track' };
+    }
+    let eng, info, audit;
+    try {
+      eng = await ensureEngine();
+      const f = file.name ? file : new File([file], t.fileName || 'track.mp3', { type: file.type || 'audio/mpeg' });
+      info = await eng.parseFile(f);
+      audit = await eng.auditFile(info, [], () => {});
+    } catch (e) {
+      return { ...base, catalog: { exists: false, trackId: null, artistId: null, releaseId: null, artistExists: false, releaseExists: false }, source: 'engine', verified: false, engineFailed: (e && e.message) || 'Fixer engine failed' };
+    }
+    const after = {
+      title: info.title || before.title,
+      artist: info.artist || before.artist,
+      album: (info.album && info.album !== 'Unknown Album') ? info.album : before.album,
+      year: info.year || before.year,
+      genre: info.genre || before.genre,
+    };
+    for (const p of (audit && audit.proposals) || []) {
+      if (['title', 'artist', 'album', 'genre', 'year'].includes(p.field) && p.to !== undefined && p.to !== null && p.to !== '') after[p.field] = p.to;
+    }
+    const changes = [];
+    pushChange(changes, 'title', before.title, after.title);
+    pushChange(changes, 'artist', before.artist, after.artist);
+    pushChange(changes, 'album', before.album, after.album);
+    pushChange(changes, 'year', before.year, after.year);
+    pushChange(changes, 'genre', before.genre, after.genre);
+    let artBlob = null, artUrl = '';
+    if (audit && audit.art && audit.art.blob && !t.artManual) {
+      artBlob = audit.art.blob; artUrl = audit.art.url || '';
+      changes.push({ field: 'art', from: t.art ? 'Current artwork' : '—', to: 'New artwork' });
+    }
+    let lyrics = null;
+    if (audit && audit.lyrics && (audit.lyrics.plain || audit.lyrics.synced || audit.lyrics.status === 'instrumental')) {
+      lyrics = { plain: audit.lyrics.plain || '', synced: audit.lyrics.synced || '', source: audit.lyrics.source || '', status: audit.lyrics.status || 'found' };
+      changes.push({ field: 'lyrics', from: t.lyrics ? 'Saved lyrics' : '—', to: lyrics.source || 'Found lyrics' });
+    }
+    // Catalog existence for a miss, best-effort and fail-soft: exact
+    // artist name, then a track or a release with the proposed album.
+    const catalog = { exists: false, trackId: null, artistId: null, releaseId: null, artistExists: false, releaseExists: false };
+    try {
+      if (after.artist && after.artist !== 'Unknown Artist') {
+        const res = await catalogSearch(after.artist);
+        const artistRow = (res.artists || []).find(a => norm(a.name) === norm(after.artist));
+        if (artistRow) {
+          catalog.artistExists = true; catalog.artistId = artistRow.id;
+          const songs = await catalogArtistSongs(artistRow.id);
+          const song = songs.find(s => norm(s.title) === norm(after.title));
+          if (song) {
+            catalog.exists = true; catalog.trackId = song.id;
+            catalog.artistId = song.artistId || artistRow.id; catalog.releaseId = song.releaseId || null;
+          } else if (after.album && after.album !== 'Unknown Album') {
+            const relSong = songs.find(s => norm(s.album) === norm(after.album));
+            if (relSong) { catalog.releaseExists = true; catalog.releaseId = relSong.releaseId || null; }
+          }
+        }
+      }
+    } catch (e) { /* unknown catalog state: proposals below stay conservative */ }
+    return { ...base, after, changes, artBlob, artUrl, artSource: artBlob ? (audit.art.source || 'fixer') : '', lyrics,
+      catalog, source: 'engine', verified: !!(audit && audit.verified),
+      info: { trackNo: (info && info.trackNo) || t.trackNo || 0, discNo: (info && info.discNo) || t.discNo || 1, durationMs: (info && info.duration) ? Math.round(info.duration * 1000) : base.info.durationMs } };
+  }
+
+  /* Role for a catalog submit, via the Phase 1 `me` action. A session
+     always decides by profile role; only with no session at all does
+     the legacy site password fall back to an admin direct save. */
+  async function getRole() {
+    if (getSession()) {
+      const data = await fnCall({ action: 'me' });
+      const role = data && data.profile && data.profile.role;
+      return { kind: role === 'admin' ? 'admin' : 'standard', role: role || 'standard' };
+    }
+    if (utagPassword()) return { kind: 'legacy', role: 'admin' };
+    return { kind: 'none', role: null };
+  }
+  function localPatchFromReview(review) {
+    const patch = {};
+    const has = {};
+    (review.changes || []).forEach(c => { has[c.field] = true; });
+    if (has.title) patch.title = review.after.title;
+    if (has.artist) patch.artist = review.after.artist;
+    if (has.album) patch.album = review.after.album;
+    if (has.year) patch.year = review.after.year;
+    if (has.genre) patch.genre = review.after.genre;
+    if (has.art) { patch.art = review.artBlob || review.artUrl || ''; patch.artSource = review.artSource || ''; }
+    if (has.lyrics && review.lyrics) {
+      patch.lyrics = review.lyrics.plain || ''; patch.lyricsSynced = review.lyrics.synced || '';
+      patch.lyricsSource = review.lyrics.source || ''; patch.lyricsStatus = review.lyrics.status || '';
+    }
+    return patch;
+  }
+  /* Submit a reviewed upload. Admin (session role or legacy password)
+     saves direct via fixer_save; a standard user gets one
+     metadata_proposal per catalog entity touched, editable fields
+     only. A throw leaves the SDB file and its local metadata exactly
+     as they were — nothing is applied locally until every submit
+     succeeds. A new track whose release does not exist yet cannot be
+     proposed (the approve handler needs a release_id): its release
+     proposal goes in, the track proposal is deferred, and the result
+     says so — no chained API is invented. */
+  async function submitUpload(review) {
+    const role = await getRole();
+    if (role.kind === 'none') throw new Error('Sign in first');
+    const after = review.after || {};
+    if (role.kind === 'admin' || role.kind === 'legacy') {
+      const body = {
+        action: 'fixer_save',
+        artist: after.artist || '', title: after.title || '', album: after.album || '',
+        year: after.year || '', genre: after.genre || '',
+        track_no: (review.info && review.info.trackNo) || null,
+        disc_no: (review.info && review.info.discNo) || 1,
+        duration_ms: (review.info && review.info.durationMs) || null,
+        verified: !!review.verified,
+        art_url: review.artUrl || '', art_source: review.artSource || '',
+        lyrics_plain: review.lyrics ? (review.lyrics.plain || '') : '',
+        lyrics_synced: review.lyrics ? (review.lyrics.synced || '') : '',
+        lyrics_source: review.lyrics ? (review.lyrics.source || '') : '',
+        lyrics_status: review.lyrics ? (review.lyrics.status || '') : '',
+        fileName: review.fileName || '', fileSize: review.fileSize || 0,
+      };
+      if (role.kind === 'legacy') body.password = utagPassword();
+      await fnCall(body);
+      const patch = localPatchFromReview(review);
+      if (Object.keys(patch).length && review.trackId != null) { try { await DB.updateTrack(review.trackId, patch); } catch (e) {} }
+      return { toast: 'Saved to the catalog', role: role.kind, submitted: ['fixer_save'], deferred: false };
+    }
+    const cat = review.catalog || {};
+    const has = {};
+    (review.changes || []).forEach(c => { has[c.field] = true; });
+    const validArtist = after.artist && after.artist !== 'Unknown Artist';
+    const validAlbum = after.album && after.album !== 'Unknown Album';
+    const proposals = [];
+    if (cat.exists) {
+      if (has.artist && validArtist && cat.artistId) proposals.push({ entity_type: 'artist', entity_id: cat.artistId, fields: { canonical_name: after.artist } });
+      const rFields = {};
+      if (has.album && validAlbum) rFields.title = after.album;
+      if (has.year && after.year) rFields.release_year = Number(after.year) || after.year;
+      if (Object.keys(rFields).length && cat.releaseId) proposals.push({ entity_type: 'release', entity_id: cat.releaseId, fields: rFields });
+      if (has.title && cat.trackId) proposals.push({ entity_type: 'track', entity_id: cat.trackId, fields: { title: after.title } });
+    } else {
+      if (!cat.artistExists && validArtist) proposals.push({ entity_type: 'artist', entity_id: null, fields: { canonical_name: after.artist } });
+      if (!cat.releaseExists && validAlbum) proposals.push({ entity_type: 'release', entity_id: null, fields: { title: after.album, ...(cat.artistId ? { artist_id: cat.artistId } : { artist_name: after.artist }) } });
+      else if (cat.releaseExists && cat.releaseId) proposals.push({ entity_type: 'track', entity_id: null, fields: { title: after.title, release_id: cat.releaseId } });
+    }
+    const trackSubmitted = proposals.some(p => p.entity_type === 'track');
+    const deferred = !cat.exists && !trackSubmitted;
+    if (!proposals.length) return { toast: 'No editable changes to submit', role: 'standard', submitted: [], deferred, nothing: true };
+    for (const p of proposals) {
+      await fnCall({ action: 'metadata_proposal_create', entity_type: p.entity_type, entity_id: p.entity_id, fields: p.fields, reason: 'Settings upload' });
+    }
+    const patch = localPatchFromReview(review);
+    if (Object.keys(patch).length && review.trackId != null) { try { await DB.updateTrack(review.trackId, patch); } catch (e) {} }
+    return { toast: 'Submitted for review', role: 'standard', submitted: proposals.map(p => p.entity_type), deferred };
+  }
+
   try { window.addEventListener('online', () => drain()); } catch (e) {}
-  return { lookup, fixTrack, enrich, ensureLyrics, learn, submit, drain, migrate, stats, norm, fixerLog, setUtagPassword, utagPassword, listAudio, audioUrl, audioBlob, megaFolderLink, setMegaFolderLink, listMegaFolder, megaFolderBlob, getSession, setSession, clearSession, signIn, signUp, catalogSearch, catalogArtistSongs, matchLocal, findLocal, queueDatumRip };
+  return { lookup, fixTrack, enrich, ensureLyrics, learn, submit, drain, migrate, stats, norm, fixerLog, setUtagPassword, utagPassword, listAudio, audioUrl, audioBlob, megaFolderLink, setMegaFolderLink, listMegaFolder, megaFolderBlob, getSession, setSession, clearSession, signIn, signUp, catalogSearch, catalogArtistSongs, matchLocal, findLocal, queueDatumRip, uploadReview, submitUpload, getRole };
 })();

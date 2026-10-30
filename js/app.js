@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v10.2';
+  const APP_VERSION = 'v10.3';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -815,6 +815,73 @@ const App = (() => {
     inp.click();
   }
 
+  /* v10.3 Settings upload review: one sheet per newly imported song.
+     The file is already in the SDB and stays there whatever happens
+     next — a failed submit never touches local audio. Dismissing the
+     sheet drops the rest of the queue. */
+  const UPLOAD_FIELD_LABEL = { title: 'Title', artist: 'Artist', album: 'Album', year: 'Year', genre: 'Genre', art: 'Artwork', lyrics: 'Lyrics' };
+  async function reviewSdbUploads(tracks) {
+    S._uploadReviews = (tracks || []).map(t => ({ track: t, review: null }));
+    S._uploadReviewIdx = 0;
+    await showNextUploadReview();
+  }
+  async function showNextUploadReview() {
+    const queue = S._uploadReviews;
+    if (!queue || S._uploadReviewIdx >= queue.length) { S._uploadReviews = null; return; }
+    const entry = queue[S._uploadReviewIdx];
+    const t = entry.track;
+    openSheet(`<div style="padding:10px 20px 24px"><h3 style="margin:8px 0 4px;font-size:17px">${esc(t.title)}</h3><div style="color:var(--sub);font-size:13px;margin-bottom:14px">${esc(t.artist)}</div><div class="sub">Checking the fixer…</div></div>`);
+    let review = null;
+    try { review = await UTAG.uploadReview(t); } catch (e) { review = null; }
+    if (!S._uploadReviews || queue[S._uploadReviewIdx] !== entry) return; // dismissed while checking
+    if (!review) {
+      toast('Could not check ' + (t.title || 'that song'));
+      S._uploadReviewIdx++;
+      await showNextUploadReview();
+      return;
+    }
+    entry.review = review;
+    if (review.engineFailed) {
+      openSheet(`<div style="padding:10px 20px 24px"><h3 style="margin:8px 0 4px;font-size:17px">${esc(t.title)}</h3><div style="color:var(--sub);font-size:13px;margin-bottom:14px">${esc(review.engineFailed)}</div><button class="bigbtn" data-act="upload-review-skip" style="width:100%">Done</button></div>`);
+      return;
+    }
+    const rows = (review.changes || []).map(c =>
+      `<div style="display:flex;justify-content:space-between;gap:12px;padding:9px 0;border-bottom:1px solid var(--line)"><span style="color:var(--sub);font-size:13px">${esc(UPLOAD_FIELD_LABEL[c.field] || c.field)}</span><span style="font-size:13px;text-align:right">${esc(c.from)} → ${esc(c.to)}</span></div>`).join('');
+    const deferredNote = review.catalog && !review.catalog.exists && !review.catalog.releaseExists && review.after && review.after.album && review.after.album !== 'Unknown Album'
+      ? `<div class="sub" style="margin-top:10px">New release: its release proposal goes in first, and the track proposal follows once the release exists.</div>` : '';
+    openSheet(`<div style="padding:10px 20px 24px"><h3 style="margin:8px 0 4px;font-size:17px">${esc(review.after.title || t.title)}</h3><div style="color:var(--sub);font-size:13px;margin-bottom:8px">${esc(review.after.artist || t.artist)}</div>`
+      + ((review.changes || []).length ? rows : `<div class="sub">No changes found.</div>`)
+      + deferredNote
+      + `<button class="bigbtn pink" data-act="upload-review-submit" style="width:100%;margin-top:16px">${(review.changes || []).length ? 'Submit' : 'Done'}</button>`
+      + ((review.changes || []).length ? `<button class="bigbtn" data-act="upload-review-skip" style="width:100%;margin-top:10px">Skip</button>` : '') + `</div>`);
+  }
+  async function submitUploadReview() {
+    const queue = S._uploadReviews;
+    const entry = queue && queue[S._uploadReviewIdx];
+    if (!entry || !entry.review) return;
+    if (!(entry.review.changes || []).length) {
+      closeSheet();
+      S._uploadReviewIdx++;
+      await showNextUploadReview();
+      return;
+    }
+    try {
+      const res = await UTAG.submitUpload(entry.review);
+      closeSheet();
+      toast(res && res.toast ? res.toast : 'Submitted');
+      await refreshTracks(); render();
+      S._uploadReviewIdx++;
+      await showNextUploadReview();
+    } catch (e) {
+      toast('Could not submit: ' + (e && e.message ? e.message : 'unknown error'));
+    }
+  }
+  async function skipUploadReview() {
+    closeSheet();
+    if (S._uploadReviews) S._uploadReviewIdx++;
+    await showNextUploadReview();
+  }
+
   /* v7.0 library: Spotify-style. Header (avatar/title/search/+), filter
      chips, sort + grid toggle, pinned Liked Songs, then the library's
      playlists, followed artists, and albums. The SDB never appears here. */
@@ -1254,9 +1321,9 @@ const App = (() => {
       <div class="setrow" data-act="wipe" style="color:#ff7b7b"><div>Delete all music &amp; data</div></div>
     </div>`;
   }
-  /* SDB tab (Settings > SDB). Upload Audio reuses the existing import
-     pickers, so files and ZIPs go through the normal SDB pipeline and
-     UTAG enrichment. Import from UTAG is a single button that imports
+  /* SDB tab (Settings > SDB). Upload Audio runs files and ZIPs through
+     the normal SDB pipeline, then shows each newly imported song's
+     fixer review sheet, one at a time (v10.3). Import from UTAG is a single button that imports
      every DATUM-linked track_audio row, downloading each with a signed
      URL from utag-control. Server and Drive rows are placeholders
      only: no auth, no file access, no importing code behind them. */
@@ -3044,8 +3111,42 @@ const App = (() => {
       case 'open-spotify-import': nav('spotifyImport'); break;
       case 'open-fixer-keys': nav('fixerKeys'); break;
       case 'open-sdb': nav('sdb'); break;
-      case 'sdb-upload': Importer.open(); break;
-      case 'sdb-upload-zip': Importer.openZip(); break;
+      /* v10.3 Settings upload: files and ZIPs go through the normal SDB
+         pipeline, then each newly imported song gets a fixer review
+         sheet, one at a time. Other import paths are untouched. */
+      case 'sdb-upload': {
+        const inp = document.createElement('input');
+        inp.type = 'file'; inp.multiple = true;
+        inp.accept = 'audio/*,.mp3,.m4a,.m4b,.aac,.wav,.flac,.ogg,.oga,.opus,.aiff,.aif';
+        inp.onchange = async () => {
+          const files = [...(inp.files || [])];
+          if (!files.length) return;
+          const done = [];
+          for (const file of files) {
+            try { await Importer.importFiles([file]); } catch (e) { toast('Could not import ' + file.name); continue; }
+            try { await refreshTracks(); } catch (e) {}
+            const t = S.tracks.find(x => x.fileName === file.name && x.fileSize === file.size);
+            if (t) done.push(t);
+          }
+          if (done.length) await reviewSdbUploads(done);
+        };
+        inp.click(); break;
+      }
+      case 'sdb-upload-zip': {
+        const inp = document.createElement('input');
+        inp.type = 'file';
+        inp.accept = '.zip,application/zip,application/x-zip-compressed';
+        inp.onchange = async () => {
+          const zf = inp.files && inp.files[0];
+          if (!zf) return;
+          const before = new Set(S.tracks.map(t => t.fileName + '|' + t.fileSize));
+          try { await Importer.importZip(zf); } catch (e) { toast('Could not import that zip'); return; }
+          try { await refreshTracks(); } catch (e) {}
+          const fresh = S.tracks.filter(t => !before.has(t.fileName + '|' + t.fileSize));
+          if (fresh.length) await reviewSdbUploads(fresh);
+        };
+        inp.click(); break;
+      }
       case 'sdb-server-placeholder': toast('Connect to server is not available yet'); break;
       case 'sdb-drive-placeholder': toast('Import from Google Drive is not available yet'); break;
       case 'sdb-import-all-utag': {
@@ -3382,6 +3483,8 @@ const App = (() => {
         break;
       }
       case 'cat-song': { const song = getCatSong(id); if (song) openCatSongSheet(song); break; }
+      case 'upload-review-submit': await submitUploadReview(); break;
+      case 'upload-review-skip': await skipUploadReview(); break;
       case 'cat-upload': { const song = getCatSong(id); if (song) await uploadCatSong(song); break; }
       case 'cat-queue': { const song = getCatSong(id); if (song) await queueCatSong(song); break; }
       case 'cat-signin': case 'cat-signup': {
@@ -3719,7 +3822,7 @@ const App = (() => {
 
     document.addEventListener('click', e => {
       const scrim = e.target.closest('#sheet-scrim');
-      if (scrim) { closeSheet(); return; }
+      if (scrim) { S._uploadReviews = null; closeSheet(); return; }
       const el = e.target.closest('[data-act]');
       if (!el) return;
       // dots button inside a track row shouldn't also trigger play
