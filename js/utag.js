@@ -208,15 +208,73 @@ const UTAG = (() => {
     try { localStorage.setItem('splotify_utag_pw', (v || '').trim()); } catch (e) {}
   }
 
-  /* Call the UTAG site's control function (fixer_save / fixer_log). */
+  /* Phase 2: unified-platform account session (device-local only).
+     Stored in localStorage, like the UTAG site password — never in
+     IndexedDB, never shared. The access_token becomes auth_token for
+     Phase 1 edge-function actions, which never accept the site password. */
+  const AUTH_URL = 'https://akusfgoeplfqwrrrywfl.supabase.co/auth/v1';
+  const SESSION_KEY = 'splotify_account_session';
+  function getSession() {
+    try {
+      const raw = localStorage.getItem(SESSION_KEY);
+      if (!raw) return null;
+      const s = JSON.parse(raw);
+      return (s && s.access_token) ? s : null;
+    } catch (e) { return null; }
+  }
+  function setSession(s) {
+    try {
+      if (!s || !s.access_token) localStorage.removeItem(SESSION_KEY);
+      else localStorage.setItem(SESSION_KEY, JSON.stringify({ access_token: s.access_token, email: s.email || '' }));
+    } catch (e) {}
+  }
+  function clearSession() { setSession(null); }
+  async function authRequest(path, email, password) {
+    const r = await fetch(AUTH_URL + path, {
+      method: 'POST',
+      headers: { apikey: ANON, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: (email || '').trim(), password: password || '' }),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      const msg = (data && (data.error_description || data.msg || data.message)) || ('Sign-in failed (HTTP ' + r.status + ')');
+      throw new Error(String(msg));
+    }
+    return data;
+  }
+  async function signIn(email, password) {
+    const data = await authRequest('/token?grant_type=password', email, password);
+    if (!data.access_token) throw new Error('Sign-in did not return a session');
+    const s = { access_token: data.access_token, email: (data.user && data.user.email) || (email || '').trim() };
+    setSession(s);
+    return s;
+  }
+  async function signUp(email, password) {
+    const data = await authRequest('/signup', email, password);
+    if (data.access_token) {
+      const s = { access_token: data.access_token, email: (data.user && data.user.email) || (email || '').trim() };
+      setSession(s);
+      return s;
+    }
+    // Some projects return a user without a session (email confirmation):
+    // a password sign-in right after creation still works when it does not.
+    return signIn(email, password);
+  }
+
+  /* Call the UTAG site's control function (fixer_save / fixer_log).
+     A stored account session adds auth_token alongside — never instead
+     of — the existing password path, so legacy actions keep working. */
   async function fnCall(payload) {
     const c = new AbortController();
     const tm = setTimeout(() => c.abort(), 25000);
     try {
+      const body = { ...(payload || {}) };
+      const sess = getSession();
+      if (sess && sess.access_token && !body.auth_token) body.auth_token = sess.access_token;
       const r = await fetch(FN_URL, {
         method: 'POST', signal: c.signal,
         headers: { apikey: ANON, Authorization: 'Bearer ' + ANON, 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(body),
       });
       const data = await r.json().catch(() => ({}));
       if (!r.ok || !data.ok) {
@@ -683,6 +741,80 @@ const UTAG = (() => {
     } catch (e) { throw new Error('Mega download failed: ' + (e && e.message ? e.message : 'unknown error')); }
   }
 
+  /* ---- Phase 2: shared catalog search + per-user DATUM queue ----
+     Reads shared metadata only; audio is never shared. A catalog failure
+     throws, and callers fail soft (local results are never broken by it). */
+  const ARTWORK_PUBLIC = 'https://akusfgoeplfqwrrrywfl.supabase.co/storage/v1/object/public/artwork/';
+  function catalogArt(rel) {
+    const arts = (rel && rel.artwork) || [];
+    const canon = arts.find(a => a.role === 'canonical') || arts[0];
+    if (!canon) return '';
+    return canon.stored_path ? ARTWORK_PUBLIC + canon.stored_path : (canon.source_url || '');
+  }
+  function catalogSongFromRow(tr) {
+    const rel = tr.releases || {};
+    return {
+      id: tr.id, title: tr.title || '',
+      artist: (tr.artists && tr.artists.canonical_name) || '',
+      artistId: tr.artist_id || null,
+      album: rel.title || '', year: rel.release_year || null,
+      art: catalogArt(rel),
+    };
+  }
+  function escLikePattern(s) {
+    return String(s || '').replace(/[%_\\]/g, '\\$&');
+  }
+  const CATALOG_TRACK_SELECT = 'id,title,artist_id,release_id,artists(canonical_name),releases(title,release_year,artwork(source_url,stored_path,role))';
+  async function catalogSearch(query) {
+    const q = String(query || '').trim();
+    if (!q) return { songs: [], artists: [] };
+    const pattern = '*' + escLikePattern(q) + '*';
+    // Settled, not all-or-nothing: one failed query must not discard
+    // the other side's results (fail soft is the whole point here).
+    const [aRes, tRes] = await Promise.allSettled([
+      fetchJSON(BASE + '/artists?select=id,canonical_name&canonical_name=ilike.' + encodeURIComponent(pattern) + '&order=canonical_name&limit=20', 9000),
+      fetchJSON(BASE + '/tracks?select=' + encodeURIComponent(CATALOG_TRACK_SELECT) + '&title=ilike.' + encodeURIComponent(pattern) + '&limit=50', 9000),
+    ]);
+    const artistRows = aRes.status === 'fulfilled' ? aRes.value : [];
+    const trackRows = tRes.status === 'fulfilled' ? tRes.value : [];
+    return {
+      artists: (artistRows || []).slice(0, 20).map(a => ({ id: a.id, name: a.canonical_name || '' })).filter(a => a.name),
+      songs: (trackRows || []).slice(0, 50).map(catalogSongFromRow),
+    };
+  }
+  async function catalogArtistSongs(artistId) {
+    if (!artistId) return [];
+    const rows = await fetchJSON(BASE + '/tracks?select=' + encodeURIComponent(CATALOG_TRACK_SELECT) + '&artist_id=eq.' + encodeURIComponent(artistId) + '&limit=200', 9000);
+    return (rows || []).map(catalogSongFromRow).sort((a, b) =>
+      ((b.year || 0) - (a.year || 0)) || String(a.title).localeCompare(String(b.title))).slice(0, 100);
+  }
+  /* A catalog song is playable when a local SDB track is that exact
+     catalog track (utagTrackId stamp from a Get-audio upload) or matches
+     it on normalized artist + title (UTAG.norm, same as lookup). */
+  function matchLocal(song, local) {
+    if (!song || !local) return false;
+    if (local.utagTrackId && song.id && String(local.utagTrackId) === String(song.id)) return true;
+    return keyFor(song.artist, song.title) === keyFor(local.artist, local.title);
+  }
+  function findLocal(song, localTracks) {
+    const list = localTracks || [];
+    const byId = list.find(t => t && t.utagTrackId && song && song.id && String(t.utagTrackId) === String(song.id));
+    if (byId) return byId;
+    return list.find(t => matchLocal(song, t)) || null;
+  }
+  /* Queue a DATUM rip for one exact catalog track, owned by the caller.
+     Throws when not signed in; the UI shows the account sheet first. */
+  async function queueDatumRip(song) {
+    if (!getSession()) throw new Error('Sign in first');
+    if (!song || !song.id) throw new Error('Missing catalog track');
+    return fnCall({
+      action: 'datum_queue',
+      artist: song.artist || '', title: song.title || '',
+      album: song.album || '', release_year: song.year || null,
+      utag_track_id: song.id,
+    });
+  }
+
   try { window.addEventListener('online', () => drain()); } catch (e) {}
-  return { lookup, fixTrack, enrich, ensureLyrics, learn, submit, drain, migrate, stats, norm, fixerLog, setUtagPassword, utagPassword, listAudio, audioUrl, audioBlob, megaFolderLink, setMegaFolderLink, listMegaFolder, megaFolderBlob };
+  return { lookup, fixTrack, enrich, ensureLyrics, learn, submit, drain, migrate, stats, norm, fixerLog, setUtagPassword, utagPassword, listAudio, audioUrl, audioBlob, megaFolderLink, setMegaFolderLink, listMegaFolder, megaFolderBlob, getSession, setSession, clearSession, signIn, signUp, catalogSearch, catalogArtistSongs, matchLocal, findLocal, queueDatumRip };
 })();

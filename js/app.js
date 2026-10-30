@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v10.1';
+  const APP_VERSION = 'v10.2';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -21,6 +21,10 @@ const App = (() => {
     spReview: [], spMissed: [], spSummary: null, spBusy: false,
     // v7.0 utag audit state
     tagReview: [], tagAuditRunning: false,
+    // v10.2 catalog search (shared UTAG metadata; local results untouched).
+    // catQ: query last fetched/loading; catReady: its fetch settled.
+    catQ: '', catSongs: [], catArtists: [], catSeq: 0, catReady: false,
+    catArtist: null, _catTimer: null,
   };
   const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -669,9 +673,146 @@ const App = (() => {
       ${sHits.length ? `<div class="sectionhead"><h2>Songs</h2></div>${sHits.map(e => trackRow(e.t)).join('')}` : ''}
       ${als.length ? `<div class="sectionhead"><h2>Albums</h2></div>${als.map(a => row(a.name, 'Album \u2022 ' + a.artist, a.art, `data-act="open-album" data-id="${esc(a.key)}"`)).join('')}` : ''}
       ${ps.length ? `<div class="sectionhead"><h2>Playlists</h2></div>${ps.map(p => { const t = p.trackIds.map(id => S.byId.get(id)).find(x => x); return row(p.name, `Playlist \u2022 ${p.trackIds.length} songs`, t, `data-act="open-playlist" data-id="${p.id}"`); }).join('')}` : ''}
-      ${(!aHits.length && !sHits.length && !als.length && !ps.length) ? `<div class="empty"><h3>No results for "${esc(S.query)}"</h3><p>Check the spelling, or try an artist or song title.</p></div>` : ''}`;
+      ${(!aHits.length && !sHits.length && !als.length && !ps.length) ? `<div class="empty"><h3>No results for "${esc(S.query)}"</h3><p>Check the spelling, or try an artist or song title.</p></div>` : ''}
+      ${catBlock()}`;
     }
     return `<div class="searchbox">${icon('search')}<input id="q" placeholder="What do you want to listen to?" value="${esc(S.query)}" autocomplete="off"></div>${body}`;
+  }
+
+  /* ---------- v10.2 catalog search (shared UTAG metadata) ----------
+     Local SDB results above are untouched. Catalog sections render from
+     S.catSongs/S.catArtists when they belong to the current query; while
+     a fetch is in flight they show skeletons, and on failure they vanish
+     (fail soft — local results are never broken by a catalog error).
+     Rows are patched in place when a fetch settles, never by a full
+     re-render, so typing is never interrupted. */
+  function catBlock() {
+    // Only the search view with a query gets catalog sections.
+    if (!S.query.trim()) return '';
+    return `<div id="cat-block">${catArtistsHTML()}${catSongsHTML()}</div>`;
+  }
+  function catArtImg(song) {
+    if (song.art) return `<img class="art" src="${esc(song.art)}" alt="" loading="lazy" onerror="App.artErr(this)">`;
+    return `<div class="art art-ph">${icon('note')}</div>`;
+  }
+  function catSongRow(song) {
+    const local = (typeof UTAG !== 'undefined' && UTAG.findLocal) ? UTAG.findLocal(song, S.tracks) : null;
+    const sub = [song.artist, song.album, song.year].filter(x => x !== '' && x !== null && x !== undefined).join(' \u2022 ');
+    if (local) {
+      return `<div class="trow" data-act="play-track" data-id="${local.id}">${catArtImg(song)}<div class="tmeta"><div class="ttitle">${esc(song.title)}</div><div class="tsub">${esc(sub)}</div></div></div>`;
+    }
+    return `<div class="trow" data-act="cat-song" data-id="${esc(song.id)}">${catArtImg(song)}<div class="tmeta"><div class="ttitle">${esc(song.title)}</div><div class="tsub">${esc(sub)}</div></div><span style="color:var(--sub);font-size:12px;white-space:nowrap">Not downloaded</span></div>`;
+  }
+  function catSongsHTML() {
+    if (S.catQ !== S.query.trim()) return `<div id="cat-songs">${skelTrow()}${skelTrow()}</div>`;
+    if (!S.catReady) return `<div id="cat-songs">${skelTrow()}${skelTrow()}</div>`;
+    if (!S.catSongs.length) return `<div id="cat-songs"></div>`;
+    return `<div id="cat-songs"><div class="sectionhead"><h2>Catalog songs</h2></div>${S.catSongs.map(catSongRow).join('')}</div>`;
+  }
+  function catArtistRow(a) {
+    return `<div class="trow" data-act="open-cat-artist" data-id="${esc(a.id)}"><div class="lib-thumb lib-ph round">${icon('person', 'width:26px;height:26px')}</div><div class="tmeta"><div class="ttitle">${esc(a.name)}</div><div class="tsub">Artist</div></div></div>`;
+  }
+  function catArtistsHTML() {
+    if (S.catQ !== S.query.trim()) return `<div id="cat-artists">${skelTrow()}</div>`;
+    if (!S.catReady) return `<div id="cat-artists">${skelTrow()}</div>`;
+    if (!S.catArtists.length) return `<div id="cat-artists"></div>`;
+    return `<div id="cat-artists"><div class="sectionhead"><h2>Catalog artists</h2></div>${S.catArtists.map(catArtistRow).join('')}</div>`;
+  }
+  function paintCatalogSections() {
+    const songsEl = document.getElementById('cat-songs');
+    if (songsEl) songsEl.outerHTML = catSongsHTML();
+    const artsEl = document.getElementById('cat-artists');
+    if (artsEl) artsEl.outerHTML = catArtistsHTML();
+  }
+  function kickCatalog() {
+    const cur = S.stack[S.stack.length - 1] || {};
+    if (cur.v !== 'search') return;
+    const q = (S.query || '').trim();
+    if (!q) return;
+    if (q === S.catQ) return; // already have (or are fetching) this query
+    if (S._catTimer) clearTimeout(S._catTimer);
+    S._catTimer = setTimeout(async () => {
+      const qq = (S.query || '').trim();
+      if (!qq || qq !== q) return;
+      S.catQ = qq; S.catReady = false;
+      const seq = ++S.catSeq;
+      paintCatalogSections();
+      let res = null;
+      try { res = await UTAG.catalogSearch(qq); } catch (e) { res = null; }
+      if (seq !== S.catSeq) return; // a newer query took over
+      if (!res) { S.catSongs = []; S.catArtists = []; }
+      else { S.catSongs = res.songs || []; S.catArtists = res.artists || []; }
+      S.catReady = true;
+      paintCatalogSections();
+    }, 350);
+  }
+  function getCatSong(id) {
+    const sid = String(id);
+    const fromSearch = (S.catSongs || []).find(s => String(s.id) === sid);
+    if (fromSearch) return fromSearch;
+    if (S.catArtist && S.catArtist.songs) return (S.catArtist.songs || []).find(s => String(s.id) === sid) || null;
+    return null;
+  }
+  function vCatalogArtist(id) {
+    const ca = S.catArtist || {};
+    S.viewCtx = { kicker: 'PLAYING FROM SEARCH', name: ca.name || 'Catalog', kind: 'search', id: 'search' };
+    const head = `<div class="pagehead"><button class="iconbtn" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><h1>${esc(ca.name || 'Artist')}</h1><span style="width:44px"></span></div>`;
+    if (!ca || ca.id !== id) return head + `<div class="empty"><p>No songs found.</p></div>`;
+    if (ca.loading) return head + skelTrow() + skelTrow() + skelTrow();
+    if (!ca.songs || !ca.songs.length) return head + `<div class="empty"><p>No songs found.</p></div>`;
+    return head + `<div class="sectionhead"><h2>Songs</h2></div>${ca.songs.map(catSongRow).join('')}`;
+  }
+  /* Get audio sheet for a catalog-only song: exactly two options. */
+  function openCatSongSheet(song) {
+    if (!song) return;
+    const sub = [song.artist, song.album, song.year].filter(x => x !== '' && x !== null && x !== undefined).join(' \u2022 ');
+    openSheet(`<div style="padding:10px 20px 24px"><h3 style="margin:8px 0 4px;font-size:17px">${esc(song.title)}</h3><div style="color:var(--sub);font-size:13px;margin-bottom:14px">${esc(sub)}</div>`
+      + `<div class="sheet-item" data-act="cat-upload" data-id="${esc(song.id)}"><span><b>Upload audio</b></span></div>`
+      + `<div class="sheet-item" data-act="cat-queue" data-id="${esc(song.id)}"><span><b>Queue DATUM rip</b></span></div></div>`);
+  }
+  /* Minimal account sheet: shown only when a DATUM queue needs a sign-in.
+     The session is device-local; after sign-in the pending queue runs. */
+  function openAccountSheet(song) {
+    openSheet(`<div style="padding:10px 20px 24px"><h3 style="margin:8px 0 14px;font-size:17px">Sign in to queue a rip</h3>`
+      + `<input id="cat-email" type="email" placeholder="Email" autocomplete="email" autocapitalize="off" spellcheck="false" style="width:100%;box-sizing:border-box;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:13px 14px;color:var(--txt);font-size:16px;margin-bottom:10px" />`
+      + `<input id="cat-pass" type="password" placeholder="Password" autocomplete="current-password" style="width:100%;box-sizing:border-box;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:13px 14px;color:var(--txt);font-size:16px" />`
+      + `<button class="bigbtn pink" data-act="cat-signin" data-id="${esc(song.id)}" style="width:100%;margin-top:16px">Sign in</button>`
+      + `<button class="bigbtn" data-act="cat-signup" data-id="${esc(song.id)}" style="width:100%;margin-top:10px">Create account</button></div>`);
+    setTimeout(() => { const i = document.getElementById('cat-email'); if (i) i.focus(); }, 60);
+  }
+  async function queueCatSong(song) {
+    if (!song) return;
+    if (!UTAG.getSession()) { openAccountSheet(song); return; }
+    try {
+      const res = await UTAG.queueDatumRip(song);
+      closeSheet();
+      toast(res && res.duplicate ? 'Already queued' : 'Rip queued — will appear in Activity');
+    } catch (e) { toast('Could not queue rip: ' + (e && e.message ? e.message : 'unknown error')); }
+  }
+  async function uploadCatSong(song) {
+    if (!song) return;
+    closeSheet();
+    const inp = document.createElement('input');
+    inp.type = 'file';
+    inp.accept = 'audio/*,.mp3,.m4a,.m4b,.aac,.wav,.flac,.ogg,.oga,.opus,.aiff,.aif';
+    inp.onchange = async () => {
+      const file = inp.files && inp.files[0];
+      if (!file) return;
+      const before = new Set(S.tracks.map(t => t.id));
+      try { await Importer.importFiles([file]); } catch (e) { toast('Could not import that file'); return; }
+      try { await refreshTracks(); } catch (e) {}
+      const t = S.tracks.find(x => x.fileName === file.name && x.fileSize === file.size);
+      if (!t) { toast('Could not import that file'); return; }
+      try {
+        if (String(t.utagTrackId || '') !== String(song.id)) {
+          await DB.updateTrack(t.id, { utagTrackId: song.id });
+          t.utagTrackId = song.id;
+        }
+      } catch (e) {}
+      render();
+      toast(before.has(t.id) ? 'Already in your music' : 'Added to your music');
+    };
+    inp.click();
   }
 
   /* v7.0 library: Spotify-style. Header (avatar/title/search/+), filter
@@ -1887,6 +2028,7 @@ const App = (() => {
   const VIEWS = {
     home: vHome, search: vSearch, library: vLibrary, settings: vSettings,
     playlist: id => vPlaylist(id), album: id => vAlbum(id), artist: id => vArtist(id), artistReleases: id => vArtistReleases(id),
+    catalogArtist: id => vCatalogArtist(id),
     liked: vLiked, songs: vSongs, playlists: vPlaylists, albums: vAlbums, artists: vArtists,
     curated: id => vCurated(id), genre: id => vGenre(id),
     notifs: () => vStub('Notifications', 'bell', "You're all caught up."),
@@ -1946,6 +2088,9 @@ const App = (() => {
     const q = document.getElementById('q');
     if (q) {
       q.addEventListener('input', () => { S.query = q.value; const pos = q.selectionStart; render(); const nq = document.getElementById('q'); nq.focus(); nq.setSelectionRange(pos, pos); });
+      // v10.2: debounced catalog search for the current query (local
+      // results render immediately; catalog sections patch in place).
+      kickCatalog();
       if (qHadFocus) { q.focus(); q.setSelectionRange(q.value.length, q.value.length); }
     }
     const lq = document.getElementById('lib-q');
@@ -3221,6 +3366,38 @@ const App = (() => {
           else if (res) toast('Tags already match UTAG');
           else toast('Fix failed, try again');
         } catch (e) { console.warn('fix-track render failed', e); }
+        break;
+      }
+      /* v10.2 catalog: artist songs view, get-audio sheet, account sheet. */
+      case 'open-cat-artist': {
+        const a = (S.catArtists || []).find(x => String(x.id) === String(id));
+        S.catArtist = { id, name: a ? a.name : '', songs: [], loading: true, done: false };
+        nav('catalogArtist', id);
+        try {
+          const songs = await UTAG.catalogArtistSongs(id);
+          if (S.catArtist && S.catArtist.id === id) { S.catArtist.songs = songs || []; S.catArtist.loading = false; S.catArtist.done = true; render(); }
+        } catch (e) {
+          if (S.catArtist && S.catArtist.id === id) { S.catArtist.songs = []; S.catArtist.loading = false; S.catArtist.done = true; render(); }
+        }
+        break;
+      }
+      case 'cat-song': { const song = getCatSong(id); if (song) openCatSongSheet(song); break; }
+      case 'cat-upload': { const song = getCatSong(id); if (song) await uploadCatSong(song); break; }
+      case 'cat-queue': { const song = getCatSong(id); if (song) await queueCatSong(song); break; }
+      case 'cat-signin': case 'cat-signup': {
+        const song = getCatSong(id);
+        const emailEl = document.getElementById('cat-email');
+        const passEl = document.getElementById('cat-pass');
+        const email = emailEl ? emailEl.value.trim() : '';
+        const pass = passEl ? passEl.value : '';
+        if (!email || !pass) { toast('Enter an email and password'); break; }
+        try {
+          if (act === 'cat-signin') await UTAG.signIn(email, pass);
+          else await UTAG.signUp(email, pass);
+          closeSheet();
+          if (song) await queueCatSong(song);
+          else toast('Signed in');
+        } catch (e) { toast(e && e.message ? e.message : 'Sign-in failed'); }
         break;
       }
       case 'play-track': {
