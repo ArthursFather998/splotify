@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v10.5';
+  const APP_VERSION = 'v10.6';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -447,6 +447,12 @@ const App = (() => {
       DB.kvSet('playCounts', S.playCounts).catch(() => {});
       DB.kvSet('lastPlayed', S.lastPlayed).catch(() => {});
     }
+    /* Phase 6: one cloud history row per play, only for catalog-linked
+       tracks, best-effort — a failed write never interrupts playback. */
+    try {
+      const t = S.byId && S.byId.get(Number(id));
+      if (t && t.utagTrackId) UTAG.logHistory(t.utagTrackId);
+    } catch (e) {}
   }
   function recentCards() {
     // resolve recents to {name, artTrack, act}
@@ -899,7 +905,8 @@ const App = (() => {
     const p = a.profile || {};
     let out = head + `<div class="setgroup"><h2>Signed in</h2>`
       + `<div class="setrow"><div>${esc(p.email || '')}<div class="sub">${esc(p.role || 'standard')}</div></div></div>`
-      + `<div class="setrow" data-act="acct-signout"><div>Sign out</div></div></div>`;
+      + `<div class="setrow" data-act="acct-signout"><div>Sign out</div></div>`
+      + `<div class="setrow" data-act="acct-migrate"><div>Migrate local data to account<div class="sub">Playlists, liked, library, follows</div></div><span style="color:var(--sub)">${icon('chevR', 'width:20px;height:20px')}</span></div></div>`;
     if (a.isAdmin) out += `<div class="setgroup"><h2>Admin</h2><div class="setrow" data-act="open-accounts"><div>Accounts<div class="sub">Promote or demote users</div></div><span style="color:var(--sub)">${icon('chevR', 'width:20px;height:20px')}</span></div></div>`;
     return out;
   }
@@ -943,6 +950,67 @@ const App = (() => {
     else if (curIs('account')) await loadAccount();
     else if (curIs('accounts')) await loadAccounts();
     else render();
+  }
+  /* Phase 6: one-time local -> account migration. Local ids are mapped
+     to catalog UUIDs via the utagTrackId stamp; anything without a
+     catalog link is counted as unmapped, never invented, and local
+     data is never deleted whatever the outcome. Old local playCounts
+     are deliberately NOT turned into history rows (no timestamps exist
+     for them); they stay local-only. */
+  async function runAccountMigration() {
+    if (!UTAG.getSession()) { openSettingsAccountSheet(); return; }
+    toast('Migrating…');
+    try {
+      const toUuid = id => {
+        const t = S.byId && S.byId.get(Number(id));
+        return t && t.utagTrackId ? String(t.utagTrackId) : null;
+      };
+      const mapIds = ids => {
+        let unmapped = 0; const out = [];
+        for (const id of (ids || [])) { const u = toUuid(id); if (u) out.push(u); else unmapped++; }
+        return { out, unmapped };
+      };
+      const playlists = []; let plUnmapped = 0;
+      for (const p of (S._pls || [])) {
+        const m = mapIds(p.trackIds || []);
+        plUnmapped += m.unmapped;
+        playlists.push({ name: p.name, trackIds: m.out });
+      }
+      let likedIds = [];
+      try { likedIds = [...(Player.state.liked || [])]; } catch (e) { likedIds = await DB.kvGet('liked', []); }
+      const liked = mapIds(likedIds);
+      const library = mapIds(S.library || []);
+      let followedNames = [];
+      try { followedNames = (await DB.allArtists()).filter(a => a.followed).map(a => a.name); } catch (e) {}
+      const res = await UTAG.migrateLocalData({ playlists, liked: liked.out, library: library.out, followed: followedNames });
+      const migrated = res.items.migrated + res.liked.migrated + res.library.migrated + res.follows.migrated;
+      const skipped = res.items.skipped + res.liked.skipped + res.library.skipped + res.follows.skipped
+        + res.follows.unresolved + plUnmapped + liked.unmapped + library.unmapped;
+      try { await DB.kvSet('accountMigrationDone', { at: Date.now(), counts: res, unmapped: plUnmapped + liked.unmapped + library.unmapped }); } catch (e) {}
+      toast(`Migrated ${migrated} · skipped ${skipped} (already there or not in catalog)${res.failed ? ' · failed ' + res.failed : ''}`);
+    } catch (e) {
+      toast('Migration failed: ' + (e && e.message ? e.message : 'unknown error') + ' — local data untouched');
+    }
+  }
+  /* Offer the migration once, the first time an admin signs in and has
+     local data to move. The flag is set before the sheet shows, so
+     dismissing it (or tapping Later) never re-offers; the Account row
+     always offers it again manually. */
+  async function maybeOfferMigration() {
+    try {
+      if (!UTAG.getSession()) return;
+      if (await DB.kvGet('accountMigrationOffered', false)) return;
+      const role = await UTAG.getRole();
+      if (!role || role.kind !== 'admin') return;
+      const hasLocal = (S._pls && S._pls.length) || (S.library && S.library.length)
+        || (Player.state && Player.state.liked && Player.state.liked.size) || (S.followedArtists && S.followedArtists.size);
+      if (!hasLocal) return;
+      await DB.kvSet('accountMigrationOffered', true);
+      openSheet(`<div style="padding:10px 20px 24px"><h3 style="margin:8px 0 4px;font-size:17px">Migrate local data to account?</h3>`
+        + `<div style="color:var(--sub);font-size:13px;margin-bottom:14px">Playlists, liked songs, library and followed artists. Local data stays untouched.</div>`
+        + `<button class="bigbtn pink" data-act="acct-migrate-offer" style="width:100%">Migrate now</button>`
+        + `<button class="bigbtn" data-act="acct-migrate-later" style="width:100%;margin-top:10px">Later</button></div>`);
+    } catch (e) {}
   }
 
   /* v10.3 Settings upload review: one sheet per newly imported song.
@@ -3281,6 +3349,7 @@ const App = (() => {
           closeSheet();
           toast('Signed in');
           await refreshAcctViews();
+          maybeOfferMigration();
         } catch (e) { toast(e && e.message ? e.message : 'Sign-in failed'); }
         break;
       }
@@ -3292,6 +3361,14 @@ const App = (() => {
         showAuthGate();
         break;
       }
+      case 'acct-migrate': {
+        if (!UTAG.getSession()) { openSettingsAccountSheet(); break; }
+        if (!confirm('Migrate your local playlists, liked songs, library and followed artists to your account? Your local data stays untouched.')) break;
+        await runAccountMigration();
+        break;
+      }
+      case 'acct-migrate-offer': closeSheet(); await runAccountMigration(); break;
+      case 'acct-migrate-later': closeSheet(); break;
       case 'acct-set-role': {
         const role = el.dataset.role;
         const user = (S.users || []).find(u => String(u.id) === String(id));
@@ -4020,6 +4097,9 @@ const App = (() => {
       }).catch(() => {});
     }, 1500);
     await Player.init();
+    // Phase 6: one-time migration offer for a newly signed-in admin.
+    // Fire-and-forget: it never blocks boot or playback.
+    maybeOfferMigration();
 
     Player.on('track', () => { paintMini(); paintNowPlaying(); render(); });
     Player.on('state', () => { paintMini(); paintNowPlaying(); paintDbBgMode(); });

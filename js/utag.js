@@ -1090,6 +1090,146 @@ const UTAG = (() => {
   }
   async function setUserRole(id, role) { return fnCall({ action: 'set_role', target_user_id: id, role }); }
 
+  /* ---- Phase 6: per-user cloud data via direct PostgREST ----
+     Per-user tables carry owner-only RLS, so a signed-in user's own
+     token is the credential — no Edge Function action is involved.
+     Local SDB ids are numbers; cloud rows need catalog UUIDs, so only
+     catalog-linked tracks (utagTrackId stamp) can migrate. Anything
+     without a catalog link is counted as skipped, never invented. */
+  function jwtSub(token) {
+    try {
+      const part = String(token || '').split('.')[1];
+      if (!part) return null;
+      const b64 = part.replace(/-/g, '+').replace(/_/g, '/');
+      const json = decodeURIComponent(Array.prototype.map.call(atob(b64), c =>
+        '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2)).join(''));
+      return (JSON.parse(json) || {}).sub || null;
+    } catch (e) { return null; }
+  }
+  async function pgAuth(table, method, body, query) {
+    const s = getSession();
+    if (!s || !s.access_token) throw new Error('Sign in first');
+    const url = BASE + '/' + table + (query ? '?' + query : '');
+    const r = await fetch(url, {
+      method,
+      headers: {
+        apikey: ANON, Authorization: 'Bearer ' + s.access_token,
+        'Content-Type': 'application/json', Prefer: 'return=representation',
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    const data = await r.json().catch(() => null);
+    if (!r.ok) {
+      const e = new Error((data && data.message) || ('PostgREST ' + r.status));
+      e.status = r.status; throw e;
+    }
+    return data;
+  }
+  async function pgAuthGet(table, query) {
+    const data = await pgAuth(table, 'GET', undefined, query);
+    return Array.isArray(data) ? data : [];
+  }
+  /* One listening-history row per play, best-effort: any failure is
+     swallowed here so a history write can never interrupt playback. */
+  async function logHistory(catalogTrackId) {
+    try {
+      const s = getSession();
+      if (!s || !s.access_token || !catalogTrackId) return;
+      const uid = jwtSub(s.access_token);
+      if (!uid) return;
+      await pgAuth('listening_history', 'POST', {
+        user_id: uid, track_id: catalogTrackId,
+        played_at: new Date().toISOString(), source: 'splotify',
+      });
+    } catch (e) { /* fail soft by design */ }
+  }
+  async function resolveArtistId(name) {
+    const rows = await fetchJSON(BASE + '/artists?select=id,canonical_name&canonical_name=ilike.' +
+      encodeURIComponent('*' + escLikePattern(name) + '*') + '&limit=20', 9000);
+    const matches = (rows || []).filter(a => norm(a.canonical_name) === norm(name));
+    return matches.length === 1 ? matches[0].id : null;
+  }
+  /* One-time local -> account migration. Input is already mapped to
+     catalog UUIDs by the caller (playlists: [{name, trackIds}]);
+     unmapped local items never reach this function and are counted
+     by the caller instead. Idempotent: existing cloud rows are read
+     first and skipped; a reused playlist (same name) only gains the
+     tracks it does not already have, appended after its last item.
+     Local data is never deleted, whatever happens here. */
+  async function migrateLocalData(input, onProgress) {
+    const s = getSession();
+    if (!s || !s.access_token) throw new Error('Sign in first');
+    const uid = jwtSub(s.access_token);
+    if (!uid) throw new Error('Sign in first');
+    const inData = input || {};
+    const counts = {
+      playlists: { created: 0, reused: 0 }, items: { migrated: 0, skipped: 0 },
+      liked: { migrated: 0, skipped: 0 }, library: { migrated: 0, skipped: 0 },
+      follows: { migrated: 0, skipped: 0, unresolved: 0 }, failed: 0, error: null,
+    };
+    const report = () => { try { if (onProgress) onProgress(counts); } catch (e) {} };
+    const insertSkipDup = async (table, row, bucket) => {
+      try { await pgAuth(table, 'POST', row); bucket.migrated++; }
+      catch (e) { if (e && e.status === 409) bucket.skipped++; else { counts.failed++; counts.error = e.message || String(e); } }
+      report();
+    };
+    const enc = v => encodeURIComponent(v);
+    // Library + liked: dedupe against existing cloud rows first.
+    const libExisting = new Set((await pgAuthGet('user_library', 'select=track_id')).map(r => r.track_id));
+    for (const tid of (inData.library || [])) {
+      if (libExisting.has(tid)) { counts.library.skipped++; report(); continue; }
+      await insertSkipDup('user_library', { user_id: uid, track_id: tid }, counts.library);
+    }
+    const likedExisting = new Set((await pgAuthGet('user_liked', 'select=track_id')).map(r => r.track_id));
+    for (const tid of (inData.liked || [])) {
+      if (likedExisting.has(tid)) { counts.liked.skipped++; report(); continue; }
+      await insertSkipDup('user_liked', { user_id: uid, track_id: tid }, counts.liked);
+    }
+    // Follows: resolve each local name to exactly one catalog artist.
+    const folExisting = new Set((await pgAuthGet('user_follows', 'select=artist_id')).map(r => r.artist_id));
+    for (const name of (inData.followed || [])) {
+      let aid = null;
+      try { aid = await resolveArtistId(name); } catch (e) { aid = null; }
+      if (!aid) { counts.follows.unresolved++; report(); continue; }
+      if (folExisting.has(aid)) { counts.follows.skipped++; report(); continue; }
+      await insertSkipDup('user_follows', { user_id: uid, artist_id: aid }, counts.follows);
+    }
+    // Playlists: reuse by name (case-insensitive), else create.
+    const cloudPls = await pgAuthGet('user_playlists', 'select=id,name');
+    for (const pl of (inData.playlists || [])) {
+      const name = String(pl.name || '').trim();
+      if (!name) continue;
+      let cloudId = null;
+      const found = cloudPls.find(p => norm(p.name) === norm(name));
+      if (found) { cloudId = found.id; counts.playlists.reused++; }
+      else {
+        try {
+          const created = await pgAuth('user_playlists', 'POST', { user_id: uid, name });
+          cloudId = created && created[0] && created[0].id;
+          if (!cloudId) throw new Error('Playlist create returned no id');
+          cloudPls.push({ id: cloudId, name });
+          counts.playlists.created++;
+        } catch (e) { counts.failed++; counts.error = e.message || String(e); report(); continue; }
+      }
+      report();
+      const items = await pgAuthGet('user_playlist_items',
+        'select=track_id,position&playlist_id=eq.' + enc(cloudId) + '&order=position&limit=1000');
+      // Skip only tracks already in the cloud playlist (pre-existing
+      // set). Newly inserted ids are NOT added here, so a local list
+      // that repeats a track keeps both copies at distinct positions;
+      // a second migration run re-reads the cloud rows and skips them.
+      const have = new Set(items.map(i => i.track_id));
+      let pos = items.reduce((m, i) => Math.max(m, Number(i.position) || 0), -1) + 1;
+      for (const tid of (pl.trackIds || [])) {
+        if (have.has(tid)) { counts.items.skipped++; report(); continue; }
+        await insertSkipDup('user_playlist_items',
+          { playlist_id: cloudId, track_id: tid, position: pos++ }, counts.items);
+      }
+    }
+    report();
+    return counts;
+  }
+
   try { window.addEventListener('online', () => drain()); } catch (e) {}
-  return { lookup, fixTrack, enrich, ensureLyrics, learn, submit, drain, migrate, stats, norm, fixerLog, listAudio, audioUrl, audioBlob, megaFolderLink, setMegaFolderLink, listMegaFolder, megaFolderBlob, getSession, setSession, clearSession, signIn, signUp, catalogSearch, catalogArtistSongs, matchLocal, findLocal, queueDatumRip, uploadReview, submitUpload, getRole, activityData, approveProposal, rejectProposal, retryDatumJob, adminUsers, setUserRole, refreshSession };
+  return { lookup, fixTrack, enrich, ensureLyrics, learn, submit, drain, migrate, stats, norm, fixerLog, listAudio, audioUrl, audioBlob, megaFolderLink, setMegaFolderLink, listMegaFolder, megaFolderBlob, getSession, setSession, clearSession, signIn, signUp, catalogSearch, catalogArtistSongs, matchLocal, findLocal, queueDatumRip, uploadReview, submitUpload, getRole, activityData, approveProposal, rejectProposal, retryDatumJob, adminUsers, setUserRole, refreshSession, logHistory, migrateLocalData };
 })();
