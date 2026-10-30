@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v10.3';
+  const APP_VERSION = 'v10.4';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -815,6 +815,118 @@ const App = (() => {
     inp.click();
   }
 
+  /* ---- v10.4 Settings > Activity + account management ----
+     Activity lives in Settings, never as a main tab. Standard users see
+     only their own proposals, jobs, and events (the server scopes all
+     three); admins additionally see the full Review queue and the full
+     DATUM queue. Nothing here gates playback, library, or SDB import. */
+  function actDate(iso) {
+    try { return new Date(iso).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }); } catch (e) { return ''; }
+  }
+  function actFields(fields) {
+    const f = fields || {};
+    const parts = Object.keys(f).map(k => k + ': ' + String(f[k]));
+    const s = parts.join(' · ');
+    return s.length > 160 ? s.slice(0, 160) + '…' : s;
+  }
+  function actProposalRow(p, admin) {
+    const pending = p.status === 'pending';
+    return `<div class="setrow" style="align-items:flex-start"><div style="min-width:0"><div>${esc(p.entity_type || '')}${p.entity_id ? '' : ' (new)'}<span class="sub"> · ${esc(p.status || '')}</span></div>`
+      + `<div class="sub" style="white-space:normal">${esc(actFields(p.fields))}</div>`
+      + `<div class="sub">${actDate(p.created_at)}${p.review_note ? ' · ' + esc(p.review_note) : ''}</div></div>`
+      + (admin && pending ? `<span style="display:flex;gap:6px;flex-shrink:0"><button class="mini-btn" data-act="act-approve" data-id="${esc(p.id)}">Approve</button><button class="mini-btn" data-act="act-reject" data-id="${esc(p.id)}">Reject</button></span>` : '') + `</div>`;
+  }
+  function actJobRow(j) {
+    const failed = j.status === 'failed';
+    return `<div class="setrow" style="align-items:flex-start"><div style="min-width:0"><div>${esc(j.artist || '')} — ${esc(j.title || '')}</div>`
+      + `<div class="sub">${esc(j.status || '')}${j.album ? ' · ' + esc(j.album) : ''}${failed && j.error ? ' · ' + esc(String(j.error).slice(0, 120)) : ''}</div>`
+      + `<div class="sub">${actDate(j.created_at)}</div></div>`
+      + (failed ? `<button class="mini-btn" data-act="act-retry" data-id="${esc(j.id)}" style="flex-shrink:0">Retry</button>` : '') + `</div>`;
+  }
+  async function loadActivity() {
+    S.act = { loading: true };
+    render();
+    try {
+      const data = await UTAG.activityData();
+      if (!data.signedIn) { S.act = { loading: false, signedIn: false }; render(); return; }
+      S.act = { loading: false, signedIn: true, ...data };
+    } catch (e) {
+      S.act = { loading: false, signedIn: false, error: e && e.message ? e.message : 'Could not load Activity' };
+    }
+    render();
+  }
+  function vActivity() {
+    const head = `<div class="pagehead"><button class="iconbtn" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><h1>Activity</h1><span style="width:44px"></span></div>`;
+    const a = S.act || {};
+    if (a.loading) return head + `<div style="padding:0 16px">${skelTrow()}${skelTrow()}${skelTrow()}</div>`;
+    if (!a.signedIn) return head + `<div class="empty"><h3>Sign in to see Activity</h3><p>Your proposals, DATUM jobs, and recent events.</p><button class="bigbtn pink" data-act="acct-open-sheet" style="margin-top:12px">Sign in</button></div>`;
+    const mine = (a.mine || []).map(p => actProposalRow(p, false)).join('');
+    const jobs = (a.jobs || []).map(actJobRow).join('');
+    const events = (a.events || []).map(ev => `<div class="setrow"><div><div>${esc(ev.event || '')}</div><div class="sub">${esc(ev.message || '')} · ${actDate(ev.created_at)}</div></div></div>`).join('');
+    let out = head;
+    out += `<div class="setgroup"><h2>My proposals</h2>${mine || '<div class="sub" style="padding:8px 4px">No proposals yet.</div>'}</div>`;
+    out += `<div class="setgroup"><h2>${a.isAdmin ? 'DATUM queue' : 'My DATUM jobs'}</h2>${jobs || '<div class="sub" style="padding:8px 4px">No DATUM jobs yet.</div>'}</div>`;
+    if (a.isAdmin) {
+      const pending = (a.review || []).filter(p => p.status === 'pending');
+      out += `<div class="setgroup"><h2>Review queue</h2>${pending.map(p => actProposalRow(p, true)).join('') || '<div class="sub" style="padding:8px 4px">Nothing waiting for review.</div>'}</div>`;
+    }
+    out += `<div class="setgroup"><h2>Recent activity</h2>${events || '<div class="sub" style="padding:8px 4px">Nothing yet.</div>'}</div>`;
+    return out;
+  }
+  function vAccount() {
+    const head = `<div class="pagehead"><button class="iconbtn" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><h1>Account</h1><span style="width:44px"></span></div>`;
+    const a = S.acct || {};
+    if (a.loading) return head + `<div style="padding:0 16px">${skelTrow()}${skelTrow()}</div>`;
+    if (!a.signedIn) return head + `<div class="empty"><h3>Not signed in</h3><p>Local playback works without an account.</p><button class="bigbtn pink" data-act="acct-open-sheet" style="margin-top:12px">Sign in</button></div>`;
+    const p = a.profile || {};
+    let out = head + `<div class="setgroup"><h2>Signed in</h2>`
+      + `<div class="setrow"><div>${esc(p.email || '')}<div class="sub">${esc(p.role || 'standard')}</div></div></div>`
+      + `<div class="setrow" data-act="acct-signout"><div>Sign out</div></div></div>`;
+    if (a.isAdmin) out += `<div class="setgroup"><h2>Admin</h2><div class="setrow" data-act="open-accounts"><div>Accounts<div class="sub">Promote or demote users</div></div><span style="color:var(--sub)">${icon('chevR', 'width:20px;height:20px')}</span></div></div>`;
+    return out;
+  }
+  async function loadAccount() {
+    S.acct = { loading: true };
+    render();
+    try {
+      const data = await UTAG.activityData();
+      if (!data.signedIn) { S.acct = { loading: false, signedIn: false }; render(); return; }
+      S.acct = { loading: false, signedIn: true, profile: data.profile, isAdmin: data.isAdmin };
+    } catch (e) { S.acct = { loading: false, signedIn: false }; }
+    render();
+  }
+  function vAccounts() {
+    const head = `<div class="pagehead"><button class="iconbtn" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><h1>Accounts</h1><span style="width:44px"></span></div>`;
+    const list = S.users || [];
+    if (S.usersLoading) return head + `<div style="padding:0 16px">${skelTrow()}${skelTrow()}${skelTrow()}</div>`;
+    return head + `<div class="setgroup"><h2>Users</h2>${list.map(u => `<div class="setrow" style="align-items:flex-start"><div style="min-width:0"><div>${esc(u.email || u.id)}</div><div class="sub">${esc(u.role || '')} · ${actDate(u.created_at)}</div></div>`
+      + `<button class="mini-btn" data-act="acct-set-role" data-id="${esc(u.id)}" data-role="${u.role === 'admin' ? 'standard' : 'admin'}" style="flex-shrink:0">${u.role === 'admin' ? 'Demote' : 'Promote'}</button></div>`).join('') || '<div class="sub" style="padding:8px 4px">No users found.</div>'}</div>`;
+  }
+  async function loadAccounts() {
+    S.usersLoading = true;
+    render();
+    try { S.users = await UTAG.adminUsers(); } catch (e) { toast(e && e.message ? e.message : 'Could not load users'); S.users = []; }
+    S.usersLoading = false;
+    render();
+  }
+  /* Settings account sheet: separate from the Phase 2 search sheet, which
+     stays untouched. After sign-in, the current Account/Activity view reloads. */
+  function openSettingsAccountSheet() {
+    openSheet(`<div style="padding:10px 20px 24px"><h3 style="margin:8px 0 14px;font-size:17px">Sign in</h3>`
+      + `<input id="acct-email" type="email" placeholder="Email" autocomplete="email" autocapitalize="off" spellcheck="false" style="width:100%;box-sizing:border-box;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:13px 14px;color:var(--txt);font-size:16px;margin-bottom:10px" />`
+      + `<input id="acct-pass" type="password" placeholder="Password" autocomplete="current-password" style="width:100%;box-sizing:border-box;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:13px 14px;color:var(--txt);font-size:16px" />`
+      + `<button class="bigbtn pink" data-act="acct-signin" style="width:100%;margin-top:16px">Sign in</button>`
+      + `<button class="bigbtn" data-act="acct-signup" style="width:100%;margin-top:10px">Create account</button></div>`);
+    setTimeout(() => { const i = document.getElementById('acct-email'); if (i) i.focus(); }, 60);
+  }
+  function curIs(v) { const cur = S.stack[S.stack.length - 1] || {}; return cur.v === v; }
+  async function refreshAcctViews() {
+    if (curIs('activity')) await loadActivity();
+    else if (curIs('account')) await loadAccount();
+    else if (curIs('accounts')) await loadAccounts();
+    else render();
+  }
+
   /* v10.3 Settings upload review: one sheet per newly imported song.
      The file is already in the SDB and stays there whatever happens
      next — a failed submit never touches local audio. Dismissing the
@@ -1295,6 +1407,10 @@ const App = (() => {
   function vSettings() {
     const n = S.tracks.length;
     return `<div class="pagehead"><button class="iconbtn" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><h1>Settings</h1><span style="width:44px"></span></div>
+    <div class="setgroup"><h2>Account</h2>
+      <div class="setrow" data-act="open-account"><div>Account<div class="sub" id="set-account">Checking…</div></div><span style="color:var(--sub)">${icon('chevR', 'width:20px;height:20px')}</span></div>
+      <div class="setrow" data-act="open-activity"><div>Activity<div class="sub">Your proposals, DATUM jobs, review queue</div></div><span style="color:var(--sub)">${icon('chevR', 'width:20px;height:20px')}</span></div>
+    </div>
     <div class="setgroup"><h2>Music</h2>
       <div class="setrow" data-act="open-sdb"><div>SDB<div class="sub">Upload audio, import from UTAG</div></div><span style="color:var(--sub)">${icon('chevR', 'width:20px;height:20px')}</span></div>
       <div class="setrow" data-act="export-hub"><div>Export music<div class="sub">Back up your songs to a link or Google Drive</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
@@ -2114,6 +2230,9 @@ const App = (() => {
     tagFixer: () => vTagFixer(),
     fixerKeys: () => vFixerKeys(),
     sdb: () => vSDB(),
+    activity: () => vActivity(),
+    account: () => vAccount(),
+    accounts: () => vAccounts(),
   };
   function render() {
     const cur = S.stack[S.stack.length - 1] || { v: 'home' };
@@ -2143,6 +2262,13 @@ const App = (() => {
           if (el) el.textContent = (s.cached ? s.cached + ' record' + (s.cached === 1 ? '' : 's') + ' cached on this device' : 'No records cached yet') +
             (s.waiting ? ' · ' + s.waiting + ' waiting to send' : '');
         }).catch(() => {});
+        // Signed-in account email, or Not signed in. A failed lookup
+        // (expired token) shows Not signed in without clearing the session.
+        if (!UTAG.getSession()) { const el = document.getElementById('set-account'); if (el) el.textContent = 'Not signed in'; }
+        else UTAG.activityData().then(d => {
+          const el = document.getElementById('set-account');
+          if (el) el.textContent = (d.signedIn && d.profile && d.profile.email) ? d.profile.email : 'Not signed in';
+        }).catch(() => { const el = document.getElementById('set-account'); if (el) el.textContent = 'Not signed in'; });
       } catch (e) {}
     }
     S._lastViewKey = cur.v + '|' + (cur.id || '');
@@ -3111,6 +3237,62 @@ const App = (() => {
       case 'open-spotify-import': nav('spotifyImport'); break;
       case 'open-fixer-keys': nav('fixerKeys'); break;
       case 'open-sdb': nav('sdb'); break;
+      /* v10.4 Activity + accounts (Settings). */
+      case 'open-activity': nav('activity'); await loadActivity(); break;
+      case 'open-account': nav('account'); await loadAccount(); break;
+      case 'open-accounts': nav('accounts'); await loadAccounts(); break;
+      case 'acct-open-sheet': openSettingsAccountSheet(); break;
+      case 'acct-signin': case 'acct-signup': {
+        const emailEl = document.getElementById('acct-email');
+        const passEl = document.getElementById('acct-pass');
+        const email = emailEl ? emailEl.value.trim() : '';
+        const pass = passEl ? passEl.value : '';
+        if (!email || !pass) { toast('Enter an email and password'); break; }
+        try {
+          if (act === 'acct-signin') await UTAG.signIn(email, pass);
+          else await UTAG.signUp(email, pass);
+          closeSheet();
+          toast('Signed in');
+          await refreshAcctViews();
+        } catch (e) { toast(e && e.message ? e.message : 'Sign-in failed'); }
+        break;
+      }
+      case 'acct-signout': {
+        try { UTAG.clearSession(); } catch (e) {}
+        S.acct = { loading: false, signedIn: false };
+        S.act = { loading: false, signedIn: false };
+        toast('Signed out');
+        render();
+        break;
+      }
+      case 'acct-set-role': {
+        const role = el.dataset.role;
+        const user = (S.users || []).find(u => String(u.id) === String(id));
+        const label = user ? (user.email || user.id) : id;
+        if (!role || (role !== 'admin' && role !== 'standard')) break;
+        if (!confirm(role === 'admin' ? `Make ${label} an admin?` : `Remove admin from ${label}?`)) break;
+        try { await UTAG.setUserRole(id, role); toast(role === 'admin' ? 'Promoted to admin' : 'Demoted to standard'); }
+        catch (e) { toast(e && e.message ? e.message : 'Role change failed'); }
+        await loadAccounts();
+        break;
+      }
+      case 'act-approve': {
+        try { await UTAG.approveProposal(id); toast('Proposal approved'); } catch (e) { toast(e && e.message ? e.message : 'Approve failed'); }
+        await loadActivity();
+        break;
+      }
+      case 'act-reject': {
+        const note = prompt('Rejection note (optional):');
+        if (note === null) break;
+        try { await UTAG.rejectProposal(id, note); toast('Proposal rejected'); } catch (e) { toast(e && e.message ? e.message : 'Reject failed'); }
+        await loadActivity();
+        break;
+      }
+      case 'act-retry': {
+        try { await UTAG.retryDatumJob(id); toast('Job queued again'); } catch (e) { toast(e && e.message ? e.message : 'Retry failed'); }
+        await loadActivity();
+        break;
+      }
       /* v10.3 Settings upload: files and ZIPs go through the normal SDB
          pipeline, then each newly imported song gets a fixer review
          sheet, one at a time. Other import paths are untouched. */

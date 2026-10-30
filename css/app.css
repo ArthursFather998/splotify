@@ -104,6 +104,8 @@ input{font:inherit}
 .bigbtn{display:inline-flex;align-items:center;justify-content:center;height:48px;padding:0 32px;border-radius:24px;background:#fff;color:#111;font-size:15px;font-weight:700;margin-top:20px}
 .bigbtn.pink{background:var(--pink)}
 .bigbtn:active{transform:scale(.96)}
+.mini-btn{display:inline-flex;align-items:center;height:30px;padding:0 14px;border-radius:999px;background:var(--card);border:1px solid var(--line);color:var(--txt);font-size:13px;font-weight:700}
+.mini-btn:active{transform:scale(.96)}
 
 /* ---------- search ---------- */
 .searchbox{margin:calc(var(--sat) + 12px) 16px 4px;display:flex;align-items:center;gap:10px;background:#fff;border-radius:6px;height:48px;padding:0 12px;color:#111}

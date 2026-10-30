@@ -1016,6 +1016,38 @@ const UTAG = (() => {
     return { toast: 'Submitted for review', role: 'standard', submitted: proposals.map(p => p.entity_type), deferred };
   }
 
+  /* ---- Phase 4: Activity + account management (Settings) ----
+     All reads go through the Phase 1 edge-function actions, which scope
+     standard users to their own rows server-side. fnCall throws on a
+     failed action, so callers surface the server message as a toast. */
+  async function activityData() {
+    if (!getSession()) return { signedIn: false };
+    const me = await fnCall({ action: 'me' });
+    const profile = (me && me.profile) || null;
+    const isAdmin = !!(profile && profile.role === 'admin');
+    const [mineRes, jobsRes, eventsRes, reviewRes] = await Promise.allSettled([
+      fnCall({ action: 'metadata_proposal_list_mine' }),
+      fnCall({ action: 'datum_list' }),
+      fnCall({ action: 'activity_list' }),
+      isAdmin ? fnCall({ action: 'metadata_proposal_list_all' }) : Promise.resolve(null),
+    ]);
+    return {
+      signedIn: true, profile, isAdmin,
+      mine: mineRes.status === 'fulfilled' ? ((mineRes.value && mineRes.value.proposals) || []) : [],
+      jobs: jobsRes.status === 'fulfilled' ? ((jobsRes.value && jobsRes.value.jobs) || []) : [],
+      events: eventsRes.status === 'fulfilled' ? ((eventsRes.value && eventsRes.value.events) || []) : [],
+      review: reviewRes.status === 'fulfilled' && reviewRes.value ? ((reviewRes.value && reviewRes.value.proposals) || []) : [],
+    };
+  }
+  async function approveProposal(id) { return fnCall({ action: 'metadata_proposal_approve', proposal_id: id }); }
+  async function rejectProposal(id, note) { return fnCall({ action: 'metadata_proposal_reject', proposal_id: id, review_note: note || null }); }
+  async function retryDatumJob(id) { return fnCall({ action: 'datum_retry', job_id: id }); }
+  async function adminUsers() {
+    const data = await fnCall({ action: 'list_users' });
+    return (data && data.users) || [];
+  }
+  async function setUserRole(id, role) { return fnCall({ action: 'set_role', target_user_id: id, role }); }
+
   try { window.addEventListener('online', () => drain()); } catch (e) {}
-  return { lookup, fixTrack, enrich, ensureLyrics, learn, submit, drain, migrate, stats, norm, fixerLog, setUtagPassword, utagPassword, listAudio, audioUrl, audioBlob, megaFolderLink, setMegaFolderLink, listMegaFolder, megaFolderBlob, getSession, setSession, clearSession, signIn, signUp, catalogSearch, catalogArtistSongs, matchLocal, findLocal, queueDatumRip, uploadReview, submitUpload, getRole };
+  return { lookup, fixTrack, enrich, ensureLyrics, learn, submit, drain, migrate, stats, norm, fixerLog, setUtagPassword, utagPassword, listAudio, audioUrl, audioBlob, megaFolderLink, setMegaFolderLink, listMegaFolder, megaFolderBlob, getSession, setSession, clearSession, signIn, signUp, catalogSearch, catalogArtistSongs, matchLocal, findLocal, queueDatumRip, uploadReview, submitUpload, getRole, activityData, approveProposal, rejectProposal, retryDatumJob, adminUsers, setUserRole };
 })();
