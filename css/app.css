@@ -487,3 +487,7 @@ input{font:inherit}
 .fx-status.scanning{color:var(--pink)}
 .fx-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--pink);margin-right:6px;animation:fxpulse 1s infinite}
 @keyframes fxpulse{50%{opacity:.25}}
+
+/* Login gate: while the auth view is up, no tabs, miniplayer, or
+   Now Playing chrome is reachable. */
+body.auth-gate #tabbar, body.auth-gate #miniplayer, body.auth-gate #nowplaying{display:none!important}

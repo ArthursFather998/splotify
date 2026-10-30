@@ -873,11 +873,29 @@ const App = (() => {
     out += `<div class="setgroup"><h2>Recent activity</h2>${events || '<div class="sub" style="padding:8px 4px">Nothing yet.</div>'}</div>`;
     return out;
   }
+  /* Login gate view: the first thing a signed-out user sees, and the
+     only thing reachable until sign-in. Short labels only. */
+  function vAuth() {
+    return `<div style="padding:calc(var(--sat) + 32px) 20px 24px"><h1 style="font-size:28px;margin:8px 0 4px">Splotify</h1>`
+      + `<input id="auth-email" type="email" placeholder="Email" autocomplete="email" autocapitalize="off" spellcheck="false" style="width:100%;box-sizing:border-box;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:13px 14px;color:var(--txt);font-size:16px;margin-bottom:10px" />`
+      + `<input id="auth-pass" type="password" placeholder="Password" autocomplete="current-password" style="width:100%;box-sizing:border-box;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:13px 14px;color:var(--txt);font-size:16px" />`
+      + `<button class="bigbtn pink" data-act="auth-signin" style="width:100%;margin-top:16px">Sign in</button>`
+      + `<button class="bigbtn" data-act="auth-signup" style="width:100%;margin-top:10px">Create account</button></div>`;
+  }
+  /* Show the auth view and nothing else: pause playback, close sheets
+     and Now Playing, reset the stack, hide chrome via the body class. */
+  function showAuthGate() {
+    try { Player.pause(); } catch (e) {}
+    try { closeSheet(); } catch (e) {}
+    try { closeNP(); } catch (e) {}
+    S.stack = [{ v: 'auth' }]; S.tab = 'home';
+    render();
+  }
   function vAccount() {
     const head = `<div class="pagehead"><button class="iconbtn" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><h1>Account</h1><span style="width:44px"></span></div>`;
     const a = S.acct || {};
     if (a.loading) return head + `<div style="padding:0 16px">${skelTrow()}${skelTrow()}</div>`;
-    if (!a.signedIn) return head + `<div class="empty"><h3>Not signed in</h3><p>Local playback works without an account.</p><button class="bigbtn pink" data-act="acct-open-sheet" style="margin-top:12px">Sign in</button></div>`;
+    if (!a.signedIn) return head + `<div class="empty"><h3>Not signed in</h3><button class="bigbtn pink" data-act="acct-open-sheet" style="margin-top:12px">Sign in</button></div>`;
     const p = a.profile || {};
     let out = head + `<div class="setgroup"><h2>Signed in</h2>`
       + `<div class="setrow"><div>${esc(p.email || '')}<div class="sub">${esc(p.role || 'standard')}</div></div></div>`
@@ -2225,9 +2243,11 @@ const App = (() => {
     activity: () => vActivity(),
     account: () => vAccount(),
     accounts: () => vAccounts(),
+    auth: () => vAuth(),
   };
   function render() {
     const cur = S.stack[S.stack.length - 1] || { v: 'home' };
+    document.body.classList.toggle('auth-gate', cur.v === 'auth');
     const st = view().scrollTop;
     const sameView = S._lastViewKey === cur.v + '|' + (cur.id || '');
     const qHadFocus = document.activeElement && document.activeElement.id === 'q';
@@ -2306,6 +2326,7 @@ const App = (() => {
     try { const e = await DB.usage(); el.textContent = e.usage ? (e.usage / 1048576).toFixed(0) + ' MB stored on this iPhone' : 'Stored on this iPhone'; } catch (e) {}
   }
   function nav(v, id) {
+    if (typeof UTAG !== 'undefined' && UTAG.getSession && !UTAG.getSession()) { showAuthGate(); return; }
     if (['home', 'search', 'library'].includes(v)) { S.tab = v; S.stack = [{ v }]; }
     else S.stack.push({ v, id });
     render();
@@ -3234,6 +3255,20 @@ const App = (() => {
       case 'open-account': nav('account'); await loadAccount(); break;
       case 'open-accounts': nav('accounts'); await loadAccounts(); break;
       case 'acct-open-sheet': openSettingsAccountSheet(); break;
+      case 'auth-signin': case 'auth-signup': {
+        const emailEl = document.getElementById('auth-email');
+        const passEl = document.getElementById('auth-pass');
+        const email = emailEl ? emailEl.value.trim() : '';
+        const pass = passEl ? passEl.value : '';
+        if (!email || !pass) { toast('Enter an email and password'); break; }
+        try {
+          if (act === 'auth-signin') await UTAG.signIn(email, pass);
+          else await UTAG.signUp(email, pass);
+          toast('Signed in');
+          await boot();
+        } catch (e) { toast(e && e.message ? e.message : 'Sign-in failed'); }
+        break;
+      }
       case 'acct-signin': case 'acct-signup': {
         const emailEl = document.getElementById('acct-email');
         const passEl = document.getElementById('acct-pass');
@@ -3254,7 +3289,7 @@ const App = (() => {
         S.acct = { loading: false, signedIn: false };
         S.act = { loading: false, signedIn: false };
         toast('Signed out');
-        render();
+        showAuthGate();
         break;
       }
       case 'acct-set-role': {
@@ -3943,6 +3978,15 @@ const App = (() => {
     if (i >= 0) S._pls[i] = pl; else S._pls.push(pl);
   }
   async function boot() {
+    // Login gate: no session, no app. The auth view is the whole app until
+    // sign-in, and boot runs for real only after that.
+    if (!UTAG.getSession()) { showAuthGate(); return; }
+    if (S._booted) { S.stack = [{ v: 'home' }]; render(); return; }
+    S._booted = true;
+    // Silent refresh up front: fresh tokens return at once (no network);
+    // an invalid token drops back to the gate before anything loads.
+    // A network failure keeps the old session, so offline use still works.
+    try { const s = await UTAG.refreshSession(); if (!s) { showAuthGate(); return; } } catch (e) {}
     // Show skeleton content immediately: IndexedDB + the player take a moment,
     // and the view would otherwise sit blank on cold start.
     try { view().innerHTML = vSkeletonHome(); } catch (e) {}
@@ -4131,7 +4175,7 @@ const App = (() => {
   }
 
   return {
-    boot, nav, toast, logRecent, logPlay,
+    boot, nav, showAuthGate, toast, logRecent, logPlay,
     artURL, artImg, artErr,
     searchTier, rankArtistHits, rankSongHits, pickTopResult, vSearch,
     libraryAdd, libraryRemove, libraryHas,

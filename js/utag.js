@@ -219,10 +219,53 @@ const UTAG = (() => {
   function setSession(s) {
     try {
       if (!s || !s.access_token) localStorage.removeItem(SESSION_KEY);
-      else localStorage.setItem(SESSION_KEY, JSON.stringify({ access_token: s.access_token, email: s.email || '' }));
+      else localStorage.setItem(SESSION_KEY, JSON.stringify({
+        access_token: s.access_token,
+        refresh_token: s.refresh_token || null,
+        expires_at: s.expires_at || null,
+        email: s.email || '',
+      }));
     } catch (e) {}
   }
   function clearSession() { setSession(null); }
+  /* Build a stored session from an Auth response. expires_at from the
+     server is epoch seconds; stored as epoch ms for the 60s check below.
+     Old sessions without a refresh token keep working until the token
+     itself stops working — no refresh is invented for them. */
+  function sessionFromAuth(data, fallbackEmail) {
+    const d = data || {};
+    let expiresAt = null;
+    if (d.expires_at) expiresAt = Number(d.expires_at) * 1000;
+    else if (d.expires_in) expiresAt = Date.now() + Number(d.expires_in) * 1000;
+    return {
+      access_token: d.access_token || null,
+      refresh_token: d.refresh_token || null,
+      expires_at: expiresAt,
+      email: (d.user && d.user.email) || fallbackEmail || '',
+    };
+  }
+  /* Refresh only when the token is expired or expires within 60s.
+     Invalid/rejected refresh -> session cleared (signed out).
+     Network failure -> old session kept, user stays signed in offline. */
+  async function refreshSession() {
+    const s = getSession();
+    if (!s || !s.refresh_token) return s || null;
+    if (s.expires_at && Date.now() < Number(s.expires_at) - 60000) return s;
+    let r;
+    try {
+      r = await fetch(AUTH_URL + '/token?grant_type=refresh_token', {
+        method: 'POST',
+        headers: { apikey: ANON, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: s.refresh_token }),
+      });
+    } catch (e) { return s; }
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok || !data.access_token) { clearSession(); return null; }
+    const next = sessionFromAuth(data, s.email);
+    if (!next.refresh_token) next.refresh_token = s.refresh_token;
+    setSession(next);
+    return next;
+  }
   async function authRequest(path, email, password) {
     const r = await fetch(AUTH_URL + path, {
       method: 'POST',
@@ -239,14 +282,14 @@ const UTAG = (() => {
   async function signIn(email, password) {
     const data = await authRequest('/token?grant_type=password', email, password);
     if (!data.access_token) throw new Error('Sign-in did not return a session');
-    const s = { access_token: data.access_token, email: (data.user && data.user.email) || (email || '').trim() };
+    const s = sessionFromAuth(data, email);
     setSession(s);
     return s;
   }
   async function signUp(email, password) {
     const data = await authRequest('/signup', email, password);
     if (data.access_token) {
-      const s = { access_token: data.access_token, email: (data.user && data.user.email) || (email || '').trim() };
+      const s = sessionFromAuth(data, email);
       setSession(s);
       return s;
     }
@@ -1048,5 +1091,5 @@ const UTAG = (() => {
   async function setUserRole(id, role) { return fnCall({ action: 'set_role', target_user_id: id, role }); }
 
   try { window.addEventListener('online', () => drain()); } catch (e) {}
-  return { lookup, fixTrack, enrich, ensureLyrics, learn, submit, drain, migrate, stats, norm, fixerLog, listAudio, audioUrl, audioBlob, megaFolderLink, setMegaFolderLink, listMegaFolder, megaFolderBlob, getSession, setSession, clearSession, signIn, signUp, catalogSearch, catalogArtistSongs, matchLocal, findLocal, queueDatumRip, uploadReview, submitUpload, getRole, activityData, approveProposal, rejectProposal, retryDatumJob, adminUsers, setUserRole };
+  return { lookup, fixTrack, enrich, ensureLyrics, learn, submit, drain, migrate, stats, norm, fixerLog, listAudio, audioUrl, audioBlob, megaFolderLink, setMegaFolderLink, listMegaFolder, megaFolderBlob, getSession, setSession, clearSession, signIn, signUp, catalogSearch, catalogArtistSongs, matchLocal, findLocal, queueDatumRip, uploadReview, submitUpload, getRole, activityData, approveProposal, rejectProposal, retryDatumJob, adminUsers, setUserRole, refreshSession };
 })();

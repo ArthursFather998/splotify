@@ -185,6 +185,12 @@ const Player = (() => {
       emit('queue', null);
     },
     async playContext(ctx, trackIds, startId) {
+      // Login gate, single check at the play entry point: no session, no
+      // audio — show the auth view instead of starting playback.
+      if (typeof UTAG !== 'undefined' && UTAG.getSession && !UTAG.getSession()) {
+        try { App.showAuthGate(); } catch (e) {}
+        return;
+      }
       if (!trackIds.length) return;
       S.ctx = ctx; S.list = trackIds.slice(); S.order = null;
       let idx = startId != null ? trackIds.indexOf(startId) : 0;
