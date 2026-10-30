@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v10.4';
+  const APP_VERSION = 'v10.5';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -1425,7 +1425,7 @@ const App = (() => {
     </div>
     <div class="setgroup"><h2>Metadata</h2>
       <div class="setrow"><div>UTAG database<div class="sub" id="set-utag">Checking…</div></div><span style="color:var(--sub)">${icon('tag')}</span></div>
-      <div class="setrow" data-act="open-fixer-keys"><div>utag fixer keys<div class="sub">AcoustID, fanart.tv and the UTAG site password</div></div><span style="color:var(--sub)">${icon('chevR', 'width:20px;height:20px')}</span></div>
+      <div class="setrow" data-act="open-fixer-keys"><div>utag fixer keys<div class="sub">AcoustID and fanart.tv</div></div><span style="color:var(--sub)">${icon('chevR', 'width:20px;height:20px')}</span></div>
     </div>
     <div class="setgroup"><h2>App</h2>
       <div class="setrow" id="update-row" data-act="check-update"><div>App updates<div class="sub" id="update-sub">Checking for updates…</div></div><span class="updpill" id="update-pill">…</span></div>
@@ -1450,7 +1450,7 @@ const App = (() => {
       <div class="setrow" data-act="sdb-upload-zip"><div>Upload a ZIP<div class="sub">Pull the songs out of a zip file</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
     </div>
     <div class="setgroup"><h2>Import from UTAG</h2>
-      <div class="sub" style="padding:0 4px 8px">Audio ripped by DATUM and linked to UTAG tracks. Needs the UTAG site password in utag fixer keys.</div>
+      <div class="sub" style="padding:0 4px 8px">Audio ripped by DATUM and linked to UTAG tracks. Sign in to import it.</div>
       <div id="sdb-utag-list"><div class="sub" style="padding:8px 4px">Loading UTAG audio…</div></div>
     </div>
     <div class="setgroup"><h2>Import from Mega folder</h2>
@@ -1493,8 +1493,7 @@ const App = (() => {
       <div class="setrow" data-act="sdb-import-all-utag"><div>Import all from UTAG<div class="sub">Download every DATUM song into the SDB</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
       <div id="sdb-utag-progress" class="sub" style="padding:8px 4px"></div>`;
   }
-  /* utag fixer keys: AcoustID + fanart.tv for the engine, and the UTAG site
-     password for library saves + Activity logging. The engine reads
+  /* utag fixer keys: AcoustID + fanart.tv for the engine. The engine reads
      utag_acoustid_key / utag_fanart_key from this origin's localStorage.
      Everything here is stored only on this iPhone. */
   function vFixerKeys() {
@@ -1508,14 +1507,12 @@ const App = (() => {
       <p class="sub" style="margin:6px 0 4px">The fixer runs on this iPhone — audio never leaves it. These keys unlock its sources. Stored only on this device, never uploaded.</p>
       ${inp('set-acoustid', 'AcoustID API key', 'Identifies songs by their sound when tags and file names are both useless.')}
       ${inp('set-fanart', 'fanart.tv API key', 'Extra artwork source for the fixer.')}
-      ${inp('set-utagpw', 'UTAG site password', 'Lets the fixer save results to the UTAG library and log to its Activity tab.', 'password')}
     </div>`;
   }
   function bindFixerKeys() {
     try {
       const ka = document.getElementById('set-acoustid');
       const kf = document.getElementById('set-fanart');
-      const kp = document.getElementById('set-utagpw');
       if (ka && !ka.dataset.bound) {
         ka.dataset.bound = '1';
         ka.value = localStorage.getItem('utag_acoustid_key') || '';
@@ -1525,11 +1522,6 @@ const App = (() => {
         kf.dataset.bound = '1';
         kf.value = localStorage.getItem('utag_fanart_key') || '';
         kf.addEventListener('change', () => { try { localStorage.setItem('utag_fanart_key', kf.value.trim()); toast('fanart.tv key saved on this iPhone'); } catch (e) {} });
-      }
-      if (kp && !kp.dataset.bound) {
-        kp.dataset.bound = '1';
-        kp.value = UTAG.utagPassword();
-        kp.addEventListener('change', () => { try { UTAG.setUtagPassword(kp.value); toast('UTAG site password saved on this iPhone'); } catch (e) {} });
       }
     } catch (e) {}
   }
@@ -2823,7 +2815,7 @@ const App = (() => {
     set('fix-scanned', String(d.scanned));
     set('fix-matched', String(d.matched));
     set('fix-fixed', String(d.fixed));
-    set('fix-sources', 'utag fixer: ' + (d.fixed || 0) + ' fields fixed · ' + (d.sent || 0) + ' sent to Hermes');
+    set('fix-sources', 'utag fixer: ' + (d.fixed || 0) + ' fields fixed · ' + (d.sent || 0) + ' submitted');
     try { UTAG.stats().then(s => set('fix-memory', (s.cached ? s.cached + ' record' + (s.cached === 1 ? '' : 's') + ' cached from UTAG' : '') + (s.waiting ? (s.cached ? ' · ' : '') + s.waiting + ' waiting to send to UTAG' : ''))); } catch (e) {}
     try {
       const skipped = (S.tracks || []).filter(t => !trackNeedsFix(t)).length;
@@ -3012,8 +3004,8 @@ const App = (() => {
     const markProgress = () => { fixUI.lastProgressAt = Date.now(); };
     buildFixList(list);
     paintFixUI();
-    // Every run is logged in the utag fixer's Activity tab: one job for the
-    // run, one event per song the engine touches.
+    // Run logging used to go to the utag fixer's Activity tab; since
+    // Phase 5 fixerLog is a no-op and these calls return at once.
     let fixJobId = null;
     try {
       const jr = await UTAG.fixerLog('start', {
@@ -3080,11 +3072,11 @@ const App = (() => {
         job_id: fixJobId,
         status: 'done',
         result: 'Fixed ' + fixUI.fixed + ' fields on ' + fixUI.matched + ' of ' + fixUI.scanned + ' songs' +
-          (nq ? ', ' + nq + ' to review' : '') + (fixUI.sent ? ', ' + fixUI.sent + ' sent to Hermes' : '') + '.',
+          (nq ? ', ' + nq + ' to review' : '') + (fixUI.sent ? ', ' + fixUI.sent + ' submitted' : '') + '.',
       });
     } catch (e) {}
     toast(fixUI.scanned
-      ? `utag fixer: fixed ${fixUI.fixed} fields on ${fixUI.matched} songs` + (nq ? `, ${nq} to review` : '') + (fixUI.sent ? `, ${fixUI.sent} sent to Hermes` : '')
+      ? `utag fixer: fixed ${fixUI.fixed} fields on ${fixUI.matched} songs` + (nq ? `, ${nq} to review` : '') + (fixUI.sent ? `, ${fixUI.sent} submitted` : '')
       : 'utag fixer: tags already look good');
     } finally {
       // v8.1: the run can never wedge the button on "Fixing…" again.

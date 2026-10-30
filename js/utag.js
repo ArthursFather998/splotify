@@ -1,10 +1,10 @@
-/* UTAG client for Splotify (v10.3).
+/* UTAG client for Splotify (v10.5).
    Splotify's fixer engine is in-house (js/fixer.js) since v10.3: it asks
    the UTAG database first, then runs that engine on a miss.
    Lookup order: local UTAG cache (on-device) -> UTAG database (public read).
    Verified / highly confident records apply. Records UTAG is still working
    on come back as review proposals. Unknowns are submitted to UTAG for
-   Hermes to research (queued on-device until the submissions table exists,
+   review (queued on-device until the submissions table exists,
    then drained automatically). Hand edits are submitted as corrections. */
 const UTAG = (() => {
   const BASE = 'https://akusfgoeplfqwrrrywfl.supabase.co/rest/v1';
@@ -201,19 +201,11 @@ const UTAG = (() => {
     return enginePromise;
   }
 
-  /* UTAG site password (device-local). utag-control gates every write on
-     it; without it Splotify can only read the database. */
-  function utagPassword() {
-    try { return localStorage.getItem('splotify_utag_pw') || ''; } catch (e) { return ''; }
-  }
-  function setUtagPassword(v) {
-    try { localStorage.setItem('splotify_utag_pw', (v || '').trim()); } catch (e) {}
-  }
-
   /* Phase 2: unified-platform account session (device-local only).
-     Stored in localStorage, like the UTAG site password — never in
-     IndexedDB, never shared. The access_token becomes auth_token for
-     Phase 1 edge-function actions, which never accept the site password. */
+     Stored in localStorage — never in IndexedDB, never shared. The
+     access_token becomes auth_token for edge-function actions. Since
+     Phase 5, account auth is the only write credential: the old shared
+     site password is gone, and its localStorage key is left unused. */
   const AUTH_URL = 'https://akusfgoeplfqwrrrywfl.supabase.co/auth/v1';
   const SESSION_KEY = 'splotify_account_session';
   function getSession() {
@@ -263,9 +255,9 @@ const UTAG = (() => {
     return signIn(email, password);
   }
 
-  /* Call the UTAG site's control function (fixer_save / fixer_log).
-     A stored account session adds auth_token alongside — never instead
-     of — the existing password path, so legacy actions keep working. */
+  /* Call the control function. A stored account session adds auth_token;
+     since Phase 5 there is no password path at all — without a session,
+     authenticated actions fail with "Sign in first". */
   async function fnCall(payload) {
     const c = new AbortController();
     const tm = setTimeout(() => c.abort(), 25000);
@@ -286,13 +278,11 @@ const UTAG = (() => {
       return data;
     } finally { clearTimeout(tm); }
   }
-  /* Best-effort Activity-tab logging. Needs the site password; without it
-     there is nothing to log to, so it silently no-ops. */
+  /* Run logging went to the UTAG site's Activity tab, which retired in
+     Phase 5 (and the fixer_log action with it). Kept as a no-op so
+     existing callers need no changes. */
   async function fixerLog(op, data) {
-    const pw = utagPassword();
-    if (!pw) return null;
-    try { return await fnCall({ action: 'fixer_log', op, password: pw, ...(data || {}) }); }
-    catch (e) { return null; }
+    return null;
   }
 
   function missPayload(t) {
@@ -316,7 +306,7 @@ const UTAG = (() => {
     let eng;
     try { eng = await ensureEngine(); }
     catch (e) {
-      await log('error', 'fixer:auto', '"' + (t.title || 'Unknown Title') + '": fixer engine failed to load — queued for Hermes.');
+      await log('error', 'fixer:auto', '"' + (t.title || 'Unknown Title') + '": fixer engine failed to load — queued for review.');
       await submit('miss', missPayload(t));
       return { fixed: 0, queued: [], status: 'sent', note: 'Sent to UTAG' };
     }
@@ -326,13 +316,13 @@ const UTAG = (() => {
       info = await eng.parseFile(f);
       audit = await eng.auditFile(info, [], () => {});
     } catch (e) {
-      await log('error', 'fixer:auto', '"' + (t.title || 'Unknown Title') + '": engine error — queued for Hermes.');
+      await log('error', 'fixer:auto', '"' + (t.title || 'Unknown Title') + '": engine error — queued for review.');
       await submit('miss', missPayload(t));
       return { fixed: 0, queued: [], status: 'sent', note: 'Sent to UTAG' };
     }
     const proposals = (audit && audit.proposals) || [];
     if (!proposals.length && !(audit && audit.art) && !(audit && audit.lyrics)) {
-      await log('warn', 'fixer:auto', '"' + (info.title || t.title) + '" by ' + (info.artist || t.artist) + ': engine found nothing — queued for Hermes.');
+      await log('warn', 'fixer:auto', '"' + (info.title || t.title) + '" by ' + (info.artist || t.artist) + ': engine found nothing — queued for review.');
       await submit('miss', missPayload(t));
       return { fixed: 0, queued: [], status: 'sent', note: 'Sent to UTAG' };
     }
@@ -393,9 +383,8 @@ const UTAG = (() => {
       fileName: t.fileName || '', fileSize: t.fileSize || 0,
     };
     let savedUtag = false, queuedUtag = false;
-    const pw = utagPassword();
-    if (pw) {
-      try { await fnCall({ action: 'fixer_save', password: pw, ...payload }); savedUtag = true; }
+    if (getSession()) {
+      try { await fnCall({ action: 'fixer_save', ...payload }); savedUtag = true; }
       catch (e) { await submit('fixer_save', payload); queuedUtag = true; }
     } else {
       await submit('fixer_save', payload);
@@ -451,9 +440,8 @@ const UTAG = (() => {
       lyrics_source: ly.source || '', lyrics_status: ly.status || '',
       fileName: t.fileName || '', fileSize: t.fileSize || 0,
     };
-    const pw = utagPassword();
-    if (pw) {
-      try { await fnCall({ action: 'fixer_save', password: pw, ...payload }); }
+    if (getSession()) {
+      try { await fnCall({ action: 'fixer_save', ...payload }); }
       catch (e) { await submit('fixer_save', payload); }
     } else {
       await submit('fixer_save', payload);
@@ -546,12 +534,11 @@ const UTAG = (() => {
       const all = await DB.outAll();
       for (const r of all || []) {
         /* Queued UTAG-library saves from the auto fixer: applied the moment
-           the site password exists. */
+           an account session exists (the server requires an admin role). */
         if (r.kind === 'fixer_save') {
-          const pw = utagPassword();
-          if (!pw) break;
+          if (!getSession()) break;
           try {
-            await fnCall({ action: 'fixer_save', password: pw, ...(r.payload || {}) });
+            await fnCall({ action: 'fixer_save', ...(r.payload || {}) });
             await DB.outDel(r.id);
           } catch (e) { break; }
           continue;
@@ -618,30 +605,46 @@ const UTAG = (() => {
     return { cached, waiting };
   }
 
-  /* DATUM / SDB: list audio linked to UTAG tracks (track_audio table).
-     Returns null when the table is not migrated yet or UTAG is
-     unreachable, so the SDB view can say so instead of crashing.
-     Audio bytes are never listed here, only metadata and paths. */
+  /* DATUM / SDB: list audio linked to UTAG tracks (track_audio_public
+     view: the track_audio columns minus mega_url). Returns null when
+     the view is not there yet or UTAG is unreachable, so the SDB view
+     can say so instead of crashing. Audio bytes are never listed here,
+     only metadata and paths. The view carries no foreign-key metadata,
+     so titles are fetched in a second query instead of an embedded join. */
   async function listAudio() {
     try {
-      const rows = await fetchJSON(BASE + '/track_audio?select=id,storage_path,file_name,source,created_at,tracks(title,artists(canonical_name))&order=created_at.desc&limit=200', 12000);
-      return (rows || []).map(r => ({
+      const rows = await fetchJSON(BASE + '/track_audio_public?select=id,storage_path,file_name,source,created_at,track_id&order=created_at.desc&limit=200', 12000);
+      const list = (rows || []).map(r => ({
         id: r.id, storage_path: r.storage_path, file_name: r.file_name || '',
         source: r.source || 'datum', created_at: r.created_at || '',
-        title: (r.tracks && r.tracks.title) || '',
-        artist: (r.tracks && r.tracks.artists && r.tracks.artists.canonical_name) || '',
+        title: '', artist: '',
       }));
+      const tids = [...new Set((rows || []).map(r => r.track_id).filter(Boolean))];
+      if (tids.length) {
+        try {
+          const trs = await fetchJSON(BASE + '/tracks?select=id,title,artists(canonical_name)&id=in.(' + tids.map(encodeURIComponent).join(',') + ')', 12000);
+          const byId = new Map((trs || []).map(t => [String(t.id), t]));
+          const tByRow = new Map((rows || []).map(r => [String(r.id), r.track_id]));
+          for (const item of list) {
+            const t = byId.get(String(tByRow.get(String(item.id)) || ''));
+            if (t) {
+              item.title = t.title || '';
+              item.artist = (t.artists && t.artists.canonical_name) || '';
+            }
+          }
+        } catch (e) { /* titles stay blank; the audio list still works */ }
+      }
+      return list;
     } catch (e) { return null; }
   }
 
   /* DATUM / SDB: signed URL for one track_audio row, via utag-control.
-     Gated by the UTAG site password already stored on this iPhone.
-     Without it, or before utag-control is redeployed with audio_url,
-     this throws a readable error for the SDB view to show. */
+     Gated by the account session: the server returns audio only to its
+     owner or an admin. Without a session this throws a readable error
+     for the SDB view to show. */
   async function audioUrl(audioId) {
-    const pw = utagPassword();
-    if (!pw) throw new Error('Add the UTAG site password in utag fixer keys first');
-    const data = await fnCall({ action: 'audio_url', password: pw, audio_id: audioId });
+    if (!getSession()) throw new Error('Sign in first');
+    const data = await fnCall({ action: 'audio_url', audio_id: audioId });
     if (!data.signed_url && !data.mega_url) throw new Error('UTAG did not return a download link');
     return data.mega_url || data.signed_url;
   }
@@ -659,9 +662,8 @@ const UTAG = (() => {
      path is written, not yet phone-tested: it needs a real Mega
      link from a real Mega upload before it can be claimed live. */
   async function audioBlob(audioId) {
-    const pw = utagPassword();
-    if (!pw) throw new Error('Add the UTAG site password in utag fixer keys first');
-    const data = await fnCall({ action: 'audio_url', password: pw, audio_id: audioId });
+    if (!getSession()) throw new Error('Sign in first');
+    const data = await fnCall({ action: 'audio_url', audio_id: audioId });
     if (data.mega_url) {
       try {
         const mega = await import('https://esm.sh/megajs');
@@ -676,8 +678,8 @@ const UTAG = (() => {
     return await r.blob();
   }
 
-  /* Mega folder import (SDB > Import from Mega folder). No Mega login and
-     no UTAG password needed: a public folder link pasted once, stored only
+  /* Mega folder import (SDB > Import from Mega folder). No Mega login
+     needed: a public folder link pasted once, stored only
      on this device. The link must include the key part after #, otherwise
      Mega cannot decrypt names. Listing is recursive at any depth, so the
      album-only layout and the reorganized Artist/Album/Song layout both
@@ -924,16 +926,14 @@ const UTAG = (() => {
       info: { trackNo: (info && info.trackNo) || t.trackNo || 0, discNo: (info && info.discNo) || t.discNo || 1, durationMs: (info && info.duration) ? Math.round(info.duration * 1000) : base.info.durationMs } };
   }
 
-  /* Role for a catalog submit, via the Phase 1 `me` action. A session
-     always decides by profile role; only with no session at all does
-     the legacy site password fall back to an admin direct save. */
+  /* Role for a catalog submit, via the Phase 1 `me` action. The session
+     decides by profile role; with no session there is no role. */
   async function getRole() {
     if (getSession()) {
       const data = await fnCall({ action: 'me' });
       const role = data && data.profile && data.profile.role;
       return { kind: role === 'admin' ? 'admin' : 'standard', role: role || 'standard' };
     }
-    if (utagPassword()) return { kind: 'legacy', role: 'admin' };
     return { kind: 'none', role: null };
   }
   function localPatchFromReview(review) {
@@ -952,7 +952,7 @@ const UTAG = (() => {
     }
     return patch;
   }
-  /* Submit a reviewed upload. Admin (session role or legacy password)
+  /* Submit a reviewed upload. Admin (session role)
      saves direct via fixer_save; a standard user gets one
      metadata_proposal per catalog entity touched, editable fields
      only. A throw leaves the SDB file and its local metadata exactly
@@ -965,7 +965,7 @@ const UTAG = (() => {
     const role = await getRole();
     if (role.kind === 'none') throw new Error('Sign in first');
     const after = review.after || {};
-    if (role.kind === 'admin' || role.kind === 'legacy') {
+    if (role.kind === 'admin') {
       const body = {
         action: 'fixer_save',
         artist: after.artist || '', title: after.title || '', album: after.album || '',
@@ -981,7 +981,6 @@ const UTAG = (() => {
         lyrics_status: review.lyrics ? (review.lyrics.status || '') : '',
         fileName: review.fileName || '', fileSize: review.fileSize || 0,
       };
-      if (role.kind === 'legacy') body.password = utagPassword();
       await fnCall(body);
       const patch = localPatchFromReview(review);
       if (Object.keys(patch).length && review.trackId != null) { try { await DB.updateTrack(review.trackId, patch); } catch (e) {} }
@@ -1049,5 +1048,5 @@ const UTAG = (() => {
   async function setUserRole(id, role) { return fnCall({ action: 'set_role', target_user_id: id, role }); }
 
   try { window.addEventListener('online', () => drain()); } catch (e) {}
-  return { lookup, fixTrack, enrich, ensureLyrics, learn, submit, drain, migrate, stats, norm, fixerLog, setUtagPassword, utagPassword, listAudio, audioUrl, audioBlob, megaFolderLink, setMegaFolderLink, listMegaFolder, megaFolderBlob, getSession, setSession, clearSession, signIn, signUp, catalogSearch, catalogArtistSongs, matchLocal, findLocal, queueDatumRip, uploadReview, submitUpload, getRole, activityData, approveProposal, rejectProposal, retryDatumJob, adminUsers, setUserRole };
+  return { lookup, fixTrack, enrich, ensureLyrics, learn, submit, drain, migrate, stats, norm, fixerLog, listAudio, audioUrl, audioBlob, megaFolderLink, setMegaFolderLink, listMegaFolder, megaFolderBlob, getSession, setSession, clearSession, signIn, signUp, catalogSearch, catalogArtistSongs, matchLocal, findLocal, queueDatumRip, uploadReview, submitUpload, getRole, activityData, approveProposal, rejectProposal, retryDatumJob, adminUsers, setUserRole };
 })();
