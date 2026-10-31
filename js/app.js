@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v10.12';
+  const APP_VERSION = 'v10.13';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -29,6 +29,10 @@ const App = (() => {
     // they never enter a play queue, Liked Songs, a playlist, or the
     // library until the song is downloaded (Get audio).
     searchAll: false, searchFilter: 'all',
+    // v10.13 search suggestions state, on-device only (never synced to
+    // the account): past search queries, and entities opened from
+    // search. Separate from S.recent, which is recently played.
+    searchQueries: [], searchRecents: [],
     catAlbumKey: '', catAlbum: null, catHomeName: '', catHome: null,
     catArtistRelName: '', catArtistRel: null,
     catalogAlbum: null,
@@ -428,6 +432,17 @@ const App = (() => {
   /* ---------- recents ---------- */
   async function loadRecent() {
     S.recent = await DB.kvGet('recent', []);
+    // v10.13: search history, sanitized so a corrupt row can never
+    // break the search view (queries are plain strings, recents are
+    // {kind, id, name, sub, art} snapshots).
+    try {
+      const qs = await DB.kvGet('searchQueries', []);
+      S.searchQueries = Array.isArray(qs) ? qs.filter(q => typeof q === 'string' && q.trim()).slice(0, 20) : [];
+    } catch (e) { S.searchQueries = []; }
+    try {
+      const rs = await DB.kvGet('searchRecents', []);
+      S.searchRecents = Array.isArray(rs) ? rs.filter(r => r && typeof r.kind === 'string' && r.id !== undefined && r.id !== null && typeof r.name === 'string').slice(0, 10) : [];
+    } catch (e) { S.searchRecents = []; }
     S.notifSeen = await DB.kvGet('notifSeen', true);
     // Per-song play counts + last-played timestamps: the taste signal behind
     // Made by Splotify. Written on every track start, throttled to disk.
@@ -631,13 +646,15 @@ const App = (() => {
   /* ---------- v10.7 search: one-to-one copy of the video layout,
      with Splotify pink (#fbb4d6) wherever the video uses green.
      Dark search bar (magnifier, X clear, Cancel), suggestion rows
-     (magnifier + diagonal arrow), an initial results list ending in a
-     pink "View all results for '…'" link, then a filtered view with
+     (magnifier + diagonal arrow), then a filtered view with
      scrollable Songs / Playlists / Artists / Albums pills, a top-artist
      block with Follow, a Featuring card rail (the user's own playlists
      featuring that artist), and merged local + catalog song/album rows.
      Catalog rows are never playable: they are greyed and open
-     the Get audio sheet. Podcasts are omitted: Splotify has none. */
+     the Get audio sheet. Podcasts are omitted: Splotify has none.
+     v10.13: the suggestions state itself follows the video (see the
+     v10.13 comment below); running a search is what reaches the
+     filtered view, there is no View all link in suggestions. */
   function searchData(q) {
     const plays = id => (S.playCounts && S.playCounts[id]) || 0;
     const seenA = new Set(); const aList = [];
@@ -660,19 +677,161 @@ const App = (() => {
     const top = pickTopResult(aHits, sHits);
     return { aHits, sHits, als, ps, top };
   }
+  /* ---------- v10.13 search suggestions: exactly the video's behavior.
+     Empty search shows Recent searches (entities, not queries). While
+     typing, the list is up to 5 text suggestions, past queries first
+     (clock icon), then completions (magnifier icon), with the typed
+     prefix dimmed when the suggestion starts with it. Tapping a
+     suggestion's text RUNS the search (filtered pills view, query
+     recorded); tapping its diagonal arrow only FILLS the bar and
+     stays in the suggestions view. Below the text suggestions is a
+     flat mixed list (artists, then albums, then songs), no section
+     headings, no View all button. Green in the video is Splotify
+     pink; there are no verified badges, and no explicit badge is
+     invented (none of Splotify's local/catalog rows carry one). */
+  function saveSearchQueries() { try { DB.kvSet('searchQueries', S.searchQueries).catch(() => {}); } catch (e) {} }
+  function saveSearchRecents() { try { DB.kvSet('searchRecents', S.searchRecents).catch(() => {}); } catch (e) {} }
+  function recordSearchQuery(q) {
+    const t = String(q || '').trim();
+    if (!t) return;
+    S.searchQueries = (S.searchQueries || []).filter(x => normKey(x) !== normKey(t));
+    S.searchQueries.unshift(t);
+    S.searchQueries = S.searchQueries.slice(0, 20);
+    saveSearchQueries();
+  }
+  function recordSearchRecent(e) {
+    if (!e || !e.kind || e.id === undefined || e.id === null || !e.name) return;
+    const id = String(e.id);
+    S.searchRecents = (S.searchRecents || []).filter(r => !(r.kind === e.kind && String(r.id) === id));
+    S.searchRecents.unshift({ kind: e.kind, id, name: String(e.name), sub: String(e.sub || ''), art: e.art || null });
+    S.searchRecents = S.searchRecents.slice(0, 10);
+    saveSearchRecents();
+  }
+  // Only actions taken from the search view count as search recents:
+  // opening an artist/album/playlist, playing a local song, or
+  // opening a catalog artist/album/song. Toggles, sheets and the
+  // search bar itself do not record anything.
+  function recordSearchRecentForAct(act, id) {
+    const cur = S.stack[S.stack.length - 1] || {};
+    if (cur.v !== 'search' || id === undefined || id === null) return;
+    try {
+      if (act === 'open-artist') recordSearchRecent({ kind: 'artist', id, name: id, sub: 'Artist' });
+      else if (act === 'open-album') { const a = albumByKey(id); if (a) recordSearchRecent({ kind: 'album', id, name: a.name, sub: 'Album • ' + a.artist }); }
+      else if (act === 'open-playlist') { const p = (S._pls || []).find(x => String(x.id) === String(id)); if (p) recordSearchRecent({ kind: 'playlist', id, name: p.name, sub: 'Playlist • ' + p.trackIds.length + ' songs' }); }
+      else if (act === 'open-cat-artist') { const a = (S.catArtists || []).find(x => String(x.id) === String(id)); recordSearchRecent({ kind: 'cat-artist', id, name: a ? a.name : String(id), sub: 'Artist' }); }
+      else if (act === 'open-cat-album') { const x = (S.catSongs || []).find(s => String(s.releaseId) === String(id)); if (x) recordSearchRecent({ kind: 'cat-album', id, name: x.album, sub: 'Album • ' + x.artist, art: x.art || null }); }
+      else if (act === 'play-track') { const t = S.byId.get(Number(id)); if (t) recordSearchRecent({ kind: 'song', id: String(t.id), name: t.title, sub: 'Song • ' + t.artist }); }
+      else if (act === 'cat-song') { const s = getCatSongAll(id); if (s) recordSearchRecent({ kind: 'cat-song', id: String(s.id), name: s.title, sub: 'Song • ' + s.artist, art: s.art || null }); }
+    } catch (e) {}
+  }
+  function executeSearch(q) {
+    const t = String(q || '').trim();
+    if (!t) return;
+    S.query = t; S.searchAll = true; S.searchFilter = 'all';
+    recordSearchQuery(t);
+    render();
+  }
+  function albumSaved(a) {
+    try { return (a.tracks || []).some(t => libraryHas(t.id)); } catch (e) { return false; }
+  }
   function searchBarHTML() {
     const q = S.query;
-    return `<div class="sp-searchbar">${icon('search')}<input id="q" placeholder="What do you want to listen to?" value="${esc(q)}" autocomplete="off">${q ? `<button class="sp-x" data-act="search-clear" aria-label="Clear search">${icon('x')}</button>` : ''}${q ? `<button class="sp-cancel" data-act="search-cancel">Cancel</button>` : ''}</div>`;
+    // Cancel is always visible while in the search view, as in the
+    // video, not only once text has been typed.
+    return `<div class="sp-searchbar">${icon('search')}<input id="q" placeholder="What do you want to listen to?" value="${esc(q)}" autocomplete="off">${q ? `<button class="sp-x" data-act="search-clear" aria-label="Clear search">${icon('x')}</button>` : ''}<button class="sp-cancel" data-act="search-cancel">Cancel</button></div>`;
+  }
+  function suggLabelHTML(text, q) {
+    const t = String(text || '');
+    if (q && t.toLowerCase().startsWith(q)) {
+      return `<span style="color:var(--sub)">${esc(t.slice(0, q.length))}</span>${esc(t.slice(q.length))}`;
+    }
+    return esc(t);
   }
   function searchSuggestionsHTML(q) {
-    const seen = new Set(); const out = [S.query.trim()];
-    const add = v => { const t = String(v || '').trim(); if (t && normKey(t) !== normKey(q) && !seen.has(normKey(t)) && out.length < 8) { seen.add(normKey(t)); out.push(t); } };
-    seen.add(normKey(q));
-    artists().forEach(a => { if (a.name.toLowerCase().includes(q)) add(a.name); });
-    S.tracks.forEach(t => { if (t.title.toLowerCase().includes(q)) add(t.title); if (t.album && t.album.toLowerCase().includes(q)) add(t.album); });
-    (S.catArtists || []).forEach(a => add(a.name));
-    (S.catSongs || []).forEach(x => add(x.title));
-    return out.map(v => `<div class="trow sp-sugg" data-act="search-suggest" data-id="${esc(v)}"><span style="display:flex;color:var(--sub)">${icon('search', 'width:24px;height:24px')}</span><div class="tmeta"><div class="ttitle">${esc(v)}</div></div><span style="display:flex;color:var(--sub)">${icon('diag', 'width:22px;height:22px')}</span></div>`).join('');
+    const seen = new Set(); const out = [];
+    const add = (v, history) => {
+      const t = String(v || '').trim();
+      if (!t || normKey(t) === normKey(q) || seen.has(normKey(t)) || out.length >= 5) return;
+      seen.add(normKey(t)); out.push({ text: t, history: !!history });
+    };
+    // Past queries first (clock), then completions (magnifier).
+    (S.searchQueries || []).forEach(v => { if (String(v).toLowerCase().startsWith(q)) add(v, true); });
+    artists().forEach(a => { if (a.name.toLowerCase().includes(q)) add(a.name, false); });
+    S.tracks.forEach(t => { if (t.title.toLowerCase().includes(q)) add(t.title, false); if (t.album && t.album.toLowerCase().includes(q)) add(t.album, false); });
+    (S.catArtists || []).forEach(a => { if (String(a.name || '').toLowerCase().includes(q)) add(a.name, false); });
+    (S.catSongs || []).forEach(x => { if (String(x.title || '').toLowerCase().includes(q)) add(x.title, false); if (x.album && String(x.album).toLowerCase().includes(q)) add(x.album, false); });
+    // The row itself runs the search; only the arrow button fills.
+    // document click delegation picks the nearest [data-act], so the
+    // arrow button wins over the row when it is tapped.
+    return out.map(v => `<div class="trow sp-sugg" data-act="search-suggest" data-id="${esc(v.text)}"><span style="display:flex;color:var(--sub)">${icon(v.history ? 'history' : 'search', 'width:24px;height:24px')}</span><div class="tmeta"><div class="ttitle">${suggLabelHTML(v.text, q)}</div></div><button class="sp-sugg-arrow" data-act="search-suggest-fill" data-id="${esc(v.text)}" aria-label="Fill search with ${esc(v.text)}">${icon('diag', 'width:22px;height:22px')}</button></div>`).join('');
+  }
+  // Flat mixed results for the suggestions state: artists, then
+  // albums, then songs, local first within each kind, catalog after.
+  // No section headings, no View all button.
+  function searchFlatHTML(d) {
+    const artistRows = d.aHits.slice(0, 3).map(searchArtistRow).join('')
+      + (S.catArtists || []).filter(a => !d.aHits.some(h => artistKey(h.name) === artistKey(a.name))).slice(0, 3)
+        .map(a => `<div class="trow" data-act="open-cat-artist" data-id="${esc(a.id)}"><div class="lib-thumb lib-ph round">${icon('person', 'width:26px;height:26px')}</div><div class="tmeta"><div class="ttitle">${esc(a.name)}</div><div class="tsub">Artist</div></div></div>`).join('');
+    const localAlb = d.als.slice(0, 3).map(a => `<div class="trow" data-act="open-album" data-id="${esc(a.key)}">${artImg(a.art, 'art')}<div class="tmeta"><div class="ttitle">${esc(a.name)}</div><div class="tsub">Album • ${esc(a.artist)}</div></div></div>`).join('');
+    const seenAlb = new Set(d.als.map(a => normKey(a.artist) + '|' + normKey(a.name)));
+    const byRel = new Map();
+    (S.catSongs || []).forEach(x => { if (x.releaseId && x.album && !byRel.has(x.releaseId)) byRel.set(x.releaseId, x); });
+    const catAlb = [...byRel.values()].filter(x => !seenAlb.has(normKey(x.artist) + '|' + normKey(x.album))).slice(0, 3)
+      .map(x => `<div class="trow" data-act="open-cat-album" data-id="${esc(x.releaseId)}">${catArtImg(x)}<div class="tmeta"><div class="ttitle">${esc(x.album)}</div><div class="tsub">Album • ${esc(x.artist)}</div></div></div>`).join('');
+    const songRows = d.sHits.slice(0, 10).map(e => searchSongRow(e.t)).join('')
+      + (S.catSongs || []).filter(x => !UTAG.findLocal(x, S.tracks)).slice(0, 10).map(x => catTrackRow(x, { sub: catSub(x) })).join('');
+    // Playlists last, so a playlist-only query never looks empty in
+    // the suggestions state; they are also in the filtered view.
+    const plRows = d.ps.slice(0, 3).map(pp => { const t = pp.trackIds.map(id => S.byId.get(id)).find(x => x); return `<div class="trow" data-act="open-playlist" data-id="${pp.id}">${t ? artImg(t, 'art') : `<div class="art art-ph">${icon('note')}</div>`}<div class="tmeta"><div class="ttitle">${esc(pp.name)}</div><div class="tsub">Playlist • ${pp.trackIds.length} songs</div></div></div>`; }).join('');
+    return artistRows + localAlb + catAlb + songRows + plRows;
+  }
+  // Recent searches (empty search): entity rows with art, title,
+  // type and artist, a library toggle where one applies, and an X
+  // that removes only that entry. Artist and catalog rows have no
+  // toggle in the video; catalog songs cannot be saved until
+  // downloaded, so they get none either.
+  function searchRecentHTML() {
+    const rows = [];
+    (S.searchRecents || []).forEach((e, i) => {
+      let art = `<div class="art art-ph">${icon('note')}</div>`, act = '', toggle = '';
+      if (e.kind === 'artist') {
+        const a = artistByName(e.id);
+        art = a && a.art ? artImg(a.art, 'art') : `<div class="lib-thumb lib-ph round">${icon('person', 'width:26px;height:26px')}</div>`;
+        act = `data-act="open-artist" data-id="${esc(e.id)}"`;
+      } else if (e.kind === 'album') {
+        const a = albumByKey(e.id);
+        if (a) {
+          art = artImg(a.art, 'art');
+          const saved = albumSaved(a);
+          toggle = `<button class="iconbtn search-save${saved ? ' saved' : ''}" data-act="search-toggle-album-lib" data-id="${esc(e.id)}" aria-label="${saved ? 'Saved' : 'Save'}">${icon(saved ? 'check' : 'plus')}</button>`;
+        }
+        act = `data-act="open-album" data-id="${esc(e.id)}"`;
+      } else if (e.kind === 'playlist') {
+        const p = (S._pls || []).find(x => String(x.id) === String(e.id));
+        if (p) { const t = p.trackIds.map(x => S.byId.get(x)).find(x => x); art = t ? artImg(t, 'art') : art; }
+        act = `data-act="open-playlist" data-id="${esc(e.id)}"`;
+      } else if (e.kind === 'song') {
+        const t = S.byId.get(Number(e.id));
+        if (t) {
+          art = artImg(t, 'art');
+          const saved = libraryHas(t.id);
+          toggle = `<button class="iconbtn search-save${saved ? ' saved' : ''}" data-act="track-toggle-lib" data-id="${t.id}" aria-label="${saved ? 'Saved' : 'Save'}">${icon(saved ? 'check' : 'plus')}</button>`;
+        }
+        act = `data-act="play-track" data-id="${esc(e.id)}"`;
+      } else if (e.kind === 'cat-artist') {
+        art = `<div class="lib-thumb lib-ph round">${icon('person', 'width:26px;height:26px')}</div>`;
+        act = `data-act="open-cat-artist" data-id="${esc(e.id)}"`;
+      } else if (e.kind === 'cat-album') {
+        art = e.art ? `<img class="art" src="${esc(e.art)}" alt="" loading="lazy" onerror="App.artErr(this)">` : art;
+        act = `data-act="open-cat-album" data-id="${esc(e.id)}"`;
+      } else if (e.kind === 'cat-song') {
+        art = e.art ? `<img class="art" src="${esc(e.art)}" alt="" loading="lazy" onerror="App.artErr(this)">` : art;
+        act = `data-act="cat-song" data-id="${esc(e.id)}"`;
+      } else return;
+      rows.push(`<div class="trow"><div style="cursor:pointer;display:flex;align-items:center;gap:12px;flex:1;min-width:0" ${act}>${art}<div class="tmeta"><div class="ttitle">${esc(e.name)}</div><div class="tsub">${esc(e.sub)}</div></div></div>${toggle}<button class="iconbtn" data-act="search-recent-remove" data-idx="${i}" aria-label="Remove from recent searches">${icon('x', 'width:20px;height:20px')}</button></div>`);
+    });
+    if (!rows.length) return '';
+    return `<div class="sectionhead"><h2>Recent searches</h2></div>${rows.join('')}`;
   }
   function searchArtistRow(h) {
     const t = S.tracks.find(t => t.art && trackArtistKeys(t).includes(h.key));
@@ -730,21 +889,6 @@ const App = (() => {
     if (!feats.length) return '';
     return `<div class="sectionhead"><h2>Featuring ${esc(d.top.a.name)}</h2></div><div class="sp-rail">${feats.map(pp => { const t = pp.trackIds.map(id => S.byId.get(id)).find(x => x && x.art); return `<div class="sp-featcard" data-act="open-playlist" data-id="${pp.id}">${artImg(t, '')}<div class="t">${esc(pp.name)}</div><div class="s">Playlist</div></div>`; }).join('')}</div>`;
   }
-  function searchSongsPreviewHTML(d) {
-    const rows = d.sHits.slice(0, 5).map(e => searchSongRow(e.t)).join('')
-      + (S.catSongs || []).filter(x => !UTAG.findLocal(x, S.tracks)).slice(0, 5).map(x => catTrackRow(x, { sub: catSub(x) })).join('');
-    return rows ? `<div class="sectionhead"><h2>Songs</h2></div>${rows}` : '';
-  }
-  function searchAlbumsPreviewHTML(d) {
-    const localRows = d.als.slice(0, 3).map(a => `<div class="trow" data-act="open-album" data-id="${esc(a.key)}">${artImg(a.art, 'art')}<div class="tmeta"><div class="ttitle">${esc(a.name)}</div><div class="tsub">Album • ${esc(a.artist)}</div></div></div>`).join('');
-    const seen = new Set(d.als.map(a => normKey(a.artist) + '|' + normKey(a.name)));
-    const byRel = new Map();
-    (S.catSongs || []).forEach(x => { if (x.releaseId && x.album && !byRel.has(x.releaseId)) byRel.set(x.releaseId, x); });
-    const catRows = [...byRel.values()].filter(x => !seen.has(normKey(x.artist) + '|' + normKey(x.album))).slice(0, 3)
-      .map(x => `<div class="trow" data-act="open-cat-album" data-id="${esc(x.releaseId)}">${catArtImg(x)}<div class="tmeta"><div class="ttitle">${esc(x.album)}</div><div class="tsub">Album • ${esc(x.artist)}</div></div></div>`).join('');
-    const rows = localRows + catRows;
-    return rows ? `<div class="sectionhead"><h2>Albums</h2></div>${rows}` : '';
-  }
   function paintSearchSections() {
     const cur = S.stack[S.stack.length - 1] || {};
     if (cur.v !== 'search' || !S.query.trim()) return;
@@ -752,10 +896,11 @@ const App = (() => {
     const d = searchData(q);
     const set = (id, html) => { const el = document.getElementById(id); if (el) el.innerHTML = html; };
     if (!S.searchAll) {
-      // Initial list: patch only the preview containers, so a catalog
-      // arrival never turns the preview into the full filtered list.
-      set('search-sec-songs', searchSongsPreviewHTML(d));
-      set('search-sec-albums', searchAlbumsPreviewHTML(d));
+      // Suggestions state: patch only the flat results container, so
+      // a catalog arrival never turns suggestions into the full
+      // filtered list, and never re-renders the text suggestions
+      // (which would steal the input's focus while typing).
+      set('search-sec-flat', searchFlatHTML(d));
       return;
     }
     set('search-sec-songs', searchSongsSection(d));
@@ -771,26 +916,21 @@ const App = (() => {
       const body = `<div class="browse-title">Browse all</div><div class="genre-grid">${GENRES.map((g, i) =>
         `<div class="genre" style="background:${colors[i % colors.length]}" data-act="open-genre" data-id="${esc(g)}"><span>${esc(g)}</span>${icon('note')}</div>`).join('')}</div>`
         + (S.tracks.length ? '' : `<div class="empty"><h3>Search your music</h3><p>Import songs first, then find them here.</p><button class="bigbtn" data-act="import">Add music</button></div>`);
-      return searchBarHTML() + body;
+      return searchBarHTML() + searchRecentHTML() + body;
     }
     const d = searchData(q);
     const anyLocal = d.aHits.length || d.sHits.length || d.als.length || d.ps.length;
     const anyCat = (S.catSongs || []).length || (S.catArtists || []).length;
     if (!S.searchAll) {
-      // Initial results list, as in the video: suggestions, then a short
-      // artist / playlist / song / album preview, then the pink link.
-      const previewArtists = d.aHits.slice(0, 3).map(searchArtistRow).join('');
-      const previewSongs = searchSongsPreviewHTML(d);
-      const previewAlbums = searchAlbumsPreviewHTML(d);
-      const previewPls = d.ps.slice(0, 3).map(pp => `<div class="trow" data-act="open-playlist" data-id="${pp.id}"><div class="tmeta"><div class="ttitle">${esc(pp.name)}</div><div class="tsub">Playlist • ${pp.trackIds.length} songs</div></div></div>`).join('');
+      // Suggestions state, as in the video: text suggestions, then
+      // the flat mixed list. Tapping a suggestion's text or pressing
+      // Enter runs the search (filtered view); there is no View all
+      // button in this state.
+      const flat = searchFlatHTML(d);
       return searchBarHTML()
         + searchSuggestionsHTML(q)
-        + (previewArtists ? `<div class="sectionhead"><h2>Artists</h2></div>${previewArtists}` : '')
-        + (previewPls ? `<div class="sectionhead"><h2>Playlists</h2></div>${previewPls}` : '')
-        + `<div id="search-sec-songs">${previewSongs}</div>`
-        + `<div id="search-sec-albums">${previewAlbums}</div>`
-        + ((!anyLocal && !anyCat) ? `<div class="empty"><h3>No results for "${esc(S.query)}"</h3><p>Check the spelling, or try an artist or song title.</p></div>` : '')
-        + ((anyLocal || anyCat) ? `<button class="sp-viewall" data-act="search-view-all">View all results for '${esc(S.query.trim())}'</button>` : '');
+        + `<div id="search-sec-flat">${flat}</div>`
+        + ((!flat && !anyLocal && !anyCat) ? `<div class="empty"><h3>No results for "${esc(S.query)}"</h3><p>Check the spelling, or try an artist or song title.</p></div>` : '');
     }
     // Filtered view, as in the video.
     const pills = [['all', 'All'], ['songs', 'Songs'], ['playlists', 'Playlists'], ['artists', 'Artists'], ['albums', 'Albums']];
@@ -2660,6 +2800,9 @@ const App = (() => {
     const q = document.getElementById('q');
     if (q) {
       q.addEventListener('input', () => { S.query = q.value; S.searchAll = false; S.searchFilter = 'all'; const pos = q.selectionStart; render(); const nq = document.getElementById('q'); nq.focus(); nq.setSelectionRange(pos, pos); });
+      // v10.13: Enter / the keyboard search key RUNS the search, like
+      // tapping a suggestion's text, then dismisses the keyboard.
+      q.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); executeSearch(q.value); const nq = document.getElementById('q'); if (nq) nq.blur(); } });
       // v10.2: debounced catalog search for the current query (local
       // results render immediately; catalog sections patch in place).
       kickCatalog();
@@ -3577,11 +3720,28 @@ const App = (() => {
   function ctxOf() { return S.viewCtx || { kicker: 'PLAYING FROM SONGS', name: '', kind: 'songs', id: 'songs' }; }
   async function handleAct(el) {
     const act = el.dataset.act, id = el.dataset.id;
+    // v10.13: opening an entity from search records it as a recent
+    // search before the navigation/play action runs (the catalog
+    // pools it resolves from still belong to the current query).
+    recordSearchRecentForAct(act, id);
     switch (act) {
       case 'tab': if (el.dataset.tab === 'create') { openCreateSheet(); break; } nav(el.dataset.tab); break;
       /* v7.0 library chrome */
-      case 'search-clear': case 'search-cancel': S.query = ''; S.searchAll = false; S.searchFilter = 'all'; render(); break;
-      case 'search-suggest': S.query = id; S.searchAll = false; S.searchFilter = 'all'; render(); break;
+      case 'search-clear': S.query = ''; S.searchAll = false; S.searchFilter = 'all'; render(); { const nq = document.getElementById('q'); if (nq) nq.focus(); } break;
+      case 'search-cancel': S.query = ''; S.searchAll = false; S.searchFilter = 'all'; render(); break;
+      // v10.13: tapping suggestion text RUNS the search (filtered
+      // view, query recorded); the arrow only FILLS the bar.
+      case 'search-suggest': executeSearch(id); break;
+      case 'search-suggest-fill': S.query = id; S.searchAll = false; S.searchFilter = 'all'; render(); { const nq = document.getElementById('q'); if (nq) { nq.focus(); nq.setSelectionRange(nq.value.length, nq.value.length); } } break;
+      case 'search-recent-remove': { const i = Number(el.dataset.idx); if (Number.isInteger(i) && S.searchRecents[i]) { S.searchRecents.splice(i, 1); saveSearchRecents(); render(); } break; }
+      case 'search-toggle-album-lib': {
+        const a = albumByKey(id); if (!a) break;
+        const tids = (a.tracks || []).map(t => t.id);
+        if (albumSaved(a)) { S.library = S.library.filter(x => !tids.includes(x)); toast('Removed album from your library'); }
+        else { tids.forEach(x => { if (!S.library.includes(x)) S.library.push(x); }); toast('Added album to your library'); }
+        try { await DB.kvSet('library', S.library); } catch (e) {}
+        render(); break;
+      }
       case 'search-view-all': S.searchAll = true; S.searchFilter = 'all'; render(); break;
       case 'search-filter': S.searchFilter = id; render(); break;
       case 'track-toggle-lib': {

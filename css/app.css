@@ -501,6 +501,8 @@ body.auth-gate #tabbar, body.auth-gate #miniplayer, body.auth-gate #nowplaying{d
 .sp-searchbar .sp-x svg{width:20px;height:20px}
 .sp-searchbar .sp-cancel{flex:none;color:#fff;font-size:15px;font-weight:600;padding:4px 2px}
 .sp-sugg{cursor:pointer}
+.sp-sugg-arrow{display:flex;flex:none;color:var(--sub);padding:4px 2px}
+.sp-sugg-arrow svg{width:22px;height:22px}
 .sp-pills{display:flex;gap:8px;overflow-x:auto;padding:4px 16px 12px;scrollbar-width:none}
 .sp-pills::-webkit-scrollbar{display:none}
 .sp-pill{flex:none;background:#2a2a2a;color:#fff;border-radius:999px;padding:8px 16px;font-size:14px;font-weight:600}
