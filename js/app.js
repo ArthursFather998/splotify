@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v10.9';
+  const APP_VERSION = 'v10.10';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -2644,6 +2644,19 @@ const App = (() => {
       const nm = b.dataset.tab === 'home' ? (on ? 'home' : 'homeO') : b.dataset.tab === 'create' ? 'plus' : b.dataset.tab;
       b.querySelector('.tabicon').innerHTML = icon(nm, b.dataset.tab === 'search' ? 'width:27px;height:27px' : '');
     });
+    // Enter submits on sign-in inputs (no <form> wraps them, so without
+    // this a laptop Enter keypress does nothing at all).
+    [['auth-email', 'auth-signin'], ['auth-pass', 'auth-signin'],
+     ['acct-email', 'acct-signin'], ['acct-pass', 'acct-signin'],
+     ['cat-email', 'cat-signin'], ['cat-pass', 'cat-signin']].forEach(([inp, act]) => {
+      const el = document.getElementById(inp);
+      if (el && !el.dataset.enterBound) {
+        el.dataset.enterBound = '1';
+        el.addEventListener('keydown', e => {
+          if (e.key === 'Enter') { const b = document.querySelector('[data-act="' + act + '"]'); if (b) b.click(); }
+        });
+      }
+    });
     const q = document.getElementById('q');
     if (q) {
       q.addEventListener('input', () => { S.query = q.value; S.searchAll = false; S.searchFilter = 'all'; const pos = q.selectionStart; render(); const nq = document.getElementById('q'); nq.focus(); nq.setSelectionRange(pos, pos); });
@@ -3627,6 +3640,7 @@ const App = (() => {
         const email = emailEl ? emailEl.value.trim() : '';
         const pass = passEl ? passEl.value : '';
         if (!email || !pass) { toast('Enter an email and password'); break; }
+        toast('Signing in…');
         try {
           if (act === 'auth-signin') await UTAG.signIn(email, pass);
           else await UTAG.signUp(email, pass);
