@@ -43,13 +43,13 @@ const UTAG = (() => {
     if (cached && cached.lyricsStatus) return { ...cached, source: 'cache' };
     let artists = [];
     try {
-      artists = await fetchJSON(BASE + '/artists?select=id,canonical_name&canonical_name=ilike.' + encodeURIComponent(artist || ''), 9000);
+      artists = await fetchJSON(BASE + '/splotify_artists?select=id,canonical_name&canonical_name=ilike.' + encodeURIComponent(artist || ''), 9000);
     } catch (e) { return cached ? { ...cached, source: 'cache' } : null; }
     if (!artists || !artists.length) return cached ? { ...cached, source: 'cache' } : null;
     const aid = artists[0].id;
     let tracks = [];
     try {
-      tracks = await fetchJSON(BASE + '/tracks?select=id,title,confidence,releases!inner(id,title,edition,release_year,artwork(source_url,stored_path,role))&artist_id=eq.' + aid + '&limit=500', 9000);
+      tracks = await fetchJSON(BASE + '/splotify_tracks?select=id,title,confidence,releases:splotify_releases!inner(id,title,edition,release_year,artwork:splotify_artwork(source_url,stored_path,role))&artist_id=eq.' + aid + '&limit=500', 9000);
     } catch (e) { return cached ? { ...cached, source: 'cache' } : null; }
     const want = norm(title);
     const bare = want.replace(/ *\([^)]*\) */g, ' ').trim();
@@ -70,7 +70,7 @@ const UTAG = (() => {
     }
     let lyrics = null;
     try {
-      const rows = await fetchJSON(BASE + '/track_lyrics?select=plain_text,synced_text,source,status&track_id=eq.' + best.id, 9000);
+      const rows = await fetchJSON(BASE + '/splotify_track_lyrics?select=plain_text,synced_text,source,status&track_id=eq.' + best.id, 9000);
       if (rows && rows.length) lyrics = rows[0];
     } catch (e) { /* track_lyrics table not migrated yet: no lyrics, not a failure */ }
     const hit = {
@@ -589,7 +589,7 @@ const UTAG = (() => {
         try {
           const c = new AbortController();
           const tm = setTimeout(() => c.abort(), 9000);
-          const res = await fetch(BASE + '/submissions', {
+          const res = await fetch(BASE + '/splotify_submissions', {
             method: 'POST', signal: c.signal,
             headers: { apikey: ANON, Authorization: 'Bearer ' + ANON, 'Content-Type': 'application/json', Prefer: 'return=minimal' },
             body: JSON.stringify({ kind: r.kind, payload: r.payload }),
@@ -656,7 +656,7 @@ const UTAG = (() => {
      so titles are fetched in a second query instead of an embedded join. */
   async function listAudio() {
     try {
-      const rows = await fetchJSON(BASE + '/track_audio_public?select=id,storage_path,file_name,source,created_at,track_id&order=created_at.desc&limit=200', 12000);
+      const rows = await fetchJSON(BASE + '/splotify_track_audio_public?select=id,storage_path,file_name,source,created_at,track_id&order=created_at.desc&limit=200', 12000);
       const list = (rows || []).map(r => ({
         id: r.id, storage_path: r.storage_path, file_name: r.file_name || '',
         source: r.source || 'datum', created_at: r.created_at || '',
@@ -665,7 +665,7 @@ const UTAG = (() => {
       const tids = [...new Set((rows || []).map(r => r.track_id).filter(Boolean))];
       if (tids.length) {
         try {
-          const trs = await fetchJSON(BASE + '/tracks?select=id,title,artists(canonical_name)&id=in.(' + tids.map(encodeURIComponent).join(',') + ')', 12000);
+          const trs = await fetchJSON(BASE + '/splotify_tracks?select=id,title,artists:splotify_artists(canonical_name)&id=in.(' + tids.map(encodeURIComponent).join(',') + ')', 12000);
           const byId = new Map((trs || []).map(t => [String(t.id), t]));
           const tByRow = new Map((rows || []).map(r => [String(r.id), r.track_id]));
           for (const item of list) {
@@ -814,7 +814,7 @@ const UTAG = (() => {
   function escLikePattern(s) {
     return String(s || '').replace(/[%_\\]/g, '\\$&');
   }
-  const CATALOG_TRACK_SELECT = 'id,title,artist_id,release_id,track_number,disc_number,artists(canonical_name),releases(title,release_year,artwork(source_url,stored_path,role))';
+  const CATALOG_TRACK_SELECT = 'id,title,artist_id,release_id,track_number,disc_number,artists:splotify_artists(canonical_name),releases:splotify_releases(title,release_year,artwork:splotify_artwork(source_url,stored_path,role))';
   async function catalogSearch(query) {
     const q = String(query || '').trim();
     if (!q) return { songs: [], artists: [] };
@@ -822,8 +822,8 @@ const UTAG = (() => {
     // Settled, not all-or-nothing: one failed query must not discard
     // the other side's results (fail soft is the whole point here).
     const [aRes, tRes] = await Promise.allSettled([
-      fetchJSON(BASE + '/artists?select=id,canonical_name&canonical_name=ilike.' + encodeURIComponent(pattern) + '&order=canonical_name&limit=20', 9000),
-      fetchJSON(BASE + '/tracks?select=' + encodeURIComponent(CATALOG_TRACK_SELECT) + '&title=ilike.' + encodeURIComponent(pattern) + '&limit=50', 9000),
+      fetchJSON(BASE + '/splotify_artists?select=id,canonical_name&canonical_name=ilike.' + encodeURIComponent(pattern) + '&order=canonical_name&limit=20', 9000),
+      fetchJSON(BASE + '/splotify_tracks?select=' + encodeURIComponent(CATALOG_TRACK_SELECT) + '&title=ilike.' + encodeURIComponent(pattern) + '&limit=50', 9000),
     ]);
     const artistRows = aRes.status === 'fulfilled' ? aRes.value : [];
     const trackRows = tRes.status === 'fulfilled' ? tRes.value : [];
@@ -834,7 +834,7 @@ const UTAG = (() => {
   }
   async function catalogArtistSongs(artistId) {
     if (!artistId) return [];
-    const rows = await fetchJSON(BASE + '/tracks?select=' + encodeURIComponent(CATALOG_TRACK_SELECT) + '&artist_id=eq.' + encodeURIComponent(artistId) + '&limit=500', 9000);
+    const rows = await fetchJSON(BASE + '/splotify_tracks?select=' + encodeURIComponent(CATALOG_TRACK_SELECT) + '&artist_id=eq.' + encodeURIComponent(artistId) + '&limit=500', 9000);
     return (rows || []).map(catalogSongFromRow).sort((a, b) =>
       ((b.year || 0) - (a.year || 0)) || String(a.title).localeCompare(String(b.title))).slice(0, 200);
   }
@@ -847,7 +847,7 @@ const UTAG = (() => {
     String(a.title).localeCompare(String(b.title)));
   async function catalogReleaseTracks(releaseId) {
     if (!releaseId) return { release: null, tracks: [] };
-    const rows = await fetchJSON(BASE + '/tracks?select=' + encodeURIComponent(CATALOG_TRACK_SELECT) + '&release_id=eq.' + encodeURIComponent(releaseId) + '&limit=500', 12000);
+    const rows = await fetchJSON(BASE + '/splotify_tracks?select=' + encodeURIComponent(CATALOG_TRACK_SELECT) + '&release_id=eq.' + encodeURIComponent(releaseId) + '&limit=500', 12000);
     const tracks = sortCatTracks((rows || []).map(catalogSongFromRow));
     const first = (rows || [])[0] || {};
     const rel = first.releases || {};
@@ -857,7 +857,7 @@ const UTAG = (() => {
     };
   }
   async function catalogArtistId(name) {
-    const rows = await fetchJSON(BASE + '/artists?select=id,canonical_name&canonical_name=ilike.' + encodeURIComponent(String(name || '').trim()) + '&limit=5', 9000);
+    const rows = await fetchJSON(BASE + '/splotify_artists?select=id,canonical_name&canonical_name=ilike.' + encodeURIComponent(String(name || '').trim()) + '&limit=5', 9000);
     if (!rows || !rows.length) return null;
     const want = norm(String(name || ''));
     const exact = rows.find(r => norm(r.canonical_name || '') === want);
@@ -873,7 +873,7 @@ const UTAG = (() => {
     const base = String(albumTitle || '').trim();
     if (!base) return null;
     const pattern = escLikePattern(base) + '%';
-    const rels = await fetchJSON(BASE + '/releases?select=id,title,edition,release_type,release_year&artist_id=eq.' + encodeURIComponent(artistId) + '&title=ilike.' + encodeURIComponent(pattern) + '&limit=50', 9000);
+    const rels = await fetchJSON(BASE + '/splotify_releases?select=id,title,edition,release_type,release_year&artist_id=eq.' + encodeURIComponent(artistId) + '&title=ilike.' + encodeURIComponent(pattern) + '&limit=50', 9000);
     const want = norm(base);
     const cands = (rels || []).filter(r => {
       const t = norm(r.title || '');
@@ -895,7 +895,7 @@ const UTAG = (() => {
   async function catalogArtistReleases(artistName) {
     const artistId = await catalogArtistId(artistName);
     if (!artistId) return { artistId: null, releases: [] };
-    const rows = await fetchJSON(BASE + '/tracks?select=' + encodeURIComponent(CATALOG_TRACK_SELECT) + '&artist_id=eq.' + encodeURIComponent(artistId) + '&limit=500', 12000);
+    const rows = await fetchJSON(BASE + '/splotify_tracks?select=' + encodeURIComponent(CATALOG_TRACK_SELECT) + '&artist_id=eq.' + encodeURIComponent(artistId) + '&limit=500', 12000);
     const byRel = new Map();
     (rows || []).forEach(tr => {
       const song = catalogSongFromRow(tr);
@@ -1219,14 +1219,14 @@ const UTAG = (() => {
       if (!s || !s.access_token || !catalogTrackId) return;
       const uid = jwtSub(s.access_token);
       if (!uid) return;
-      await pgAuth('listening_history', 'POST', {
+      await pgAuth('splotify_listening_history', 'POST', {
         user_id: uid, track_id: catalogTrackId,
         played_at: new Date().toISOString(), source: 'splotify',
       });
     } catch (e) { /* fail soft by design */ }
   }
   async function resolveArtistId(name) {
-    const rows = await fetchJSON(BASE + '/artists?select=id,canonical_name&canonical_name=ilike.' +
+    const rows = await fetchJSON(BASE + '/splotify_artists?select=id,canonical_name&canonical_name=ilike.' +
       encodeURIComponent('*' + escLikePattern(name) + '*') + '&limit=20', 9000);
     const matches = (rows || []).filter(a => norm(a.canonical_name) === norm(name));
     return matches.length === 1 ? matches[0].id : null;
@@ -1257,27 +1257,27 @@ const UTAG = (() => {
     };
     const enc = v => encodeURIComponent(v);
     // Library + liked: dedupe against existing cloud rows first.
-    const libExisting = new Set((await pgAuthGet('user_library', 'select=track_id')).map(r => r.track_id));
+    const libExisting = new Set((await pgAuthGet('splotify_user_library', 'select=track_id')).map(r => r.track_id));
     for (const tid of (inData.library || [])) {
       if (libExisting.has(tid)) { counts.library.skipped++; report(); continue; }
-      await insertSkipDup('user_library', { user_id: uid, track_id: tid }, counts.library);
+      await insertSkipDup('splotify_user_library', { user_id: uid, track_id: tid }, counts.library);
     }
-    const likedExisting = new Set((await pgAuthGet('user_liked', 'select=track_id')).map(r => r.track_id));
+    const likedExisting = new Set((await pgAuthGet('splotify_user_liked', 'select=track_id')).map(r => r.track_id));
     for (const tid of (inData.liked || [])) {
       if (likedExisting.has(tid)) { counts.liked.skipped++; report(); continue; }
-      await insertSkipDup('user_liked', { user_id: uid, track_id: tid }, counts.liked);
+      await insertSkipDup('splotify_user_liked', { user_id: uid, track_id: tid }, counts.liked);
     }
     // Follows: resolve each local name to exactly one catalog artist.
-    const folExisting = new Set((await pgAuthGet('user_follows', 'select=artist_id')).map(r => r.artist_id));
+    const folExisting = new Set((await pgAuthGet('splotify_user_follows', 'select=artist_id')).map(r => r.artist_id));
     for (const name of (inData.followed || [])) {
       let aid = null;
       try { aid = await resolveArtistId(name); } catch (e) { aid = null; }
       if (!aid) { counts.follows.unresolved++; report(); continue; }
       if (folExisting.has(aid)) { counts.follows.skipped++; report(); continue; }
-      await insertSkipDup('user_follows', { user_id: uid, artist_id: aid }, counts.follows);
+      await insertSkipDup('splotify_user_follows', { user_id: uid, artist_id: aid }, counts.follows);
     }
     // Playlists: reuse by name (case-insensitive), else create.
-    const cloudPls = await pgAuthGet('user_playlists', 'select=id,name');
+    const cloudPls = await pgAuthGet('splotify_user_playlists', 'select=id,name');
     for (const pl of (inData.playlists || [])) {
       const name = String(pl.name || '').trim();
       if (!name) continue;
@@ -1286,7 +1286,7 @@ const UTAG = (() => {
       if (found) { cloudId = found.id; counts.playlists.reused++; }
       else {
         try {
-          const created = await pgAuth('user_playlists', 'POST', { user_id: uid, name });
+          const created = await pgAuth('splotify_user_playlists', 'POST', { user_id: uid, name });
           cloudId = created && created[0] && created[0].id;
           if (!cloudId) throw new Error('Playlist create returned no id');
           cloudPls.push({ id: cloudId, name });
@@ -1294,7 +1294,7 @@ const UTAG = (() => {
         } catch (e) { counts.failed++; counts.error = e.message || String(e); report(); continue; }
       }
       report();
-      const items = await pgAuthGet('user_playlist_items',
+      const items = await pgAuthGet('splotify_user_playlist_items',
         'select=track_id,position&playlist_id=eq.' + enc(cloudId) + '&order=position&limit=1000');
       // Skip only tracks already in the cloud playlist (pre-existing
       // set). Newly inserted ids are NOT added here, so a local list
@@ -1304,7 +1304,7 @@ const UTAG = (() => {
       let pos = items.reduce((m, i) => Math.max(m, Number(i.position) || 0), -1) + 1;
       for (const tid of (pl.trackIds || [])) {
         if (have.has(tid)) { counts.items.skipped++; report(); continue; }
-        await insertSkipDup('user_playlist_items',
+        await insertSkipDup('splotify_user_playlist_items',
           { playlist_id: cloudId, track_id: tid, position: pos++ }, counts.items);
       }
     }
