@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v10.16';
+  const APP_VERSION = 'v10.17';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -1832,7 +1832,6 @@ const App = (() => {
     // picks data-act="play-track" rows, so catalog rows can't enter a queue).
     return `<div class="detail-hero"><button class="iconbtn back" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button>${heroArt(a.art)}<h1>${esc(a.name)}</h1><div class="meta" id="album-meta">${a.single ? 'Single' : 'Album'} • ${esc(a.artist)} • ${a.tracks.length} song${a.tracks.length === 1 ? '' : 's'}</div></div>`
       + playRow()
-      + (S.isAdmin ? `<div style="padding:0 16px 12px"><button class="bigbtn" data-act="cat-add-track-album" data-id="${esc(a.key)}">Add song to catalog</button></div>` : '')
       + `<div id="album-tracks">${a.tracks.map(t => trackRow(t)).join('')}</div>`;
   }
   function vArtist(name) {
