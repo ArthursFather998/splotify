@@ -817,19 +817,28 @@ const UTAG = (() => {
   const CATALOG_TRACK_SELECT = 'id,title,artist_id,release_id,track_number,disc_number,artists:splotify_artists(canonical_name),releases:splotify_releases(title,release_year,artwork:splotify_artwork(source_url,stored_path,role))';
   async function catalogSearch(query) {
     const q = String(query || '').trim();
-    if (!q) return { songs: [], artists: [] };
+    if (!q) return { songs: [], artists: [], albums: [] };
     const pattern = '*' + escLikePattern(q) + '*';
     // Settled, not all-or-nothing: one failed query must not discard
-    // the other side's results (fail soft is the whole point here).
-    const [aRes, tRes] = await Promise.allSettled([
+    // the other sides' results (fail soft is the whole point here).
+    // v10.18: releases are queried too, with NO status filter, so an
+    // album title like "withered deluxe" finds its release even when
+    // no song title matches, and unreleased releases/songs are
+    // searchable like everything else. Previously only artist names
+    // and track titles were queried, so album-title searches returned
+    // nothing even though the release was in the database.
+    const [aRes, tRes, rRes] = await Promise.allSettled([
       fetchJSON(BASE + '/splotify_artists?select=id,canonical_name&canonical_name=ilike.' + encodeURIComponent(pattern) + '&order=canonical_name&limit=20', 9000),
       fetchJSON(BASE + '/splotify_tracks?select=' + encodeURIComponent(CATALOG_TRACK_SELECT) + '&title=ilike.' + encodeURIComponent(pattern) + '&limit=50', 9000),
+      fetchJSON(BASE + '/splotify_releases?select=id,title,release_type,release_year,release_status,artists:splotify_artists(canonical_name),artwork:splotify_artwork(source_url,stored_path,role)&title=ilike.' + encodeURIComponent(pattern) + '&order=title&limit=20', 9000),
     ]);
     const artistRows = aRes.status === 'fulfilled' ? aRes.value : [];
     const trackRows = tRes.status === 'fulfilled' ? tRes.value : [];
+    const relRows = rRes.status === 'fulfilled' ? rRes.value : [];
     return {
       artists: (artistRows || []).slice(0, 20).map(a => ({ id: a.id, name: a.canonical_name || '' })).filter(a => a.name),
       songs: (trackRows || []).slice(0, 50).map(catalogSongFromRow),
+      albums: (relRows || []).slice(0, 20).map(r => ({ id: r.id, title: r.title || '', artist: (r.artists && r.artists.canonical_name) || '', year: r.release_year || null, type: r.release_type || 'album', status: r.release_status || null, art: catalogArt(r) })).filter(a => a.title),
     };
   }
   async function catalogArtistSongs(artistId) {

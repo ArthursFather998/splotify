@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v10.17';
+  const APP_VERSION = 'v10.18';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -26,7 +26,7 @@ const App = (() => {
     tagReview: [], tagAuditRunning: false,
     // v10.2 catalog search (shared UTAG metadata; local results untouched).
     // catQ: query last fetched/loading; catReady: its fetch settled.
-    catQ: '', catSongs: [], catArtists: [], catSeq: 0, catReady: false,
+    catQ: '', catSongs: [], catArtists: [], catAlbums: [], catSeq: 0, catReady: false,
     catArtist: null, _catTimer: null,
     // v10.7 catalog-everywhere state. Catalog rows are metadata only:
     // they never enter a play queue, Liked Songs, a playlist, or the
@@ -777,7 +777,7 @@ const App = (() => {
       else if (act === 'open-album') { const a = albumByKey(id); if (a) recordSearchRecent({ kind: 'album', id, name: a.name, sub: 'Album • ' + a.artist }); }
       else if (act === 'open-playlist') { const p = (S._pls || []).find(x => String(x.id) === String(id)); if (p) recordSearchRecent({ kind: 'playlist', id, name: p.name, sub: 'Playlist • ' + p.trackIds.length + ' songs' }); }
       else if (act === 'open-cat-artist') { const a = (S.catArtists || []).find(x => String(x.id) === String(id)); recordSearchRecent({ kind: 'cat-artist', id, name: a ? a.name : String(id), sub: 'Artist' }); }
-      else if (act === 'open-cat-album') { const x = (S.catSongs || []).find(s => String(s.releaseId) === String(id)); if (x) recordSearchRecent({ kind: 'cat-album', id, name: x.album, sub: 'Album • ' + x.artist, art: x.art || null }); }
+      else if (act === 'open-cat-album') { const x = (S.catSongs || []).find(s => String(s.releaseId) === String(id)); const ra = !x && (S.catAlbums || []).find(a => String(a.id) === String(id)); if (x) recordSearchRecent({ kind: 'cat-album', id, name: x.album, sub: 'Album • ' + x.artist, art: x.art || null }); else if (ra) recordSearchRecent({ kind: 'cat-album', id, name: ra.title, sub: 'Album • ' + ra.artist, art: ra.art || null }); }
       else if (act === 'play-track') { const t = S.byId.get(Number(id)); if (t) recordSearchRecent({ kind: 'song', id: String(t.id), name: t.title, sub: 'Song • ' + t.artist }); }
       else if (act === 'cat-song') { const s = getCatSongAll(id); if (s) recordSearchRecent({ kind: 'cat-song', id: String(s.id), name: s.title, sub: 'Song • ' + s.artist, art: s.art || null }); }
     } catch (e) {}
@@ -818,6 +818,7 @@ const App = (() => {
     S.tracks.forEach(t => { if (t.title.toLowerCase().includes(q)) add(t.title, false); if (t.album && t.album.toLowerCase().includes(q)) add(t.album, false); });
     (S.catArtists || []).forEach(a => { if (String(a.name || '').toLowerCase().includes(q)) add(a.name, false); });
     (S.catSongs || []).forEach(x => { if (String(x.title || '').toLowerCase().includes(q)) add(x.title, false); if (x.album && String(x.album).toLowerCase().includes(q)) add(x.album, false); });
+    (S.catAlbums || []).forEach(a => { if (String(a.title || '').toLowerCase().includes(q)) add(a.title, false); });
     // The row itself runs the search; only the arrow button fills.
     // document click delegation picks the nearest [data-act], so the
     // arrow button wins over the row when it is tapped.
@@ -834,6 +835,10 @@ const App = (() => {
     const seenAlb = new Set(d.als.map(a => normKey(a.artist) + '|' + normKey(a.name)));
     const byRel = new Map();
     (S.catSongs || []).forEach(x => { if (x.releaseId && x.album && !byRel.has(x.releaseId)) byRel.set(x.releaseId, x); });
+    // v10.18: releases matched by title (S.catAlbums) join the albums
+    // derived from matched tracks, so an album-title search surfaces
+    // the album even when no track title matches.
+    (S.catAlbums || []).forEach(a => { if (a.id && a.title && !byRel.has(a.id)) byRel.set(a.id, { releaseId: a.id, album: a.title, artist: a.artist || '', art: a.art || '' }); });
     const catAlb = [...byRel.values()].filter(x => !seenAlb.has(normKey(x.artist) + '|' + normKey(x.album))).slice(0, 3)
       .map(x => `<div class="trow" data-act="open-cat-album" data-id="${esc(x.releaseId)}">${catArtImg(x)}<div class="tmeta"><div class="ttitle">${esc(x.album)}</div><div class="tsub">Album • ${esc(x.artist)}</div></div></div>`).join('');
     const songRows = d.sHits.slice(0, 10).map(e => searchSongRow(e.t)).join('')
@@ -923,6 +928,7 @@ const App = (() => {
       if (!x.releaseId || !x.album) return;
       if (!byRel.has(x.releaseId)) byRel.set(x.releaseId, x);
     });
+    (S.catAlbums || []).forEach(a => { if (a.id && a.title && !byRel.has(a.id)) byRel.set(a.id, { releaseId: a.id, album: a.title, artist: a.artist || '', art: a.art || '' }); });
     const catRows = [...byRel.values()].filter(x => !seen.has(normKey(x.artist) + '|' + normKey(x.album)))
       .map(x => `<div class="trow" data-act="open-cat-album" data-id="${esc(x.releaseId)}">${catArtImg(x)}<div class="tmeta"><div class="ttitle">${esc(x.album)}</div><div class="tsub">Album • ${esc(x.artist)}</div></div></div>`).join('');
     const localRows = d.als.map(a => `<div class="trow" data-act="open-album" data-id="${esc(a.key)}">${artImg(a.art, 'art')}<div class="tmeta"><div class="ttitle">${esc(a.name)}</div><div class="tsub">Album • ${esc(a.artist)}</div></div></div>`).join('');
@@ -978,7 +984,7 @@ const App = (() => {
     }
     const d = searchData(q);
     const anyLocal = d.aHits.length || d.sHits.length || d.als.length || d.ps.length;
-    const anyCat = (S.catSongs || []).length || (S.catArtists || []).length;
+    const anyCat = (S.catSongs || []).length || (S.catArtists || []).length || (S.catAlbums || []).length;
     if (!S.searchAll) {
       // Suggestions state, as in the video: text suggestions, then
       // the flat mixed list. Tapping a suggestion's text or pressing
@@ -1105,7 +1111,7 @@ const App = (() => {
     if (metaEl) {
       const edition = S.catAlbum.release && S.catAlbum.release.title && normKey(S.catAlbum.release.title) !== normKey(a.name)
         ? ` • ${esc(S.catAlbum.release.title)}` : '';
-      metaEl.textContent = `${a.single ? 'Single' : 'Album'} • ${a.artist} • ${m.total} songs • ${m.downloaded} downloaded${edition ? ' • ' + S.catAlbum.release.title : ''}`;
+      metaEl.textContent = `${a.single ? 'Single' : 'Album'} • ${a.artist} • ${m.total} songs${edition ? ' • ' + S.catAlbum.release.title : ''}`;
     }
   }
   async function kickArtistCatalog(name) {
@@ -1131,7 +1137,7 @@ const App = (() => {
       const a = artistViewModel(name);
       const localTitles = new Set((a ? artistReleases(a).map(x => normKey(x.name)) : []));
       const extra = rel.releases.filter(r => !localTitles.has(normKey(r.title)));
-      relEl.innerHTML = extra.length ? `<div class="sectionhead ax-section"><h2>More from the catalog</h2></div>${extra.map(r => `<div class="ax-release" data-act="open-cat-album" data-id="${esc(r.id)}"><div class="art" style="border-radius:0;overflow:hidden">${r.art ? `<img class="art" src="${esc(r.art)}" alt="" onerror="App.artErr(this)">` : `<div class="art art-ph">${icon('note')}</div>`}</div><div class="tmeta"><div class="ttitle">${esc(r.title)}</div><div class="tsub">Album${r.year ? ' • ' + r.year : ''} • ${r.count} songs • Not downloaded</div></div><span class="ax-chev">${icon('chevR')}</span></div>`).join('')}` : '';
+      relEl.innerHTML = extra.length ? `<div class="sectionhead ax-section"><h2>More from the catalog</h2></div>${extra.map(r => `<div class="ax-release" data-act="open-cat-album" data-id="${esc(r.id)}"><div class="art" style="border-radius:0;overflow:hidden">${r.art ? `<img class="art" src="${esc(r.art)}" alt="" onerror="App.artErr(this)">` : `<div class="art art-ph">${icon('note')}</div>`}</div><div class="tmeta"><div class="ttitle">${esc(r.title)}</div><div class="tsub">Album${r.year ? ' • ' + r.year : ''} • ${r.count} songs</div></div><span class="ax-chev">${icon('chevR')}</span></div>`).join('')}` : '';
     }
     const songsEl = document.getElementById('cat-artist-songs');
     if (songsEl && cur.v === 'artist') {
@@ -1166,7 +1172,7 @@ const App = (() => {
     if (!el || !S.catHome || S.catHome === false) return;
     const localTitles = new Set(albums().map(a => normKey(a.name)));
     const extra = S.catHome.filter(r => !localTitles.has(normKey(r.title))).slice(0, 10);
-    el.innerHTML = extra.length ? `<div class="morelike"><div><div class="k">From the catalog</div><div class="n">${esc(name)}</div></div></div><div class="rail">${extra.map(r => `<div class="railcard" data-act="open-cat-album" data-id="${esc(r.id)}">${r.art ? `<img src="${esc(r.art)}" alt="" onerror="App.artErr(this)">` : `<div class="art-ph">${icon('note')}</div>`}<div class="t">${esc(r.title)}</div><div class="s">Album • Not downloaded</div></div>`).join('')}</div>` : '';
+    el.innerHTML = extra.length ? `<div class="morelike"><div><div class="k">From the catalog</div><div class="n">${esc(name)}</div></div></div><div class="rail">${extra.map(r => `<div class="railcard" data-act="open-cat-album" data-id="${esc(r.id)}">${r.art ? `<img src="${esc(r.art)}" alt="" onerror="App.artErr(this)">` : `<div class="art-ph">${icon('note')}</div>`}<div class="t">${esc(r.title)}</div><div class="s">Album</div></div>`).join('')}</div>` : '';
   }
   function vCatalogAlbum(id) {
     const ca = S.catalogAlbum || {};
@@ -1177,7 +1183,7 @@ const App = (() => {
     if (!ca.tracks || !ca.tracks.length) return head + `<div class="empty"><p>No songs found for this album.</p></div>`;
     const localTracks = S.tracks.filter(t => (t.album || '') && normKey(t.album) === normKey(ca.release.title));
     const m = mergedAlbumRows(localTracks, ca.tracks);
-    return detailHead('go-back', ca.release.art ? `<img class="hero-art" src="${esc(ca.release.art)}" alt="" onerror="App.artErr(this)">` : heroArt(localTracks.find(t => t.art)), ca.release.title, `Album • ${m.total} songs • ${m.downloaded} downloaded`) + playRow() + m.html;
+    return detailHead('go-back', ca.release.art ? `<img class="hero-art" src="${esc(ca.release.art)}" alt="" onerror="App.artErr(this)">` : heroArt(localTracks.find(t => t.art)), ca.release.title, `Album • ${m.total} songs`) + playRow() + m.html;
   }
   async function kickCatalogAlbum(id) {
     const cur = S.stack[S.stack.length - 1] || {};
@@ -1228,8 +1234,8 @@ const App = (() => {
       let res = null;
       try { res = await UTAG.catalogSearch(qq); } catch (e) { res = null; }
       if (seq !== S.catSeq) return; // a newer query took over
-      if (!res) { S.catSongs = []; S.catArtists = []; }
-      else { S.catSongs = res.songs || []; S.catArtists = res.artists || []; }
+      if (!res) { S.catSongs = []; S.catArtists = []; S.catAlbums = []; }
+      else { S.catSongs = res.songs || []; S.catArtists = res.artists || []; S.catAlbums = res.albums || []; }
       S.catReady = true;
       paintCatalogSections(); paintSearchSections();
     }, 350);
@@ -2777,7 +2783,7 @@ const App = (() => {
     S.viewCtx = { kicker: 'PLAYING FROM SONGS', name: g, kind: 'genre', id: g };
     return detailHead('go-back', heroArt(ts.find(t => t.art)), g, `${ts.length} songs`)
       + (ts.length ? playRow(ts.map(t => t.id)) + ts.map(t => trackRow(t)).join('')
-        : `<div class="empty"><h3>No ${esc(g)} songs downloaded yet</h3><p>Search the catalog and download one, or import audio.</p><button class="bigbtn pink" data-act="tab" data-tab="search">Search songs</button></div>`);
+        : `<div class="empty"><h3>No ${esc(g)} songs yet</h3><p>Search the catalog or import audio.</p><button class="bigbtn pink" data-act="tab" data-tab="search">Search songs</button></div>`);
   }
 
   /* Spotify transfer (v7.0): pull playlists, Liked Songs, and followed
