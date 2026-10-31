@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v10.8';
+  const APP_VERSION = 'v10.9';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -636,7 +636,7 @@ const App = (() => {
      scrollable Songs / Playlists / Artists / Albums pills, a top-artist
      block with Follow, a Featuring card rail (the user's own playlists
      featuring that artist), and merged local + catalog song/album rows.
-     Catalog rows are never playable: they say Not downloaded and open
+     Catalog rows are never playable: they are greyed and open
      the Get audio sheet. Podcasts are omitted: Splotify has none. */
   function searchData(q) {
     const plays = id => (S.playCounts && S.playCounts[id]) || 0;
@@ -829,19 +829,18 @@ const App = (() => {
     if (local) {
       return `<div class="trow" data-act="play-track" data-id="${local.id}">${catArtImg(song)}<div class="tmeta"><div class="ttitle">${esc(song.title)}</div><div class="tsub">${esc(sub)}</div></div></div>`;
     }
-    return `<div class="trow" data-act="cat-song" data-id="${esc(song.id)}">${catArtImg(song)}<div class="tmeta"><div class="ttitle">${esc(song.title)}</div><div class="tsub">${esc(sub)}</div></div><span style="color:var(--sub);font-size:12px;white-space:nowrap">Not downloaded</span></div>`;
+    return `<div class="trow cat-row" data-act="cat-song" data-id="${esc(song.id)}">${catArtImg(song)}<div class="tmeta"><div class="ttitle">${esc(song.title)}</div><div class="tsub">${esc(sub)}</div></div><button class="dotsbtn" data-act="cat-menu" data-id="${esc(song.id)}" aria-label="More options">${icon('dots')}</button></div>`;
   }
   // v10.7 catalog-everywhere helpers
   const normKey = v => String(v || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+  // v10.9: catalog rows are laid out exactly like normal rows (art,
+  // title, artist, dots) and only greyed slightly — no track-number
+  // column, no "Not downloaded" label pushing the layout out of line.
+  // Order in an album still comes from the row's position in the list.
   function catTrackRow(song, opts) {
     const o = opts || {};
-    // v10.8: track numbers belong ONLY in an album tracklist. Search and
-    // artist lists used to show a song's album position (1, 8, 13…),
-    // which read as a broken ranking. Rank is shown only when the
-    // caller explicitly asks (merged album rows).
-    const rank = o.showRank ? ((song.trackNo !== null && song.trackNo !== undefined) ? song.trackNo : (o.pos || '')) : '';
     const sub = o.sub || [song.artist].filter(Boolean).join(' • ');
-    return `<div class="trow cat-row" data-act="cat-song" data-id="${esc(song.id)}">${rank !== '' ? `<span class="ax-rank">${rank}</span>` : ''}${catArtImg(song)}<div class="tmeta"><div class="ttitle">${esc(song.title)}</div><div class="tsub">${esc(sub)}</div></div><span class="cat-notdl">Not downloaded</span></div>`;
+    return `<div class="trow cat-row" data-act="cat-song" data-id="${esc(song.id)}">${catArtImg(song)}<div class="tmeta"><div class="ttitle">${esc(song.title)}</div><div class="tsub">${esc(sub)}</div></div><button class="dotsbtn" data-act="cat-menu" data-id="${esc(song.id)}" aria-label="More options">${icon('dots')}</button></div>`;
   }
   // Merge local (playable) + catalog (not downloaded) tracks, in catalog
   // order. A local track matching a catalog track (utagTrackId stamp, or
@@ -860,7 +859,7 @@ const App = (() => {
       const lt = byId.get(String(song.id)) || byKey.get(normKey(song.artist) + '|' + normKey(song.title))
         || (typeof UTAG !== 'undefined' && UTAG.matchLocal ? local.find(t => !used.has(t.id) && UTAG.matchLocal(song, t)) : null);
       if (lt && !used.has(lt.id)) { used.add(lt.id); downloaded++; html += trackRow(lt); }
-      else if (!lt) html += catTrackRow(song, { pos: i + 1, sub: song.artist || '', showRank: true });
+      else if (!lt) html += catTrackRow(song, { sub: song.artist || '' });
     });
     local.forEach(t => { if (!used.has(t.id)) html += trackRow(t); });
     return { html, total: catTracks.length + local.filter(t => !used.has(t.id)).length, downloaded: local.length };
@@ -1772,11 +1771,11 @@ const App = (() => {
       <div class="setrow" data-act="open-activity"><div>Activity<div class="sub">Your proposals, DATUM jobs, review queue</div></div><span style="color:var(--sub)">${icon('chevR', 'width:20px;height:20px')}</span></div>
     </div>
     <div class="setgroup"><h2>Music</h2>
-      <div class="setrow" data-act="open-sdb"><div>SDB<div class="sub">Upload audio, import from UTAG</div></div><span style="color:var(--sub)">${icon('chevR', 'width:20px;height:20px')}</span></div>
+      <div class="setrow" data-act="open-sdb"><div>SDB<div class="sub">Upload audio, import from the catalog</div></div><span style="color:var(--sub)">${icon('chevR', 'width:20px;height:20px')}</span></div>
       <div class="setrow" data-act="export-hub"><div>Export music<div class="sub">Back up your songs to a link or Google Drive</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
       <div class="setrow" data-act="open-spotify-import"><div>Import from Spotify<div class="sub" id="spimport-sub">Playlists, Liked Songs &amp; followed artists</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
       <div class="setrow" data-act="open-plimport"><div>Download Spotify playlist<div class="sub" id="plimport-sub">Turn a playlist into SDB downloads</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
-      <div class="setrow" data-act="fix-all-tags"><div>utag fixer<div class="sub">Scan the UTAG database, auto-fix the rest, update both</div></div><span style="color:var(--sub)">${icon('tag')}</span></div>
+      <div class="setrow" data-act="fix-all-tags"><div>Fix tags<div class="sub">Scan the catalog, auto-fix the rest, update both</div></div><span style="color:var(--sub)">${icon('tag')}</span></div>
       <div class="setrow" data-act="adf-run"><div>Anti-duplicate fixer (ADF)<div class="sub">Find and delete duplicate songs</div></div><span style="color:var(--sub)">${icon('trash')}</span></div>
       <div class="setrow"><div>Songs in library<div class="sub" id="set-storage">Counting…</div></div><span style="color:var(--sub)">${n}</span></div>
     </div>
@@ -1784,8 +1783,8 @@ const App = (() => {
       <div class="setrow" data-act="clear-recent"><div>Clear recently played</div></div>
     </div>
     <div class="setgroup"><h2>Metadata</h2>
-      <div class="setrow"><div>UTAG database<div class="sub" id="set-utag">Checking…</div></div><span style="color:var(--sub)">${icon('tag')}</span></div>
-      <div class="setrow" data-act="open-fixer-keys"><div>utag fixer keys<div class="sub">AcoustID and fanart.tv</div></div><span style="color:var(--sub)">${icon('chevR', 'width:20px;height:20px')}</span></div>
+      <div class="setrow"><div>Catalog<div class="sub" id="set-utag">Checking…</div></div><span style="color:var(--sub)">${icon('tag')}</span></div>
+      <div class="setrow" data-act="open-fixer-keys"><div>Tag source keys<div class="sub">AcoustID and fanart.tv</div></div><span style="color:var(--sub)">${icon('chevR', 'width:20px;height:20px')}</span></div>
     </div>
     <div class="setgroup"><h2>App</h2>
       <div class="setrow" id="update-row" data-act="check-update"><div>App updates<div class="sub" id="update-sub">Checking for updates…</div></div><span class="updpill" id="update-pill">…</span></div>
@@ -1809,9 +1808,9 @@ const App = (() => {
       <div class="setrow" data-act="sdb-upload"><div>Upload audio files<div class="sub">Choose audio files from the Files app</div></div><span style="color:var(--sub)">${icon('plus')}</span></div>
       <div class="setrow" data-act="sdb-upload-zip"><div>Upload a ZIP<div class="sub">Pull the songs out of a zip file</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
     </div>
-    <div class="setgroup"><h2>Import from UTAG</h2>
-      <div class="sub" style="padding:0 4px 8px">Audio ripped by DATUM and linked to UTAG tracks. Sign in to import it.</div>
-      <div id="sdb-utag-list"><div class="sub" style="padding:8px 4px">Loading UTAG audio…</div></div>
+    <div class="setgroup"><h2>Import from catalog</h2>
+      <div class="sub" style="padding:0 4px 8px">Audio ripped by DATUM and linked to catalog tracks. Sign in to import it.</div>
+      <div id="sdb-utag-list"><div class="sub" style="padding:8px 4px">Loading catalog audio…</div></div>
     </div>
     <div class="setgroup"><h2>Import from Mega folder</h2>
       <div class="sub" style="padding:0 4px 8px">Link the DATUM/SSDB folder, not the empty root SSDB folder. The link is stored only on this iPhone.</div>
@@ -1841,16 +1840,16 @@ const App = (() => {
     let list = null;
     try { list = await UTAG.listAudio(); } catch (e) { list = null; }
     if (!list) {
-      box.innerHTML = `<div class="sub" style="padding:8px 4px">UTAG audio is not set up yet. Run the track_audio migration in Supabase, then try again.</div>`;
+      box.innerHTML = `<div class="sub" style="padding:8px 4px">Catalog audio is not set up yet. Run the track_audio migration in Supabase, then try again.</div>`;
       return;
     }
     S.sdbAudio = list;
     if (!list.length) {
-      box.innerHTML = `<div class="sub" style="padding:8px 4px">No UTAG audio yet. Rip a song with DATUM first.</div>`;
+      box.innerHTML = `<div class="sub" style="padding:8px 4px">No catalog audio yet. Rip a song with DATUM first.</div>`;
       return;
     }
-    box.innerHTML = `<div class="sub" style="padding:0 4px 8px">${list.length} song${list.length === 1 ? '' : 's'} available from UTAG.</div>
-      <div class="setrow" data-act="sdb-import-all-utag"><div>Import all from UTAG<div class="sub">Download every DATUM song into the SDB</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
+    box.innerHTML = `<div class="sub" style="padding:0 4px 8px">${list.length} song${list.length === 1 ? '' : 's'} available from the catalog.</div>
+      <div class="setrow" data-act="sdb-import-all-utag"><div>Import all from catalog<div class="sub">Download every DATUM song into the SDB</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
       <div id="sdb-utag-progress" class="sub" style="padding:8px 4px"></div>`;
   }
   /* utag fixer keys: AcoustID + fanart.tv for the engine. The engine reads
@@ -1862,11 +1861,11 @@ const App = (() => {
       '<input id="' + id + '" type="' + (type || 'text') + '" autocomplete="off" autocapitalize="off" spellcheck="false"' +
       ' style="width:100%;box-sizing:border-box;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;color:var(--txt);font-size:15px" />' +
       (sub ? '<div class="sub" style="margin-top:6px">' + sub + '</div>' : '') + '</div>';
-    return `<div class="pagehead"><button class="iconbtn" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><h1>utag fixer keys</h1><span style="width:44px"></span></div>
+    return `<div class="pagehead"><button class="iconbtn" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><h1>Tag source keys</h1><span style="width:44px"></span></div>
     <div style="padding:4px 20px 48px">
-      <p class="sub" style="margin:6px 0 4px">The fixer runs on this iPhone — audio never leaves it. These keys unlock its sources. Stored only on this device, never uploaded.</p>
+      <p class="sub" style="margin:6px 0 4px">Tag fixing runs on this iPhone — audio never leaves it. These keys unlock its sources. Stored only on this device, never uploaded.</p>
       ${inp('set-acoustid', 'AcoustID API key', 'Identifies songs by their sound when tags and file names are both useless.')}
-      ${inp('set-fanart', 'fanart.tv API key', 'Extra artwork source for the fixer.')}
+      ${inp('set-fanart', 'fanart.tv API key', 'Extra artwork source for tag fixing.')}
     </div>`;
   }
   function bindFixerKeys() {
@@ -2547,13 +2546,13 @@ const App = (() => {
     const items = [...(S.tagReview || [])].sort((a, b) => ((b.proposal || {}).confidence || 0) - ((a.proposal || {}).confidence || 0));
     return `<div class="pagehead"><button class="iconbtn" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><h1>Review corrections</h1><span style="width:44px"></span></div>
     <div style="padding:8px 16px 48px">
-      <p class="sub" style="margin:0 0 12px">UTAG has not finished verifying these. Approve the right ones, skip the rest.</p>
+      <p class="sub" style="margin:0 0 12px">The catalog has not finished verifying these. Approve the right ones, skip the rest.</p>
       ${items.length ? `<button class="bigbtn pink" data-act="tag-review-approve-all" style="width:100%;margin-bottom:14px">Approve all ${items.length}</button>` : ''}
       ${items.length ? items.map((it, i) => `
         <div class="sp-review-row">
           <div class="sp-review-sp"><div class="ttitle">${esc(it.title)}</div><div class="tsub">${esc(it.artist)}</div></div>
           <div class="sp-review-sdb" style="margin-top:8px">
-            <div class="tsub" style="margin-bottom:4px">${esc(it.proposal.field)} \u2022 ${esc(it.proposal.source)} \u2022 ${Math.round(it.proposal.confidence * 100)}% confident</div>
+            <div class="tsub" style="margin-bottom:4px">${esc(it.proposal.field)} \u2022 ${esc(String(it.proposal.source || '').replace(/UTAG/g, 'Catalog'))} \u2022 ${Math.round(it.proposal.confidence * 100)}% confident</div>
             <div class="ttitle" style="font-size:14px"><s style="color:var(--sub)">${esc(it.proposal.from)}</s></div>
             <div class="ttitle" style="font-size:14px;color:var(--pink)">${esc(it.proposal.to)}</div>
           </div>
@@ -3090,7 +3089,8 @@ const App = (() => {
       ${noAlbum ? '' : `<div class="sheet-item" data-act="sheet-album" data-id="${id}">${icon('disc')}Go to album</div>`}
       <div class="sheet-item" data-act="sheet-artist" data-id="${id}">${icon('person')}Go to artist</div>
       <div class="sheet-item" data-act="sheet-info" data-id="${id}">${icon('info')}Track info</div>
-      <div class="sheet-item" data-act="sheet-fixtags" data-id="${id}">${icon('tag')}utag</div>
+      <div class="sheet-item" data-act="sheet-edit" data-id="${id}">${icon('pencil')}Edit metadata</div>
+      <div class="sheet-item" data-act="sheet-fixtags" data-id="${id}">${icon('tag')}Fix tags</div>
       <div class="sheet-item" data-act="sheet-download" data-id="${id}">${icon('download')}Download to this iPhone</div>
       <div class="sheet-item danger" data-act="sheet-delete" data-id="${id}">${icon('trash')}Delete permanently</div>`);
   }
@@ -3114,7 +3114,7 @@ const App = (() => {
       ${row('Album artist', t.albumArtist)}${row('Genre', t.genre)}${row('Year', t.year)}
       ${row('Track', t.trackNo || '—')}${row('Duration', Importer.fmtDur(t.duration) || '—')}
       ${row('Artwork', t.art ? 'Embedded' : 'None found')}
-      ${row('Tags from', t.tagsVia || (t.tagged ? 'File' : '—'))}
+      ${row('Tags from', (t.tagsVia || (t.tagged ? 'File' : '—')).replace(/UTAG/g, 'Catalog'))}
       ${row('Reader', t.diag || '—')}
       ${row('App version', APP_VERSION)}
       ${row('File', t.fileName)}${row('Size', kb)}
@@ -3191,7 +3191,7 @@ const App = (() => {
     set('fix-scanned', String(d.scanned));
     set('fix-matched', String(d.matched));
     set('fix-fixed', String(d.fixed));
-    set('fix-sources', 'utag fixer: ' + (d.fixed || 0) + ' fields fixed · ' + (d.sent || 0) + ' submitted');
+    set('fix-sources', 'Fix tags: ' + (d.fixed || 0) + ' fields fixed · ' + (d.sent || 0) + ' submitted');
     try { UTAG.stats().then(s => set('fix-memory', (s.cached ? s.cached + ' record' + (s.cached === 1 ? '' : 's') + ' cached from UTAG' : '') + (s.waiting ? (s.cached ? ' · ' : '') + s.waiting + ' waiting to send to UTAG' : ''))); } catch (e) {}
     try {
       const skipped = (S.tracks || []).filter(t => !trackNeedsFix(t)).length;
@@ -3207,7 +3207,7 @@ const App = (() => {
         '<div class="setrow" data-act="tag-edit" data-id="' + e.id + '"><div>' + esc(e.title) +
         '<div class="sub">' + esc(e.artist) + ' · ' + esc(e.changes) + '</div></div>' +
         '<span style="color:var(--sub)">' + icon('chevR', 'width:20px;height:20px') + '</span></div>'
-      ).join('') || '<div style="color:var(--sub);font-size:13px">Nothing fixed yet — run the fixer and watch it work.</div>';
+      ).join('') || '<div style="color:var(--sub);font-size:13px">Nothing fixed yet — run Fix tags and watch it work.</div>';
     }
     const btn = document.getElementById('fix-run-btn');
     if (btn) {
@@ -3235,7 +3235,7 @@ const App = (() => {
       if (window.SplotifyNative) msDiag = 'ms:native';
       else { const f = Player.msFailed; msDiag = 'ms:' + (f.length ? 'rejected ' + f.join(',') : 'all ok'); }
     } catch (e) { /* noop */ }
-    return `<div class="pagehead"><button class="iconbtn" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><h1>utag fixer</h1><span style="width:44px"></span></div>
+    return `<div class="pagehead"><button class="iconbtn" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><h1>Fix tags</h1><span style="width:44px"></span></div>
     <div style="padding:4px 20px 48px">
       <div style="color:var(--sub);font-size:12px;margin:2px 0 0">${APP_VERSION} · ${msDiag}</div>
       <div id="fix-scope" style="color:var(--pink);font-size:13px;font-weight:700;margin:6px 0 0"></div>
@@ -3251,7 +3251,7 @@ const App = (() => {
       <div style="text-align:center"><button id="fix-run-btn" class="bigbtn pink" data-act="fix-run" style="margin:20px 0 8px">Check all songs</button>
       <button id="lyrics-backfill-btn" class="bigbtn" data-act="lyrics-backfill" style="margin:0 0 8px">Fetch lyrics for library</button>
       <div id="lyrics-backfill-status" style="color:var(--sub);font-size:13px;margin:0 0 8px"></div>
-      <p class="sub" style="margin:0 0 8px">First the UTAG database is checked and its knowledge applied. Every song the database has never seen is then run through the utag fixer automatically — the same fix as uploading the file on the UTAG site — and the result is saved both here and in the UTAG library. Everything is logged in the fixer's Activity tab. Songs with complete metadata are skipped. Fix those by hand below.</p></div>
+      <p class="sub" style="margin:0 0 8px">First the catalog is checked and its knowledge applied. Every song the catalog has never seen is then run through tag fixing automatically, and the result is saved both here and in the catalog. Everything is logged in the Activity tab. Songs with complete metadata are skipped. Fix those by hand below.</p></div>
       <div id="fix-review-cta" style="margin:4px 0 8px"></div>
       <h2 style="font-size:16px;margin:22px 0 6px">Needs fixing</h2>
       <div id="fix-skipped" style="color:var(--sub);font-size:13px;margin:-2px 0 4px"></div>
@@ -3297,7 +3297,7 @@ const App = (() => {
       '<div id="tagedit-artprev" style="width:96px;height:96px;border-radius:12px;overflow:hidden;background:var(--card);flex:none;display:flex;align-items:center;justify-content:center"></div>' +
       '<div style="flex:1"><button class="bigbtn" data-act="tag-art-upload" style="width:100%">Upload artwork</button>' +
       '<button class="bigbtn" data-act="tag-art-remove" data-id="' + t.id + '" style="width:100%;margin-top:8px">Remove artwork</button>' +
-      '<div class="sub" style="margin-top:6px">Hand-set artwork is never touched by the fixer.</div></div></div>' +
+      '<div class="sub" style="margin-top:6px">Hand-set artwork is never touched by tag fixing.</div></div></div>' +
       '<input type="file" id="tagedit-artfile" accept="image/*" style="display:none" />' +
       inp('title', 'Title', t.title) + inp('artist', 'Artist', t.artist) +
       inp('album', 'Album', t.album) + inp('albumArtist', 'Album artist', t.albumArtist) +
@@ -3355,7 +3355,7 @@ const App = (() => {
   async function fixArtistByKey(name) {
     const a = artistByName(name);
     if (!a || !(a.tracks || []).length) { toast('No songs by this artist yet'); return; }
-    if (S.fixing || fixUI.running) { toast('The utag fixer is already running'); return; }
+    if (S.fixing || fixUI.running) { toast('Fix tags is already running'); return; }
     closeSheet();
     nav('tagFixer');
     await fixAllSongs({ tracks: a.tracks, title: a.name });
@@ -3385,7 +3385,7 @@ const App = (() => {
     let fixJobId = null;
     try {
       const jr = await UTAG.fixerLog('start', {
-        title: 'utag fixer (Splotify)' + (scopeTitle ? ' — ' + scopeTitle : ''),
+        title: 'Fix tags (Splotify)' + (scopeTitle ? ' — ' + scopeTitle : ''),
         file_name: list.length + ' songs',
       });
       fixJobId = jr && jr.job_id ? jr.job_id : null;
@@ -3452,8 +3452,8 @@ const App = (() => {
       });
     } catch (e) {}
     toast(fixUI.scanned
-      ? `utag fixer: fixed ${fixUI.fixed} fields on ${fixUI.matched} songs` + (nq ? `, ${nq} to review` : '') + (fixUI.sent ? `, ${fixUI.sent} submitted` : '')
-      : 'utag fixer: tags already look good');
+      ? `Fix tags: fixed ${fixUI.fixed} fields on ${fixUI.matched} songs` + (nq ? `, ${nq} to review` : '') + (fixUI.sent ? `, ${fixUI.sent} submitted` : '')
+      : 'Fix tags: tags already look good');
     } finally {
       // v8.1: the run can never wedge the button on "Fixing…" again.
       fixUI.running = false; fixUI.album = ''; fixUI.skipNow = null; fixUI.scopeTitle = '';
@@ -3530,12 +3530,12 @@ const App = (() => {
     applyFixFilter();
   }
   const FX_STATUS = {
-    scanning: ['<span class="fx-dot"></span>Checking utag fixer…', 'scanning'],
+    scanning: ['<span class="fx-dot"></span>Checking tags…', 'scanning'],
     fixed: ['✓ Fixed', 'fixed'],
     review: ['→ Review', 'review'],
     ok: ['✓ Checked', 'ok'],
     nomatch: ['No match', 'nomatch'],
-    sent: ['Sent to UTAG', 'ok'],
+    sent: ['Sent for research', 'ok'],
     skipped: ['Skipped', 'skipped'],
   };
   function paintFixRow(id, status, note) {
@@ -3734,11 +3734,11 @@ const App = (() => {
       case 'sdb-server-placeholder': toast('Connect to server is not available yet'); break;
       case 'sdb-drive-placeholder': toast('Import from Google Drive is not available yet'); break;
       case 'sdb-import-all-utag': {
-        if (S.sdbImportingAll) { toast('Import from UTAG is already running'); break; }
+        if (S.sdbImportingAll) { toast('Import from catalog is already running'); break; }
         S.sdbImportingAll = true;
         try {
           const list = S.sdbAudio || [];
-          if (!list.length) { toast('No UTAG audio to import'); break; }
+          if (!list.length) { toast('No catalog audio to import'); break; }
           const existing = new Set((S.tracks || []).map(t => t.fileName).filter(Boolean));
           let imported = 0, skipped = 0, failed = 0;
           const prog = () => document.getElementById('sdb-utag-progress');
@@ -3758,8 +3758,8 @@ const App = (() => {
           }
           await refreshTracks();
           if (prog()) prog().textContent = '';
-          toast(`UTAG import done: ${imported} imported, ${skipped} skipped, ${failed} failed`);
-        } catch (e) { toast('Could not import from UTAG: ' + (e && e.message ? e.message : 'unknown error')); }
+          toast(`Catalog import done: ${imported} imported, ${skipped} skipped, ${failed} failed`);
+        } catch (e) { toast('Could not import from catalog: ' + (e && e.message ? e.message : 'unknown error')); }
         finally { S.sdbImportingAll = false; }
         break;
       }
@@ -4023,11 +4023,11 @@ const App = (() => {
         closeSheet();
         if (!t) break;
         if (S.fixing) break;
-        toast('Checking utag fixer…');
+        toast('Checking tags…');
         S.fixing = 'track-' + t.id; render();
         let res = null, oneJobId = null;
         try {
-          const jr = await UTAG.fixerLog('start', { title: 'utag fixer (Splotify) — 1 song', file_name: t.fileName || t.title || '' });
+          const jr = await UTAG.fixerLog('start', { title: 'Fix tags (Splotify) — 1 song', file_name: t.fileName || t.title || '' });
           oneJobId = jr && jr.job_id ? jr.job_id : null;
         } catch (e) {}
         try { res = await UTAG.fixTrack(t, { jobId: oneJobId }); } catch (e) { console.warn('utag fixer failed', e); }
@@ -4041,11 +4041,11 @@ const App = (() => {
         S.fixing = null;
         try {
           await refreshTracks(); render(); paintMini();
-          if (res && res.fixed > 0) toast('Tags fixed by utag fixer');
-          else if (res && res.status === 'review') toast('UTAG is still verifying this one');
-          else if (res && res.status === 'sent') toast('Sent to UTAG for research');
+          if (res && res.fixed > 0) toast('Tags fixed');
+          else if (res && res.status === 'review') toast('The catalog is still verifying this one');
+          else if (res && res.status === 'sent') toast('Sent for research');
           else if (res && res.status === 'skipped') toast('This song is skipped');
-          else if (res) toast('Tags already match UTAG');
+          else if (res) toast('Tags already match the catalog');
           else toast('Fix failed, try again');
         } catch (e) { console.warn('fix-track render failed', e); }
         break;
@@ -4064,6 +4064,7 @@ const App = (() => {
         break;
       }
       case 'cat-song': { const song = getCatSongAll(id); if (song) openCatSongSheet(song); break; }
+      case 'cat-menu': { const song = getCatSongAll(id); if (song) openCatSongSheet(song); break; }
       case 'upload-review-submit': await submitUploadReview(); break;
       case 'upload-review-skip': await skipUploadReview(); break;
       case 'cat-upload': { const song = getCatSongAll(id); if (song) await uploadCatSong(song); break; }
@@ -4119,6 +4120,7 @@ const App = (() => {
       case 'sheet-album': { const t = S.byId.get(Number(id)); closeSheet(); if (t) nav('album', albumKeyForTrack(t)); break; }
       case 'sheet-artist': { const t = S.byId.get(Number(id)); closeSheet(); if (t) { const ea = artists().find(x => x.tracks.includes(t)); if (ea) nav('artist', ea.name); } break; }
       case 'sheet-info': infoSheet(Number(id)); break;
+      case 'sheet-edit': openTagEditor(Number(id)); break;
       case 'sheet-library-toggle': {
         const tid = Number(id); closeSheet();
         if (libraryHas(tid)) { await libraryRemove(tid); toast('Removed from your library'); }

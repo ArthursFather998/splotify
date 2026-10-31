@@ -20,7 +20,7 @@ const UTAG = (() => {
     const tm = setTimeout(() => c.abort(), ms || 9000);
     try {
       const r = await fetch(url, { signal: c.signal, headers: { apikey: ANON, Authorization: 'Bearer ' + ANON } });
-      if (!r.ok) throw new Error('UTAG ' + r.status);
+      if (!r.ok) throw new Error('Catalog ' + r.status);
       return await r.json();
     } finally { clearTimeout(tm); }
   }
@@ -119,11 +119,11 @@ const UTAG = (() => {
     if (hit.art && !t.artManual && (opts.fillOnly ? !t.art : true)) {
       const blob = await artBlob(hit.art);
       const val = blob || hit.art;
-      if (t.art !== val) { t.art = val; t.artSource = 'UTAG'; changed.push('art'); }
+      if (t.art !== val) { t.art = val; t.artSource = 'Catalog'; changed.push('art'); }
     }
     if (changed.length) {
       t.tagged = true;
-      t.tagsVia = (t.tagsVia ? t.tagsVia + '+' : '') + 'UTAG';
+      t.tagsVia = (t.tagsVia ? t.tagsVia + '+' : '') + 'Catalog';
       if (opts.persist && t.id != null) {
         try {
           const upd = {
@@ -159,18 +159,18 @@ const UTAG = (() => {
       const before = { title: t.title, artist: t.artist, album: t.album, year: t.year };
       const changed = await applyHit(t, hit, { persist: true });
       const notes = changed.filter(f => f !== 'art').map(f => LABEL[f] + ': ' + (before[f] || '—') + ' → ' + (t[f] || '—'));
-      if (changed.includes('art')) notes.push('Artwork: UTAG');
-      return { fixed: changed.length, queued: [], status: changed.length ? 'fixed' : 'ok', note: notes.join('; ') || 'Checked against UTAG' };
+      if (changed.includes('art')) notes.push('Artwork: catalog');
+      return { fixed: changed.length, queued: [], status: changed.length ? 'fixed' : 'ok', note: notes.join('; ') || 'Checked against the catalog' };
     }
     const conf = hit.confidence === 'conflicting' ? 0.4 : 0.5;
     const queued = [];
     for (const f of ['title', 'artist', 'album', 'year']) {
       const to = f === 'year' ? hit.year : hit[f];
       if (to && String(t[f] == null ? '' : t[f]) !== String(to)) {
-        queued.push({ trackId: t.id, title: t.title, artist: t.artist, proposal: { field: f, from: t[f] || '', to, source: 'UTAG', confidence: conf } });
+        queued.push({ trackId: t.id, title: t.title, artist: t.artist, proposal: { field: f, from: t[f] || '', to, source: 'Catalog', confidence: conf } });
       }
     }
-    return { fixed: 0, queued, status: 'review', note: 'UTAG is still verifying' };
+    return { fixed: 0, queued, status: 'review', note: 'Catalog is still verifying' };
   }
 
   /* ---- pass 2: the fixer engine, in-house since v10.3 ----
@@ -316,7 +316,7 @@ const UTAG = (() => {
       const data = await r.json().catch(() => ({}));
       if (!r.ok || !data.ok) {
         const e = data.error;
-        throw new Error(typeof e === 'string' && e ? e : 'UTAG library call failed (HTTP ' + r.status + ')');
+        throw new Error(typeof e === 'string' && e ? e : 'Catalog call failed (HTTP ' + r.status + ')');
       }
       return data;
     } finally { clearTimeout(tm); }
@@ -344,14 +344,14 @@ const UTAG = (() => {
     const file = (t.file && t.file.size) ? t.file : null;
     if (!file) {
       await submit('miss', missPayload(t));
-      return { fixed: 0, queued: [], status: 'sent', note: 'Sent to UTAG' };
+      return { fixed: 0, queued: [], status: 'sent', note: 'Sent for research' };
     }
     let eng;
     try { eng = await ensureEngine(); }
     catch (e) {
       await log('error', 'fixer:auto', '"' + (t.title || 'Unknown Title') + '": fixer engine failed to load — queued for review.');
       await submit('miss', missPayload(t));
-      return { fixed: 0, queued: [], status: 'sent', note: 'Sent to UTAG' };
+      return { fixed: 0, queued: [], status: 'sent', note: 'Sent for research' };
     }
     let info, audit;
     try {
@@ -361,13 +361,13 @@ const UTAG = (() => {
     } catch (e) {
       await log('error', 'fixer:auto', '"' + (t.title || 'Unknown Title') + '": engine error — queued for review.');
       await submit('miss', missPayload(t));
-      return { fixed: 0, queued: [], status: 'sent', note: 'Sent to UTAG' };
+      return { fixed: 0, queued: [], status: 'sent', note: 'Sent for research' };
     }
     const proposals = (audit && audit.proposals) || [];
     if (!proposals.length && !(audit && audit.art) && !(audit && audit.lyrics)) {
       await log('warn', 'fixer:auto', '"' + (info.title || t.title) + '" by ' + (info.artist || t.artist) + ': engine found nothing — queued for review.');
       await submit('miss', missPayload(t));
-      return { fixed: 0, queued: [], status: 'sent', note: 'Sent to UTAG' };
+      return { fixed: 0, queued: [], status: 'sent', note: 'Sent for research' };
     }
     /* Fully automatic: every proposal applies. */
     const before = {};
@@ -382,7 +382,7 @@ const UTAG = (() => {
     }
     if (audit && audit.art && audit.art.blob && !t.artManual) {
       t.art = audit.art.blob;
-      t.artSource = audit.art.source || 'utag fixer';
+      t.artSource = audit.art.source || 'tag fixing';
       changed.push('art');
     }
     let auditLyrics = null;
@@ -395,8 +395,8 @@ const UTAG = (() => {
       changed.push('lyrics');
     }
     const notes = changed.filter(f => f !== 'art' && f !== 'lyrics').map(f => LABEL[f] + ': ' + (before[f] || '-') + ' → ' + (t[f] || '-'));
-    if (changed.includes('art')) notes.push('Artwork: utag fixer');
-    if (changed.includes('lyrics')) notes.push('Lyrics: ' + (auditLyrics && auditLyrics.source ? auditLyrics.source : 'utag fixer'));
+    if (changed.includes('art')) notes.push('Artwork: tag fixing');
+    if (changed.includes('lyrics')) notes.push('Lyrics: ' + (auditLyrics && auditLyrics.source ? auditLyrics.source : 'tag fixing'));
     if (changed.length) {
       t.tagged = true;
       t.tagsVia = (t.tagsVia ? t.tagsVia + '+' : '') + 'Fixer';
@@ -442,11 +442,11 @@ const UTAG = (() => {
         lyricsSource: t.lyricsSource || '', lyricsStatus: t.lyricsStatus || '',
       });
     } catch (e) {}
-    const note = (notes.join('; ') || 'Checked by utag fixer') +
-      (savedUtag ? ' · saved to UTAG' : queuedUtag ? ' · UTAG save queued' : '');
+    const note = (notes.join('; ') || 'Checked by tag fixing') +
+      (savedUtag ? ' · saved to the catalog' : queuedUtag ? ' · catalog save queued' : '');
     await log(changed.length ? 'success' : 'info', 'fixer:auto',
       '"' + t.title + '" by ' + t.artist + ': ' + (changed.length ? changed.length + ' field' + (changed.length === 1 ? '' : 's') + ' fixed' : 'already correct') +
-      (savedUtag ? ', saved to UTAG library.' : ', UTAG save queued.'));
+      (savedUtag ? ', saved to the catalog.' : ', catalog save queued.'));
     return { fixed: changed.length, queued: [], status: changed.length ? 'fixed' : 'ok', note };
   }
 
@@ -688,7 +688,7 @@ const UTAG = (() => {
   async function audioUrl(audioId) {
     if (!getSession()) throw new Error('Sign in first');
     const data = await fnCall({ action: 'audio_url', audio_id: audioId });
-    if (!data.signed_url && !data.mega_url) throw new Error('UTAG did not return a download link');
+    if (!data.signed_url && !data.mega_url) throw new Error('Catalog did not return a download link');
     return data.mega_url || data.signed_url;
   }
 
@@ -715,9 +715,9 @@ const UTAG = (() => {
         return new Blob([buf], { type: 'audio/mpeg' });
       } catch (e) { throw new Error('Mega download failed: ' + (e && e.message ? e.message : 'unknown error')); }
     }
-    if (!data.signed_url) throw new Error('UTAG did not return a download link');
+    if (!data.signed_url) throw new Error('Catalog did not return a download link');
     const r = await fetch(data.signed_url);
-    if (!r.ok) throw new Error('UTAG download failed');
+    if (!r.ok) throw new Error('Catalog download failed');
     return await r.blob();
   }
 
@@ -982,7 +982,7 @@ const UTAG = (() => {
         lyrics = { plain: hit.lyrics || '', synced: hit.lyricsSynced || '', source: hit.lyricsSource || '', status: hit.lyricsStatus || 'found' };
         changes.push({ field: 'lyrics', from: t.lyrics ? 'Saved lyrics' : '—', to: lyrics.source || 'Found lyrics' });
       }
-      return { ...base, after, changes, artUrl, artSource: artUrl ? 'UTAG' : '', lyrics,
+      return { ...base, after, changes, artUrl, artSource: artUrl ? 'Catalog' : '', lyrics,
         catalog: { exists: true, trackId: hit.trackId || null, artistId: hit.artistId || null, releaseId: hit.releaseId || null, artistExists: !!hit.artistId, releaseExists: !!hit.releaseId },
         source: 'utag', verified: hit.confidence === 'verified' || hit.confidence === 'high_confidence' };
     }

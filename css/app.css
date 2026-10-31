@@ -518,8 +518,8 @@ body.auth-gate #tabbar, body.auth-gate #miniplayer, body.auth-gate #nowplaying{d
 .sp-featcard img,.sp-featcard .art-ph{width:152px;height:152px;object-fit:cover;background:#262626}
 .sp-featcard .t{font-size:14px;font-weight:600;margin-top:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .sp-featcard .s{font-size:12px;color:var(--sub);margin-top:2px}
-.cat-notdl{color:var(--sub);font-size:12px;white-space:nowrap;flex:none}
-.cat-row .tmeta{opacity:.85}
+.cat-row{opacity:.62}
+.cat-row .tmeta{opacity:1}
 .search-save{color:var(--sub)}
 .search-save.saved{color:var(--pink)}
 .search-save svg{width:24px;height:24px}
