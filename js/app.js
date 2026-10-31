@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v10.13';
+  const APP_VERSION = 'v10.14';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -33,6 +33,10 @@ const App = (() => {
     // the account): past search queries, and entities opened from
     // search. Separate from S.recent, which is recently played.
     searchQueries: [], searchRecents: [],
+    // v10.14 catalog-create gating: null = role not yet checked.
+    // The server is the real gate (non-admin creates are rejected);
+    // this flag only decides whether the Create buttons are shown.
+    isAdmin: null, _adminLoading: false, _catPendingTrack: false,
     catAlbumKey: '', catAlbum: null, catHomeName: '', catHome: null,
     catArtistRelName: '', catArtistRel: null,
     catalogAlbum: null,
@@ -455,6 +459,17 @@ const App = (() => {
     S.recent.unshift({ kind: ctx.kind, id: ctx.id, ts: Date.now() });
     S.recent = S.recent.slice(0, 20);
     DB.kvSet('recent', S.recent).catch(() => {});
+  }
+  /* ---------- v10.14 catalog-create admin gate ---------- */
+  async function ensureAdmin() {
+    if (S.isAdmin !== null || S._adminLoading) return;
+    S._adminLoading = true;
+    try {
+      const role = await UTAG.getRole();
+      S.isAdmin = !!(role && role.kind === 'admin');
+    } catch (e) { S.isAdmin = false; }
+    S._adminLoading = false;
+    render();
   }
   /* ---------- play counts (Made by Splotify taste signal) ---------- */
   let playSaveT = 0;
@@ -1119,7 +1134,8 @@ const App = (() => {
     if (!ca.tracks || !ca.tracks.length) return head + `<div class="empty"><p>No songs found for this album.</p></div>`;
     const localTracks = S.tracks.filter(t => (t.album || '') && normKey(t.album) === normKey(ca.release.title));
     const m = mergedAlbumRows(localTracks, ca.tracks);
-    return detailHead('go-back', ca.release.art ? `<img class="hero-art" src="${esc(ca.release.art)}" alt="" onerror="App.artErr(this)">` : heroArt(localTracks.find(t => t.art)), ca.release.title, `Album • ${m.total} songs • ${m.downloaded} downloaded`) + playRow() + m.html;
+    return detailHead('go-back', ca.release.art ? `<img class="hero-art" src="${esc(ca.release.art)}" alt="" onerror="App.artErr(this)">` : heroArt(localTracks.find(t => t.art)), ca.release.title, `Album • ${m.total} songs • ${m.downloaded} downloaded`) + playRow()
+      + (S.isAdmin ? `<div style="padding:0 16px 12px"><button class="bigbtn" data-act="cat-add-track" data-id="${esc(id)}">Add song</button></div>` : '') + m.html;
   }
   async function kickCatalogAlbum(id) {
     const cur = S.stack[S.stack.length - 1] || {};
@@ -1189,8 +1205,8 @@ const App = (() => {
     const head = `<div class="pagehead"><button class="iconbtn" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><h1>${esc(ca.name || 'Artist')}</h1><span style="width:44px"></span></div>`;
     if (!ca || ca.id !== id) return head + `<div class="empty"><p>No songs found.</p></div>`;
     if (ca.loading) return head + skelTrow() + skelTrow() + skelTrow();
-    if (!ca.songs || !ca.songs.length) return head + `<div class="empty"><p>No songs found.</p></div>`;
-    return head + `<div class="sectionhead"><h2>Songs</h2></div>${ca.songs.map(catSongRow).join('')}`;
+    if (!ca.songs || !ca.songs.length) return head + (S.isAdmin ? `<div style="padding:0 16px 12px"><button class="bigbtn" data-act="cat-add-track-artist" data-id="${esc(ca.name || '')}">Add song</button></div>` : '') + `<div class="empty"><p>No songs found.</p></div>`;
+    return head + (S.isAdmin ? `<div style="padding:0 16px 12px"><button class="bigbtn" data-act="cat-add-track-artist" data-id="${esc(ca.name || '')}">Add song</button></div>` : '') + `<div class="sectionhead"><h2>Songs</h2></div>${ca.songs.map(catSongRow).join('')}`;
   }
   /* Get audio sheet for a catalog-only song: exactly two options. */
   function openCatSongSheet(song) {
@@ -1199,6 +1215,153 @@ const App = (() => {
     openSheet(`<div style="padding:10px 20px 24px"><h3 style="margin:8px 0 4px;font-size:17px">${esc(song.title)}</h3><div style="color:var(--sub);font-size:13px;margin-bottom:14px">${esc(sub)}</div>`
       + `<div class="sheet-item" data-act="cat-upload" data-id="${esc(song.id)}"><span><b>Upload audio</b></span></div>`
       + `<div class="sheet-item" data-act="cat-queue" data-id="${esc(song.id)}"><span><b>Queue DATUM rip</b></span></div></div>`);
+  }
+  /* ---------- v10.14 manual catalog creates, ported from UTAG.
+     Server actions are admin-gated and duplicate-safe; these sheets
+     are the UI that was missing from the merge. Forms are Splotify
+     sheets, not UTAG modals, but the fields and validation match
+     UTAG's create forms. Splotify reads the catalog live, so there
+     is no export-wait step after a create: navigation goes straight
+     to the new (or already existing) catalog entry. */
+  const CAT_INP = 'width:100%;box-sizing:border-box;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:13px 14px;color:var(--txt);font-size:16px;margin-bottom:10px';
+  const catVal = id => { const el = document.getElementById(id); return el ? el.value.trim() : ''; };
+  const catDurMs = id => {
+    const v = catVal(id); if (!v) return null;
+    if (v.includes(':')) { const [m, s] = v.split(':'); const n = (parseInt(m, 10) || 0) * 60 + (parseInt(s, 10) || 0); return n > 0 ? n * 1000 : null; }
+    const n = parseFloat(v); return Number.isFinite(n) && n > 0 ? Math.round(n * 1000) : null;
+  };
+  function catField(id, label, value, type) {
+    return `<div style="margin:14px 0 0"><label style="display:block;font-size:13px;font-weight:700;margin:0 0 6px">${label}</label>`
+      + `<input id="${id}" type="${type || 'text'}" autocomplete="off" autocapitalize="off" spellcheck="false" value="${esc(value || '')}" style="${CAT_INP}" /></div>`;
+  }
+  function catSelect(id, label, opts, selected) {
+    return `<div style="margin:14px 0 0"><label style="display:block;font-size:13px;font-weight:700;margin:0 0 6px">${label}</label>`
+      + `<select id="${id}" style="${CAT_INP}">${opts.map(o => `<option value="${o}"${o === selected ? ' selected' : ''}>${o}</option>`).join('')}</select></div>`;
+  }
+  function catFormFoot(saveAct, saveLabel, extra) {
+    return `<button class="bigbtn pink" data-act="${saveAct}"${extra || ''} style="width:100%;margin-top:16px">${saveLabel}</button>`
+      + `<button class="bigbtn" data-act="cat-close" style="width:100%;margin-top:10px">Cancel</button></div>`;
+  }
+  function navToCatalogAlbum(id) {
+    const cur = S.stack[S.stack.length - 1] || {};
+    if (cur.v === 'catalogAlbum' && String(cur.id) === String(id)) { S.catalogAlbum = { id, loading: true, tracks: [], release: null }; render(); return; }
+    nav('catalogAlbum', id);
+  }
+  async function navToCatalogArtist(id, name) {
+    const cur = S.stack[S.stack.length - 1] || {};
+    S.catArtist = { id, name: name || '', songs: [], loading: true, done: false };
+    if (!(cur.v === 'catalogArtist' && String(cur.id) === String(id))) nav('catalogArtist', id);
+    else render();
+    try {
+      const songs = await UTAG.catalogArtistSongs(id);
+      if (S.catArtist && S.catArtist.id === id) { S.catArtist.songs = songs || []; S.catArtist.loading = false; S.catArtist.done = true; render(); }
+    } catch (e) { if (S.catArtist && S.catArtist.id === id) { S.catArtist.songs = []; S.catArtist.loading = false; S.catArtist.done = true; render(); } }
+  }
+  function openCatCreateChooser() {
+    openSheet(`<div style="padding:10px 4px 24px"><h3 style="margin:4px 20px 12px;font-size:17px">Create catalog entry</h3>`
+      + `<div class="sheet-item" data-act="cat-create-artist"><span><b>Add new artist</b></span></div>`
+      + `<div class="sheet-item" data-act="cat-create-release" data-type="album"><span><b>Add new Album</b></span></div>`
+      + `<div class="sheet-item" data-act="cat-create-release" data-type="single"><span><b>Add new Single</b></span></div>`
+      + `<div class="sheet-item" data-act="cat-create-release" data-type="ep"><span><b>Add new EP</b></span></div></div>`);
+  }
+  function openCatArtistForm() {
+    openSheet(`<div style="padding:10px 20px 24px"><h3 style="margin:8px 0 4px;font-size:17px">Add new artist</h3>`
+      + catField('catf-artist-name', 'Name')
+      + catField('catf-artist-aliases', 'Aliases (comma separated)', '')
+      + catField('catf-artist-genres', 'Genres (comma separated)', '')
+      + catField('catf-artist-image', 'Image URL', '')
+      + catField('catf-artist-spotify', 'Spotify ID', '')
+      + catField('catf-artist-apple', 'Apple ID', '')
+      + catField('catf-artist-deezer', 'Deezer ID', '')
+      + catField('catf-artist-discogs', 'Discogs ID', '')
+      + catField('catf-artist-mbid', 'MusicBrainz ID', '')
+      + catFormFoot('cat-create-artist-save', 'Create artist'));
+  }
+  function openCatReleaseForm(presetType, presetArtistName, pendingTrack) {
+    const type = ['album', 'ep', 'single', 'compilation', 'soundtrack', 'other'].includes(presetType) ? presetType : 'album';
+    const title = type === 'ep' ? 'Add new EP' : type === 'single' ? 'Add new Single' : type === 'album' ? 'Add new Album' : 'Add new release';
+    openSheet(`<div style="padding:10px 20px 24px"><h3 style="margin:8px 0 4px;font-size:17px">${title}</h3>`
+      + (presetArtistName ? `<div style="color:var(--sub);font-size:14px;margin:4px 0 6px">Artist: ${esc(presetArtistName)}</div>` : catField('catf-release-artist', 'Artist name (creates the artist if new)', ''))
+      + catField('catf-release-title', 'Title', '')
+      + catSelect('catf-release-type', 'Type', ['album', 'ep', 'single', 'compilation', 'soundtrack', 'other'], type)
+      + catSelect('catf-release-edition', 'Edition', ['original', 'remaster', 'deluxe', 'reissue', 'regional', 'anniversary', 'other'], 'original')
+      + catSelect('catf-release-status', 'Release status', ['auto', 'released', 'unreleased'], 'auto')
+      + catField('catf-release-date', 'Release date (YYYY-MM-DD)', '')
+      + catField('catf-release-year', 'Release year', '', 'number')
+      + catField('catf-release-label', 'Label', '')
+      + catField('catf-release-catalog', 'Catalog no.', '')
+      + catField('catf-release-barcode', 'Barcode', '')
+      + catField('catf-release-country', 'Country', '')
+      + catField('catf-release-spotify', 'Spotify ID', '')
+      + catField('catf-release-apple', 'Apple ID', '')
+      + catField('catf-release-deezer', 'Deezer ID', '')
+      + catField('catf-release-discogs', 'Discogs ID', '')
+      + catField('catf-release-mbid', 'MusicBrainz ID', '')
+      + catField('catf-release-art', 'Cover art URL', '')
+      + catFormFoot('cat-create-release-save', 'Create release', (presetArtistName ? ` data-artist="${esc(presetArtistName)}"` : '') + (pendingTrack ? ' data-pending="1"' : '')));
+  }
+  function catTrackFieldsHTML() {
+    return catField('catf-track-title', 'Title', '')
+      + catField('catf-track-number', 'Track no. (blank for next)', '', 'number')
+      + catField('catf-track-disc', 'Disc no.', '1', 'number')
+      + catField('catf-track-duration', 'Length (m:ss)', '')
+      + catField('catf-track-isrc', 'ISRC', '')
+      + catField('catf-track-spotify', 'Spotify ID', '')
+      + catField('catf-track-apple', 'Apple ID', '')
+      + catField('catf-track-deezer', 'Deezer ID', '')
+      + catField('catf-track-mbid', 'MusicBrainz ID', '')
+      + `<div style="margin:14px 0 0"><label style="display:block;font-size:13px;font-weight:700;margin:0 0 6px">Lyrics (plain)</label><textarea id="catf-track-lyrics-plain" rows="6" style="${CAT_INP}"></textarea></div>`
+      + `<div style="margin:14px 0 0"><label style="display:block;font-size:13px;font-weight:700;margin:0 0 6px">Lyrics (synced LRC)</label><textarea id="catf-track-lyrics-synced" rows="6" style="${CAT_INP}"></textarea></div>`;
+  }
+  function catTrackPayload() {
+    return {
+      title: catVal('catf-track-title'),
+      track_number: catVal('catf-track-number') === '' ? null : parseInt(catVal('catf-track-number'), 10),
+      disc_number: catVal('catf-track-disc') === '' ? 1 : parseInt(catVal('catf-track-disc'), 10),
+      duration_ms: catDurMs('catf-track-duration'),
+      isrc: catVal('catf-track-isrc') || null,
+      spotify_id: catVal('catf-track-spotify') || null,
+      apple_id: catVal('catf-track-apple') || null,
+      deezer_id: catVal('catf-track-deezer') || null,
+      mbid: catVal('catf-track-mbid') || null,
+      lyrics_plain: catVal('catf-track-lyrics-plain'),
+      lyrics_synced: catVal('catf-track-lyrics-synced'),
+    };
+  }
+  function openCatTrackForm(releaseId, releaseTitle) {
+    openSheet(`<div style="padding:10px 20px 24px"><h3 style="margin:8px 0 4px;font-size:17px">Add song</h3>`
+      + `<div style="color:var(--sub);font-size:14px;margin:4px 0 6px">${esc(releaseTitle || '')}</div>`
+      + catTrackFieldsHTML()
+      + catFormFoot('cat-create-track-save', 'Add song', ` data-release="${esc(releaseId)}"`));
+  }
+  // Artist-page Add song, as in UTAG: pick a catalog release for the
+  // artist, or fill in a new release and the song is created on it.
+  async function openCatTrackForArtistForm(artistName) {
+    toast('Loading releases…');
+    let releases = [];
+    try { const r = await UTAG.catalogArtistReleases(artistName); releases = (r && r.releases) || []; } catch (e) { releases = []; }
+    const opts = [`<option value="">Choose a release</option>`]
+      .concat(releases.map(r => `<option value="${esc(r.id)}">${esc(r.title)}${r.year ? ` (${r.year})` : ''}</option>`)).join('');
+    openSheet(`<div style="padding:10px 20px 24px"><h3 style="margin:8px 0 4px;font-size:17px">Add song</h3>`
+      + `<div style="color:var(--sub);font-size:14px;margin:4px 0 6px">Artist: ${esc(artistName)}</div>`
+      + `<div style="margin:14px 0 0"><label style="display:block;font-size:13px;font-weight:700;margin:0 0 6px">Release</label><select id="catf-track-release" style="${CAT_INP}">${opts}</select></div>`
+      + `<div style="color:var(--sub);font-size:13px;margin-top:10px">Or create a new release for this song:</div>`
+      + catField('catf-track-new-release-title', 'New release title', '')
+      + catSelect('catf-track-new-release-type', 'New release type', ['album', 'ep', 'single', 'compilation', 'soundtrack', 'other'], 'single')
+      + catField('catf-track-new-release-year', 'New release year', '', 'number')
+      + catTrackFieldsHTML()
+      + catFormFoot('cat-create-track-artist-save', 'Add song', ` data-artist="${esc(artistName)}"`));
+  }
+  // Local-album Add song: use the catalog release the album already
+  // matches, or create that release first and then add the song to it.
+  async function openCatTrackForAlbumForm(albumKey) {
+    const a = albumByKey(albumKey); if (!a) return;
+    toast('Checking the catalog…');
+    let res = null;
+    try { res = await UTAG.catalogAlbumFor(a.artist, a.name); } catch (e) { res = null; }
+    if (res && res.release && res.release.id) { openCatTrackForm(res.release.id, res.release.title || a.name); return; }
+    S._catPendingTrack = true;
+    openCatReleaseForm(a.single ? 'single' : 'album', a.artist, true);
   }
   /* Minimal account sheet: shown only when a DATUM queue needs a sign-in.
      The session is device-local; after sign-in the pending queue runs. */
@@ -1341,6 +1504,7 @@ const App = (() => {
       const data = await UTAG.activityData();
       if (!data.signedIn) { S.acct = { loading: false, signedIn: false }; render(); return; }
       S.acct = { loading: false, signedIn: true, profile: data.profile, isAdmin: data.isAdmin };
+      S.isAdmin = !!data.isAdmin;
     } catch (e) { S.acct = { loading: false, signedIn: false }; }
     render();
   }
@@ -1626,6 +1790,7 @@ const App = (() => {
     // picks data-act="play-track" rows, so catalog rows can't enter a queue).
     return `<div class="detail-hero"><button class="iconbtn back" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button>${heroArt(a.art)}<h1>${esc(a.name)}</h1><div class="meta" id="album-meta">${a.single ? 'Single' : 'Album'} • ${esc(a.artist)} • ${a.tracks.length} song${a.tracks.length === 1 ? '' : 's'}</div></div>`
       + playRow()
+      + (S.isAdmin ? `<div style="padding:0 16px 12px"><button class="bigbtn" data-act="cat-add-track-album" data-id="${esc(a.key)}">Add song to catalog</button></div>` : '')
       + `<div id="album-tracks">${a.tracks.map(t => trackRow(t)).join('')}</div>`;
   }
   function vArtist(name) {
@@ -1923,6 +2088,7 @@ const App = (() => {
       <div class="setrow" data-act="clear-recent"><div>Clear recently played</div></div>
     </div>
     <div class="setgroup"><h2>Metadata</h2>
+      ${S.isAdmin ? `<div class="setrow" data-act="cat-create-chooser"><div>Create catalog entry<div class="sub">Add an artist, album, single, EP, or song</div></div><span style="color:var(--sub)">${icon('plus')}</span></div>` : ''}
       <div class="setrow"><div>Catalog<div class="sub" id="set-utag">Checking…</div></div><span style="color:var(--sub)">${icon('tag')}</span></div>
       <div class="setrow" data-act="open-fixer-keys"><div>Tag source keys<div class="sub">AcoustID and fanart.tv</div></div><span style="color:var(--sub)">${icon('chevR', 'width:20px;height:20px')}</span></div>
     </div>
@@ -2737,6 +2903,11 @@ const App = (() => {
   };
   function render() {
     const cur = S.stack[S.stack.length - 1] || { v: 'home' };
+    // v10.14: resolve the admin flag once for views that show Create
+    // buttons, so a signed-in admin sees them without opening Account.
+    if (['artist', 'album', 'catalogAlbum', 'catalogArtist', 'settings'].includes(cur.v) && S.isAdmin === null) {
+      try { if (UTAG.getSession()) ensureAdmin(); } catch (e) {}
+    }
     document.body.classList.toggle('auth-gate', cur.v === 'auth');
     const st = view().scrollTop;
     const sameView = S._lastViewKey === cur.v + '|' + (cur.id || '');
@@ -3258,7 +3429,11 @@ const App = (() => {
       <div class="sheet-item" data-act="artist-shuffle" data-id="${esc(a.name)}">${icon('shuffle')}Shuffle</div>
       <div class="sheet-item" data-act="artist-follow" data-id="${esc(a.name)}">${icon(following ? 'check' : 'plus')}${following ? 'Following' : 'Follow'}</div>
       <div class="sheet-item" data-act="open-artist-releases" data-id="${esc(a.name)}">${icon('disc')}See discography</div>
-      <div class="sheet-item" data-act="fix-artist" data-id="${esc(a.name)}">${icon('tag')}Fix tags</div>`);
+      <div class="sheet-item" data-act="fix-artist" data-id="${esc(a.name)}">${icon('tag')}Fix tags</div>
+      ${S.isAdmin ? `<div class="sheet-item" data-act="cat-create-release" data-type="album" data-id="${esc(a.name)}">${icon('plus')}Add album</div>
+      <div class="sheet-item" data-act="cat-create-release" data-type="single" data-id="${esc(a.name)}">${icon('plus')}Add single</div>
+      <div class="sheet-item" data-act="cat-create-release" data-type="ep" data-id="${esc(a.name)}">${icon('plus')}Add EP</div>
+      <div class="sheet-item" data-act="cat-add-track-artist" data-id="${esc(a.name)}">${icon('plus')}Add song</div>` : ''}`);
   }
   function infoSheet(id) {
     const t = S.byId.get(id); if (!t) return;
@@ -3744,6 +3919,81 @@ const App = (() => {
       }
       case 'search-view-all': S.searchAll = true; S.searchFilter = 'all'; render(); break;
       case 'search-filter': S.searchFilter = id; render(); break;
+      /* v10.14 manual catalog creates (UTAG create forms, ported). */
+      case 'cat-close': closeSheet(); break;
+      case 'cat-create-chooser': openCatCreateChooser(); break;
+      case 'cat-create-artist': openCatArtistForm(); break;
+      case 'cat-create-release': openCatReleaseForm(el.dataset.type, id || '', false); break;
+      case 'cat-add-track-artist': openCatTrackForArtistForm(id); break;
+      case 'cat-add-track-album': await openCatTrackForAlbumForm(id); break;
+      case 'cat-add-track': { const t = (S.catalogAlbum && S.catalogAlbum.release && S.catalogAlbum.release.title) || ''; openCatTrackForm(id, t); break; }
+      case 'cat-create-artist-save': {
+        const name = catVal('catf-artist-name');
+        if (!name) { toast('Give the artist a name first'); break; }
+        try {
+          const res = await UTAG.createArtist({ canonical_name: name, aliases: catVal('catf-artist-aliases'), genres: catVal('catf-artist-genres'), image_url: catVal('catf-artist-image') || null, spotify_id: catVal('catf-artist-spotify') || null, apple_id: catVal('catf-artist-apple') || null, deezer_id: catVal('catf-artist-deezer') || null, discogs_id: catVal('catf-artist-discogs') || null, mbid: catVal('catf-artist-mbid') || null });
+          closeSheet();
+          if (res && res.artist_id) { toast(res.existed ? 'Artist already exists' : 'Artist created'); await navToCatalogArtist(res.artist_id, name); }
+          else toast('Artist created');
+        } catch (e) { toast(e && e.message ? e.message : 'Create failed'); }
+        break;
+      }
+      case 'cat-create-release-save': {
+        const title = catVal('catf-release-title');
+        const artistName = el.dataset.artist || catVal('catf-release-artist');
+        const yearRaw = catVal('catf-release-year');
+        if (!title) { toast('Give the release a title first'); break; }
+        if (!artistName) { toast('Choose an artist or type a new artist name'); break; }
+        if (yearRaw && Number.isNaN(parseInt(yearRaw, 10))) { toast('Release year must be a number'); break; }
+        const pending = el.dataset.pending === '1' || S._catPendingTrack;
+        try {
+          const res = await UTAG.createRelease({ artist_name: artistName, title, release_type: catVal('catf-release-type') || 'album', edition: catVal('catf-release-edition') || 'original', release_status: catVal('catf-release-status') || 'auto', release_date: catVal('catf-release-date') || null, release_year: yearRaw === '' ? null : parseInt(yearRaw, 10), label: catVal('catf-release-label') || null, catalog_number: catVal('catf-release-catalog') || null, barcode: catVal('catf-release-barcode') || null, country: catVal('catf-release-country') || null, spotify_id: catVal('catf-release-spotify') || null, apple_id: catVal('catf-release-apple') || null, deezer_id: catVal('catf-release-deezer') || null, discogs_id: catVal('catf-release-discogs') || null, mbid: catVal('catf-release-mbid') || null, art_url: catVal('catf-release-art') || null });
+          S._catPendingTrack = false;
+          closeSheet();
+          if (res && res.release_id && pending) { toast(res.existed ? 'Release already exists' : 'Release created'); openCatTrackForm(res.release_id, title); }
+          else if (res && res.release_id) { toast(res.existed ? 'Release already exists' : 'Release created'); navToCatalogAlbum(res.release_id); }
+          else toast('Release created');
+        } catch (e) { S._catPendingTrack = pending; toast(e && e.message ? e.message : 'Create failed'); }
+        break;
+      }
+      case 'cat-create-track-save': {
+        const releaseId = el.dataset.release || id;
+        const payload = catTrackPayload();
+        if (!payload.title) { toast('Give the song a title first'); break; }
+        if (!releaseId) { toast('Could not find that release'); break; }
+        try {
+          const res = await UTAG.createTrack(releaseId, payload);
+          if (res && res.existed) { toast('That song is already on this release'); break; }
+          closeSheet();
+          toast('Song added');
+          navToCatalogAlbum((res && res.release_id) || releaseId);
+        } catch (e) { toast(e && e.message ? e.message : 'Add failed'); }
+        break;
+      }
+      case 'cat-create-track-artist-save': {
+        const artistName = el.dataset.artist || '';
+        const payload = catTrackPayload();
+        if (!payload.title) { toast('Give the song a title first'); break; }
+        const newTitle = catVal('catf-track-new-release-title');
+        const selRelease = catVal('catf-track-release');
+        if (!newTitle && !selRelease) { toast('Choose a release or give a new release title'); break; }
+        try {
+          let releaseId = selRelease;
+          if (newTitle) {
+            const yearRaw = catVal('catf-track-new-release-year');
+            if (yearRaw && Number.isNaN(parseInt(yearRaw, 10))) { toast('Release year must be a number'); break; }
+            const rres = await UTAG.createRelease({ artist_name: artistName, title: newTitle, release_type: catVal('catf-track-new-release-type') || 'single', release_year: yearRaw === '' ? null : parseInt(yearRaw, 10) });
+            releaseId = (rres && rres.release_id) || releaseId;
+          }
+          if (!releaseId) { toast('Could not find that release'); break; }
+          const res = await UTAG.createTrack(releaseId, payload);
+          if (res && res.existed) { toast('That song is already on this release'); break; }
+          closeSheet();
+          toast('Song added');
+          navToCatalogAlbum(releaseId);
+        } catch (e) { toast(e && e.message ? e.message : 'Add failed'); }
+        break;
+      }
       case 'track-toggle-lib': {
         const t = S.byId.get(Number(id)); if (!t) break;
         if (libraryHas(t.id)) { await libraryRemove(t.id); toast('Removed from your library'); }
@@ -3804,6 +4054,7 @@ const App = (() => {
         try {
           if (act === 'auth-signin') await UTAG.signIn(email, pass);
           else await UTAG.signUp(email, pass);
+          S.isAdmin = null; S._adminLoading = false;
           toast('Signed in');
           await boot();
         } catch (e) { toast(e && e.message ? e.message : 'Sign-in failed'); }
@@ -3818,6 +4069,7 @@ const App = (() => {
         try {
           if (act === 'acct-signin') await UTAG.signIn(email, pass);
           else await UTAG.signUp(email, pass);
+          S.isAdmin = null; S._adminLoading = false;
           closeSheet();
           toast('Signed in');
           await refreshAcctViews();
@@ -3829,6 +4081,7 @@ const App = (() => {
         try { UTAG.clearSession(); } catch (e) {}
         S.acct = { loading: false, signedIn: false };
         S.act = { loading: false, signedIn: false };
+        S.isAdmin = null; S._adminLoading = false;
         toast('Signed out');
         showAuthGate();
         break;

@@ -1163,6 +1163,14 @@ const UTAG = (() => {
       review: reviewRes.status === 'fulfilled' && reviewRes.value ? ((reviewRes.value && reviewRes.value.proposals) || []) : [],
     };
   }
+  /* ---- v10.14: manual catalog creates, ported from the UTAG site.
+     The server actions are admin-gated and duplicate-safe (an
+     existing artist/release/track is returned with existed:true
+     instead of a second row), so the client only needs to call
+     them and navigate to the returned id. */
+  async function createArtist(payload) { return fnCall({ action: 'create_artist', ...(payload || {}) }); }
+  async function createRelease(payload) { return fnCall({ action: 'create_release', ...(payload || {}) }); }
+  async function createTrack(releaseId, payload) { return fnCall({ action: 'create_track', release_id: releaseId, ...(payload || {}) }); }
   async function approveProposal(id) { return fnCall({ action: 'metadata_proposal_approve', proposal_id: id }); }
   async function rejectProposal(id, note) { return fnCall({ action: 'metadata_proposal_reject', proposal_id: id, review_note: note || null }); }
   async function retryDatumJob(id) { return fnCall({ action: 'datum_retry', job_id: id }); }
@@ -1313,5 +1321,5 @@ const UTAG = (() => {
   }
 
   try { window.addEventListener('online', () => drain()); } catch (e) {}
-  return { lookup, fixTrack, enrich, ensureLyrics, learn, submit, drain, migrate, stats, norm, fixerLog, listAudio, audioUrl, audioBlob, megaFolderLink, setMegaFolderLink, listMegaFolder, megaFolderBlob, getSession, setSession, clearSession, signIn, signUp, catalogSearch, catalogArtistSongs, catalogReleaseTracks, catalogAlbumFor, catalogArtistReleases, matchLocal, findLocal, queueDatumRip, uploadReview, submitUpload, getRole, activityData, approveProposal, rejectProposal, retryDatumJob, adminUsers, setUserRole, refreshSession, logHistory, migrateLocalData };
+  return { lookup, fixTrack, enrich, ensureLyrics, learn, submit, drain, migrate, stats, norm, fixerLog, listAudio, audioUrl, audioBlob, megaFolderLink, setMegaFolderLink, listMegaFolder, megaFolderBlob, getSession, setSession, clearSession, signIn, signUp, catalogSearch, catalogArtistSongs, catalogReleaseTracks, catalogAlbumFor, catalogArtistReleases, matchLocal, findLocal, queueDatumRip, uploadReview, submitUpload, getRole, activityData, approveProposal, rejectProposal, retryDatumJob, adminUsers, setUserRole, refreshSession, logHistory, migrateLocalData, createArtist, createRelease, createTrack };
 })();
