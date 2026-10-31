@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v10.10';
+  const APP_VERSION = 'v10.11';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -4365,53 +4365,13 @@ const App = (() => {
     const i = S._pls.findIndex(x => x.id === pl.id);
     if (i >= 0) S._pls[i] = pl; else S._pls.push(pl);
   }
-  async function boot() {
-    // Login gate: no session, no app. The auth view is the whole app until
-    // sign-in, and boot runs for real only after that.
-    if (!UTAG.getSession()) { showAuthGate(); return; }
-    if (S._booted) { S.stack = [{ v: 'home' }]; render(); return; }
-    S._booted = true;
-    // Silent refresh up front: fresh tokens return at once (no network);
-    // an invalid token drops back to the gate before anything loads.
-    // A network failure keeps the old session, so offline use still works.
-    try { const s = await UTAG.refreshSession(); if (!s) { showAuthGate(); return; } } catch (e) {}
-    // Show skeleton content immediately: IndexedDB + the player take a moment,
-    // and the view would otherwise sit blank on cold start.
-    try { view().innerHTML = vSkeletonHome(); } catch (e) {}
-    await DB.open();
-    try { if (navigator.storage && navigator.storage.persist) await navigator.storage.persist(); } catch (e) {}
-    await dedupeLibraryOnce();
-    await migrateV7();
-    await refreshTracks();
-    try {
-      // v7.0: follow state lives in the roster table; rebuild the in-memory set.
-      S.followedArtists = new Set();
-      S.artists.forEach(a => { if (a.followed) S.followedArtists.add(artistKey(a.name)); });
-    } catch (e) {}
-    await loadRecent();
-    Importer.bind();
-    // Warm the singles discography early so the first render orders the
-    // Singles shelf newest-first; the post-heal pass below recomputes.
-    Importer.recordSingles([...S.tracks]).then(async c => {
-      if (c > 0) { await refreshTracks(); render(); paintMini(); }
-    }).catch(() => {});
-    // Quietly fix missing tags on tracks already in the library (no re-import needed),
-    // then register single releases from the bundled discography.
-    setTimeout(() => {
-      try { UTAG.migrate(); UTAG.drain(); } catch (e) {}
-      Importer.healLibrary().then(async ({ fixed: n, changed }) => {
-        const c = await Importer.recordSingles([...S.tracks]);
-        if (changed > 0 || c > 0) {
-          await refreshTracks(); render(); paintMini();
-          if (n > 0) toast(`Fixed tags for ${n} song${n === 1 ? '' : 's'}`);
-        }
-      }).catch(() => {});
-    }, 1500);
-    await Player.init();
-    // Phase 6: one-time migration offer for a newly signed-in admin.
-    // Fire-and-forget: it never blocks boot or playback.
-    maybeOfferMigration();
-
+  /* v10.11: UI bindings live here, NOT at the end of boot(). boot()
+     used to return early on the login gate (no session), so on a fresh
+     device the document click listener was never bound and the Sign in
+     button did literally nothing. bindUI runs on every boot, gated or
+     not, and no-ops on repeat calls. */
+  function bindUI() {
+    if (S._bound) return; S._bound = true;
     Player.on('track', () => { paintMini(); paintNowPlaying(); render(); });
     Player.on('state', () => { paintMini(); paintNowPlaying(); paintDbBgMode(); });
     /* Unfinished Drive backup? Pick it back up on its own — unless the user
@@ -4529,6 +4489,56 @@ const App = (() => {
     })();
 
     document.addEventListener('keydown', e => { if (e.key === 'Escape') { if (lyricsOpen) { closeLyrics(); return; } closeSheet(); closeNP(); } });
+  }
+  async function boot() {
+    bindUI();
+    // Login gate: no session, no app. The auth view is the whole app until
+    // sign-in, and boot runs for real only after that.
+    if (!UTAG.getSession()) { showAuthGate(); return; }
+    if (S._booted) { S.stack = [{ v: 'home' }]; render(); return; }
+    S._booted = true;
+    // Silent refresh up front: fresh tokens return at once (no network);
+    // an invalid token drops back to the gate before anything loads.
+    // A network failure keeps the old session, so offline use still works.
+    try { const s = await UTAG.refreshSession(); if (!s) { showAuthGate(); return; } } catch (e) {}
+    // Show skeleton content immediately: IndexedDB + the player take a moment,
+    // and the view would otherwise sit blank on cold start.
+    try { view().innerHTML = vSkeletonHome(); } catch (e) {}
+    await DB.open();
+    try { if (navigator.storage && navigator.storage.persist) await navigator.storage.persist(); } catch (e) {}
+    await dedupeLibraryOnce();
+    await migrateV7();
+    await refreshTracks();
+    try {
+      // v7.0: follow state lives in the roster table; rebuild the in-memory set.
+      S.followedArtists = new Set();
+      S.artists.forEach(a => { if (a.followed) S.followedArtists.add(artistKey(a.name)); });
+    } catch (e) {}
+    await loadRecent();
+    Importer.bind();
+    // Warm the singles discography early so the first render orders the
+    // Singles shelf newest-first; the post-heal pass below recomputes.
+    Importer.recordSingles([...S.tracks]).then(async c => {
+      if (c > 0) { await refreshTracks(); render(); paintMini(); }
+    }).catch(() => {});
+    // Quietly fix missing tags on tracks already in the library (no re-import needed),
+    // then register single releases from the bundled discography.
+    setTimeout(() => {
+      try { UTAG.migrate(); UTAG.drain(); } catch (e) {}
+      Importer.healLibrary().then(async ({ fixed: n, changed }) => {
+        const c = await Importer.recordSingles([...S.tracks]);
+        if (changed > 0 || c > 0) {
+          await refreshTracks(); render(); paintMini();
+          if (n > 0) toast(`Fixed tags for ${n} song${n === 1 ? '' : 's'}`);
+        }
+      }).catch(() => {});
+    }, 1500);
+    await Player.init();
+    // Phase 6: one-time migration offer for a newly signed-in admin.
+    // Fire-and-forget: it never blocks boot or playback.
+    maybeOfferMigration();
+
+
 
     S.stack = [{ v: 'home' }];
     render();
