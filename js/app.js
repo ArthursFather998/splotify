@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v10.14';
+  const APP_VERSION = 'v10.15';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -11,6 +11,9 @@ const App = (() => {
     editRecent: false,
     artistFor: '', artistTab: 'music', artistExpanded: false, artistReleasesExpanded: false,
     artistFilter: 'all', followedArtists: new Set(),
+    // v10.15 UTAG discography state: selected tab + merged catalog
+    // discography for the open artist (null = not fetched, false = failed).
+    artistDiscTab: 'albums', catDiscogName: '', catDiscog: null,
     // v7.0: S.tracks/S.byId is the SDB (every song known). S.library is the
     // user's library: an ordered array of saved SDB track IDs (membership
     // list, not a copy). S.artists is the artist roster table cache.
@@ -383,6 +386,46 @@ const App = (() => {
       .filter(x => splitArtists(x.artist).some(p => artistKey(p) === akey) || x.tracks.some(t => trackArtistKeys(t).includes(akey)))
       .map(x => ({ ...x, kind: releaseKind(x), group: releaseGroup(x, akey), year: releaseYear(x) }))
       .sort((x, y) => (y.year - x.year) || y.tracks.length - x.tracks.length || x.name.localeCompare(y.name));
+  }
+  /* ---------- v10.15 UTAG-style discography tabs ----------
+     Ported from UTAG's artist page: Albums | Singles and EP's |
+     Unreleased, card grid, square art, title, "year • type",
+     newest first. Catalog type/status wins on an exact title
+     match; local-only releases use Splotify's kind and count as
+     released (they are in the library). Compilations and other
+     types file under Albums so nothing vanishes, where UTAG's
+     two filters would have dropped them. */
+  const discTypeLabel = t => t === 'ep' ? 'EP' : t === 'single' ? 'Single' : t === 'soundtrack' ? 'Soundtrack' : 'Album';
+  function discTabFor(it) {
+    if (it.status === 'unreleased') return 'unreleased';
+    return (it.typeLabel === 'Single' || it.typeLabel === 'EP') ? 'singles' : 'albums';
+  }
+  function discItemsForArtist(a, catReleases) {
+    const merged = artistReleases(a).map(x => ({ title: x.name, year: x.year, artTrack: x.art, typeLabel: x.kind, status: 'released', localKey: x.key, catId: null }));
+    if (!catReleases || !catReleases.length) return merged;
+    const byTitle = new Map(merged.map(it => [normKey(it.title), it]));
+    catReleases.forEach(cr => {
+      const m = byTitle.get(normKey(cr.title));
+      if (m) { m.typeLabel = discTypeLabel(cr.type); m.status = cr.status; if (cr.year) m.year = cr.year; m.catId = cr.id; }
+      else merged.push({ title: cr.title, year: cr.year, artUrl: cr.art || '', typeLabel: discTypeLabel(cr.type), status: cr.status, localKey: null, catId: cr.id });
+    });
+    return merged;
+  }
+  function discCardHTML(it) {
+    const meta = [it.year, it.typeLabel].filter(Boolean).join(' • ');
+    const art = it.artUrl ? `<img src="${esc(it.artUrl)}" alt="" loading="lazy" onerror="App.artErr(this)">` : (it.artTrack ? artImg(it.artTrack, '') : `<div class="art-ph">${icon('note')}</div>`);
+    const act = it.localKey ? `data-act="open-album" data-id="${esc(it.localKey)}"` : `data-act="open-cat-album" data-id="${esc(it.catId)}"`;
+    return `<div class="disc-card${it.localKey ? '' : ' disc-cat'}" ${act}><span class="disc-art">${art}</span><span class="disc-title">${esc(it.title)}</span>${meta ? `<span class="disc-meta">${esc(meta)}</span>` : ''}${it.status === 'unreleased' ? `<span class="disc-meta disc-unrel">Unreleased</span>` : ''}</div>`;
+  }
+  async function kickArtistDiscog(name) {
+    const cur = S.stack[S.stack.length - 1] || {};
+    if (cur.v !== 'artistReleases' || cur.id !== name) return;
+    if (S.catDiscogName === name && (S.catDiscog || S.catDiscog === false)) return;
+    S.catDiscogName = name; S.catDiscog = null;
+    try {
+      const d = await UTAG.catalogDiscography(name);
+      if (S.catDiscogName === name) { S.catDiscog = (d && d.releases) || []; render(); }
+    } catch (e) { if (S.catDiscogName === name) S.catDiscog = false; }
   }
   function artistTopTracks(a) {
     const rank = t => [
@@ -1804,7 +1847,6 @@ const App = (() => {
     const top = artistTopTracks(a);
     const shownTop = (S.artistExpanded ? top.slice(0, 10) : top.slice(0, 5));
     const rels = artistReleases(a);
-    const shownRels = S.artistReleasesExpanded ? rels : rels.slice(0, 4);
     const following = S.followedArtists.has(akey);
     const isCurrent = Player.current && Player.state.ctx && Player.state.ctx.kind === 'artist' && Player.state.ctx.id === a.name;
     const playIcon = isCurrent && Player.isPlaying ? 'pause' : 'play';
@@ -1816,9 +1858,6 @@ const App = (() => {
       ${shownTop.map((t, i) => artistTrackRow(t, i)).join('')}
       ${top.length > 5 ? `<button class="ax-more" data-act="artist-toggle-popular">${S.artistExpanded ? 'See less' : 'See more'} <span class="${S.artistExpanded ? 'up' : ''}">${icon('chevD')}</span></button>` : ''}
       <button class="ax-discog" data-act="open-artist-releases" data-id="${esc(a.name)}">See discography ${icon('chevR')}</button>
-      ${rels.length ? `<div class="sectionhead ax-section"><h2>Popular Releases</h2></div>
-      <div class="ax-expand ${S.artistReleasesExpanded ? 'open' : ''}">${shownRels.map(releaseRow).join('')}</div>
-      ${rels.length > 4 ? `<button class="ax-more" data-act="artist-toggle-releases">${S.artistReleasesExpanded ? 'Show less' : 'Show all'} <span class="${S.artistReleasesExpanded ? 'up' : ''}">${icon('chevD')}</span></button>` : ''}` : ''}
       ${featPlaylists.length || top.length ? `<div class="sectionhead ax-section"><h2>Featuring ${esc(a.name)}</h2></div><div class="ax-cards">
         <div class="ax-this" data-act="artist-play" data-id="${esc(a.name)}">${artImg(top[0] || a.art, '')}<div><b>This Is ${esc(a.name)}</b><span>The essentials, all in one place.</span></div></div>
         ${featPlaylists.map(p => { const t = p.trackIds.map(tid => S.byId.get(tid)).find(Boolean); return `<div class="ax-card" data-act="open-playlist" data-id="${p.id}">${artImg(t, '')}<div class="t">${esc(p.name)}</div><div class="s">Playlist</div></div>`; }).join('')}
@@ -1856,24 +1895,16 @@ const App = (() => {
     const a = artistViewModel(name);
     if (!a) return vLibrary();
     S.viewCtx = { kicker: 'PLAYING FROM ARTIST', name: a.name, kind: 'artist', id: a.name };
-    const rels = artistReleases(a);
-    const groups = [['albums', 'Albums'], ['singles', 'Singles and EPs'], ['compilations', 'Compilations'], ['featured', 'Featured on']];
-    const filters = [['all', 'All'], ...groups.filter(([g]) => rels.some(x => x.group === g))];
-    if (!filters.some(([g]) => g === S.artistFilter)) S.artistFilter = 'all';
-    const list = S.artistFilter === 'all' ? rels : rels.filter(x => x.group === S.artistFilter);
-    const allTracks = [...a.tracks].sort((x, y) => String(x.album || '').localeCompare(String(y.album || '')) || (x.trackNo || 99) - (y.trackNo || 99) || x.title.localeCompare(y.title));
-    const releaseBody = groups.map(([g, label]) => {
-        const xs = rels.filter(x => x.group === g);
-        return xs.length ? `<div class="sectionhead ax-section"><h2>${label}</h2></div>${xs.map(releaseRow).join('')}` : '';
-      }).join('');
-    const body = S.artistFilter === 'all'
-      ? releaseBody + (allTracks.length ? `<div class="sectionhead ax-section"><h2>All songs</h2></div>${allTracks.map((t, i) => artistTrackRow(t, i)).join('')}` : '')
-      : list.map(releaseRow).join('');
+    if (!['albums', 'singles', 'unreleased'].includes(S.artistDiscTab)) S.artistDiscTab = 'albums';
+    const cat = (S.catDiscogName === name && Array.isArray(S.catDiscog)) ? S.catDiscog : null;
+    const items = discItemsForArtist(a, cat).sort((x, y) => ((y.year || 0) - (x.year || 0)) || String(x.title).localeCompare(String(y.title)));
+    const tabs = [['albums', 'Albums'], ['singles', "Singles and EP's"], ['unreleased', 'Unreleased']];
+    const list = items.filter(it => discTabFor(it) === S.artistDiscTab);
     return `<div class="ax-page releases">
-      <header class="ax-relbar"><button class="ax-back solid" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><div><h1>Releases</h1><p>${esc(a.name)}</p></div><span></span></header>
-      <div class="ax-chips">${filters.map(([g, label]) => `<button class="${S.artistFilter === g ? 'on' : ''}" data-act="artist-filter" data-id="${g}">${label}</button>`).join('')}</div>
-      ${body || `<div class="empty"><h3>No releases found</h3><p>Releases for ${esc(a.name)} will appear here.</p></div>`}
-      <div id="cat-artist-rel"></div>
+      <header class="ax-relbar"><button class="ax-back solid" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><div><h1>Discography</h1><p>${esc(a.name)}</p></div><span></span></header>
+      <div class="disc-tabs">${tabs.map(([t, label]) => `<button class="disc-tab ${S.artistDiscTab === t ? 'on' : ''}" data-act="artist-disc-tab" data-id="${t}">${label}</button>`).join('')}</div>
+      ${list.length ? `<div class="disc-grid">${list.map(discCardHTML).join('')}</div>` : `<div class="empty"><h3>Nothing here yet</h3><p>No releases in this tab for ${esc(a.name)} yet.</p></div>`}
+      ${cat === null ? `<div class="disc-note">Loading the catalog…</div>` : ''}
       <div class="ax-bottom"></div>
     </div>`;
   }
@@ -2917,7 +2948,7 @@ const App = (() => {
     view().onscroll = null;
     if (cur.v === 'home') kickHomeCatalog();
     if (cur.v === 'artist') { bindArtistScroll(); kickArtistCatalog(cur.id); }
-    if (cur.v === 'artistReleases') kickArtistCatalog(cur.id);
+    if (cur.v === 'artistReleases') kickArtistDiscog(cur.id);
     if (cur.v === 'album') kickAlbumCatalog(cur.id);
     if (cur.v === 'catalogAlbum') kickCatalogAlbum(cur.id);
     if (cur.v === 'driveBackup') paintDbBgMode();
@@ -4263,8 +4294,7 @@ const App = (() => {
       case 'open-artist-releases': closeSheet(); nav('artistReleases', id); break;
       case 'artist-tab': S.artistTab = id; render(); break;
       case 'artist-toggle-popular': S.artistExpanded = !S.artistExpanded; render(); break;
-      case 'artist-toggle-releases': S.artistReleasesExpanded = !S.artistReleasesExpanded; render(); break;
-      case 'artist-filter': S.artistFilter = id; render(); break;
+      case 'artist-disc-tab': S.artistDiscTab = id; render(); break;
       case 'artist-menu': artistSheet(id); break;
       case 'artist-follow': {
         const a = artistViewModel(id); closeSheet();

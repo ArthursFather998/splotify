@@ -906,6 +906,40 @@ const UTAG = (() => {
     const releases = [...byRel.values()].sort((a, b) => ((b.year || 0) - (a.year || 0)) || b.count - a.count || String(a.title).localeCompare(String(b.title)));
     return { artistId, releases };
   }
+  /* v10.15: UTAG-style discography for an artist: the track-grouped
+     releases above, merged with the release rows' own type, edition,
+     status, date and year, so the app can sort them into UTAG's
+     Albums / Singles and EP's / Unreleased tabs. Status follows
+     UTAG's releaseStatus rule: a manual unreleased/released wins,
+     otherwise a future date, or no date and no year, is unreleased. */
+  function catalogReleaseStatus(r) {
+    if (r && r.release_status === 'unreleased') return 'unreleased';
+    if (r && r.release_status === 'released') return 'released';
+    const today = new Date().toISOString().slice(0, 10);
+    if (r && r.release_date && r.release_date > today) return 'unreleased';
+    if (r && !r.release_date && !r.release_year) return 'unreleased';
+    return 'released';
+  }
+  async function catalogDiscography(artistName) {
+    const base = await catalogArtistReleases(artistName);
+    if (!base.artistId) return base;
+    let meta = [];
+    try {
+      meta = await fetchJSON(BASE + '/splotify_releases?select=id,title,release_type,edition,release_status,release_date,release_year&artist_id=eq.' + encodeURIComponent(base.artistId) + '&limit=500', 12000) || [];
+    } catch (e) { meta = []; }
+    const byId = new Map(meta.map(r => [r.id, r]));
+    const releases = base.releases.map(r => {
+      const m = byId.get(r.id) || {};
+      return { ...r, type: m.release_type || 'album', edition: m.edition || 'original', status: catalogReleaseStatus(m), date: m.release_date || null, year: m.release_year || r.year || null };
+    });
+    // A release row with no tracks never appears in the track grouping
+    // above; include it so the discography is not silently short.
+    meta.forEach(m => {
+      if (!releases.some(r => r.id === m.id)) releases.push({ id: m.id, title: m.title || '', year: m.release_year || null, art: '', count: 0, type: m.release_type || 'album', edition: m.edition || 'original', status: catalogReleaseStatus(m), date: m.release_date || null });
+    });
+    releases.sort((a, b) => ((b.year || 0) - (a.year || 0)) || String(a.title).localeCompare(String(b.title)));
+    return { artistId: base.artistId, releases };
+  }
   /* A catalog song is playable when a local SDB track is that exact
      catalog track (utagTrackId stamp from a Get-audio upload) or matches
      it on normalized artist + title (UTAG.norm, same as lookup). */
@@ -1321,5 +1355,5 @@ const UTAG = (() => {
   }
 
   try { window.addEventListener('online', () => drain()); } catch (e) {}
-  return { lookup, fixTrack, enrich, ensureLyrics, learn, submit, drain, migrate, stats, norm, fixerLog, listAudio, audioUrl, audioBlob, megaFolderLink, setMegaFolderLink, listMegaFolder, megaFolderBlob, getSession, setSession, clearSession, signIn, signUp, catalogSearch, catalogArtistSongs, catalogReleaseTracks, catalogAlbumFor, catalogArtistReleases, matchLocal, findLocal, queueDatumRip, uploadReview, submitUpload, getRole, activityData, approveProposal, rejectProposal, retryDatumJob, adminUsers, setUserRole, refreshSession, logHistory, migrateLocalData, createArtist, createRelease, createTrack };
+  return { lookup, fixTrack, enrich, ensureLyrics, learn, submit, drain, migrate, stats, norm, fixerLog, listAudio, audioUrl, audioBlob, megaFolderLink, setMegaFolderLink, listMegaFolder, megaFolderBlob, getSession, setSession, clearSession, signIn, signUp, catalogSearch, catalogArtistSongs, catalogReleaseTracks, catalogAlbumFor, catalogArtistReleases, catalogDiscography, matchLocal, findLocal, queueDatumRip, uploadReview, submitUpload, getRole, activityData, approveProposal, rejectProposal, retryDatumJob, adminUsers, setUserRole, refreshSession, logHistory, migrateLocalData, createArtist, createRelease, createTrack };
 })();
