@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v10.15';
+  const APP_VERSION = 'v10.16';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -1177,8 +1177,7 @@ const App = (() => {
     if (!ca.tracks || !ca.tracks.length) return head + `<div class="empty"><p>No songs found for this album.</p></div>`;
     const localTracks = S.tracks.filter(t => (t.album || '') && normKey(t.album) === normKey(ca.release.title));
     const m = mergedAlbumRows(localTracks, ca.tracks);
-    return detailHead('go-back', ca.release.art ? `<img class="hero-art" src="${esc(ca.release.art)}" alt="" onerror="App.artErr(this)">` : heroArt(localTracks.find(t => t.art)), ca.release.title, `Album • ${m.total} songs • ${m.downloaded} downloaded`) + playRow()
-      + (S.isAdmin ? `<div style="padding:0 16px 12px"><button class="bigbtn" data-act="cat-add-track" data-id="${esc(id)}">Add song</button></div>` : '') + m.html;
+    return detailHead('go-back', ca.release.art ? `<img class="hero-art" src="${esc(ca.release.art)}" alt="" onerror="App.artErr(this)">` : heroArt(localTracks.find(t => t.art)), ca.release.title, `Album • ${m.total} songs • ${m.downloaded} downloaded`) + playRow() + m.html;
   }
   async function kickCatalogAlbum(id) {
     const cur = S.stack[S.stack.length - 1] || {};
