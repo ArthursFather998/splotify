@@ -807,12 +807,14 @@ const UTAG = (() => {
       releaseId: tr.release_id || rel.id || null,
       album: rel.title || '', year: rel.release_year || null,
       art: catalogArt(rel),
+      trackNo: (tr.track_number === null || tr.track_number === undefined) ? null : tr.track_number,
+      discNo: (tr.disc_number === null || tr.disc_number === undefined) ? 1 : tr.disc_number,
     };
   }
   function escLikePattern(s) {
     return String(s || '').replace(/[%_\\]/g, '\\$&');
   }
-  const CATALOG_TRACK_SELECT = 'id,title,artist_id,release_id,artists(canonical_name),releases(title,release_year,artwork(source_url,stored_path,role))';
+  const CATALOG_TRACK_SELECT = 'id,title,artist_id,release_id,track_number,disc_number,artists(canonical_name),releases(title,release_year,artwork(source_url,stored_path,role))';
   async function catalogSearch(query) {
     const q = String(query || '').trim();
     if (!q) return { songs: [], artists: [] };
@@ -832,9 +834,77 @@ const UTAG = (() => {
   }
   async function catalogArtistSongs(artistId) {
     if (!artistId) return [];
-    const rows = await fetchJSON(BASE + '/tracks?select=' + encodeURIComponent(CATALOG_TRACK_SELECT) + '&artist_id=eq.' + encodeURIComponent(artistId) + '&limit=200', 9000);
+    const rows = await fetchJSON(BASE + '/tracks?select=' + encodeURIComponent(CATALOG_TRACK_SELECT) + '&artist_id=eq.' + encodeURIComponent(artistId) + '&limit=500', 9000);
     return (rows || []).map(catalogSongFromRow).sort((a, b) =>
-      ((b.year || 0) - (a.year || 0)) || String(a.title).localeCompare(String(b.title))).slice(0, 100);
+      ((b.year || 0) - (a.year || 0)) || String(a.title).localeCompare(String(b.title))).slice(0, 200);
+  }
+  /* v10.7: one release's full tracklist, in disc/track order.
+     UTAG tracks carry track_number + disc_number (verified live);
+     null track numbers sort after numbered tracks, by title. */
+  const sortCatTracks = arr => [...arr].sort((a, b) =>
+    ((a.discNo || 1) - (b.discNo || 1)) ||
+    (((a.trackNo === null || a.trackNo === undefined) ? 999 : a.trackNo) - ((b.trackNo === null || b.trackNo === undefined) ? 999 : b.trackNo)) ||
+    String(a.title).localeCompare(String(b.title)));
+  async function catalogReleaseTracks(releaseId) {
+    if (!releaseId) return { release: null, tracks: [] };
+    const rows = await fetchJSON(BASE + '/tracks?select=' + encodeURIComponent(CATALOG_TRACK_SELECT) + '&release_id=eq.' + encodeURIComponent(releaseId) + '&limit=500', 12000);
+    const tracks = sortCatTracks((rows || []).map(catalogSongFromRow));
+    const first = (rows || [])[0] || {};
+    const rel = first.releases || {};
+    return {
+      release: { id: releaseId, title: rel.title || '', year: rel.release_year || null, art: catalogArt(rel) },
+      tracks,
+    };
+  }
+  async function catalogArtistId(name) {
+    const rows = await fetchJSON(BASE + '/artists?select=id,canonical_name&canonical_name=ilike.' + encodeURIComponent(String(name || '').trim()) + '&limit=5', 9000);
+    if (!rows || !rows.length) return null;
+    const want = norm(String(name || ''));
+    const exact = rows.find(r => norm(r.canonical_name || '') === want);
+    return (exact || rows[0]).id;
+  }
+  /* v10.7: fullest UTAG edition of a local album. Same title, or the
+     title plus an edition suffix (e.g. "Nine Track Mind (Deluxe)").
+     The release with the most tracks wins, so an incomplete original
+     (2 tracks) does not hide a complete deluxe (16 tracks). */
+  async function catalogAlbumFor(artistName, albumTitle) {
+    const artistId = await catalogArtistId(artistName);
+    if (!artistId) return null;
+    const base = String(albumTitle || '').trim();
+    if (!base) return null;
+    const pattern = escLikePattern(base) + '%';
+    const rels = await fetchJSON(BASE + '/releases?select=id,title,edition,release_type,release_year&artist_id=eq.' + encodeURIComponent(artistId) + '&title=ilike.' + encodeURIComponent(pattern) + '&limit=50', 9000);
+    const want = norm(base);
+    const cands = (rels || []).filter(r => {
+      const t = norm(r.title || '');
+      return t === want || t.startsWith(want + ' ');
+    }).slice(0, 6);
+    if (!cands.length) return null;
+    const settled = await Promise.allSettled(cands.map(async r => {
+      const d = await catalogReleaseTracks(r.id);
+      return { release: { id: r.id, title: r.title || '', edition: r.edition || '', type: r.release_type || '', year: r.release_year || null, art: d.release ? d.release.art : '' }, tracks: d.tracks };
+    }));
+    const done = settled.filter(x => x.status === 'fulfilled').map(x => x.value).filter(x => x.tracks.length);
+    if (!done.length) return null;
+    done.sort((a, b) => (b.tracks.length - a.tracks.length) ||
+      ((norm(b.release.title) === want ? 1 : 0) - (norm(a.release.title) === want ? 1 : 0)));
+    return done[0];
+  }
+  /* v10.7: an artist's catalog releases, grouped from their tracks
+     (PostgREST has no cheap per-release count here), newest first. */
+  async function catalogArtistReleases(artistName) {
+    const artistId = await catalogArtistId(artistName);
+    if (!artistId) return { artistId: null, releases: [] };
+    const rows = await fetchJSON(BASE + '/tracks?select=' + encodeURIComponent(CATALOG_TRACK_SELECT) + '&artist_id=eq.' + encodeURIComponent(artistId) + '&limit=500', 12000);
+    const byRel = new Map();
+    (rows || []).forEach(tr => {
+      const song = catalogSongFromRow(tr);
+      if (!song.releaseId) return;
+      if (!byRel.has(song.releaseId)) byRel.set(song.releaseId, { id: song.releaseId, title: song.album || '', year: song.year || null, art: song.art || '', count: 0 });
+      byRel.get(song.releaseId).count += 1;
+    });
+    const releases = [...byRel.values()].sort((a, b) => ((b.year || 0) - (a.year || 0)) || b.count - a.count || String(a.title).localeCompare(String(b.title)));
+    return { artistId, releases };
   }
   /* A catalog song is playable when a local SDB track is that exact
      catalog track (utagTrackId stamp from a Get-audio upload) or matches
@@ -1231,5 +1301,5 @@ const UTAG = (() => {
   }
 
   try { window.addEventListener('online', () => drain()); } catch (e) {}
-  return { lookup, fixTrack, enrich, ensureLyrics, learn, submit, drain, migrate, stats, norm, fixerLog, listAudio, audioUrl, audioBlob, megaFolderLink, setMegaFolderLink, listMegaFolder, megaFolderBlob, getSession, setSession, clearSession, signIn, signUp, catalogSearch, catalogArtistSongs, matchLocal, findLocal, queueDatumRip, uploadReview, submitUpload, getRole, activityData, approveProposal, rejectProposal, retryDatumJob, adminUsers, setUserRole, refreshSession, logHistory, migrateLocalData };
+  return { lookup, fixTrack, enrich, ensureLyrics, learn, submit, drain, migrate, stats, norm, fixerLog, listAudio, audioUrl, audioBlob, megaFolderLink, setMegaFolderLink, listMegaFolder, megaFolderBlob, getSession, setSession, clearSession, signIn, signUp, catalogSearch, catalogArtistSongs, catalogReleaseTracks, catalogAlbumFor, catalogArtistReleases, matchLocal, findLocal, queueDatumRip, uploadReview, submitUpload, getRole, activityData, approveProposal, rejectProposal, retryDatumJob, adminUsers, setUserRole, refreshSession, logHistory, migrateLocalData };
 })();

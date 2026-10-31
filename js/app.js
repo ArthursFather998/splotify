@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v10.6';
+  const APP_VERSION = 'v10.7';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -25,6 +25,13 @@ const App = (() => {
     // catQ: query last fetched/loading; catReady: its fetch settled.
     catQ: '', catSongs: [], catArtists: [], catSeq: 0, catReady: false,
     catArtist: null, _catTimer: null,
+    // v10.7 catalog-everywhere state. Catalog rows are metadata only:
+    // they never enter a play queue, Liked Songs, a playlist, or the
+    // library until the song is downloaded (Get audio).
+    searchAll: false, searchFilter: 'all',
+    catAlbumKey: '', catAlbum: null, catHomeName: '', catHome: null,
+    catArtistRelName: '', catArtistRel: null,
+    catalogAlbum: null,
   };
   const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -463,7 +470,7 @@ const App = (() => {
       else if (r.kind === 'album') { const a = albumByKey(r.id); if (!a) continue; name = a.name; t = a.art; act = `data-act="open-album" data-id="${esc(r.id)}"`; }
       else if (r.kind === 'artist') { const a = artistByName(r.id); if (!a) continue; name = a.name; t = a.art; act = `data-act="open-artist" data-id="${esc(r.id)}"`; }
       else if (r.kind === 'liked') { name = 'Liked Songs'; t = { id: 'liked', art: null }; act = `data-act="open-liked"`; }
-      else if (r.kind === 'songs') { name = 'Songs'; t = S.tracks.find(x => x.art) || S.tracks[0]; act = `data-act="open-songs"`; }
+      else if (r.kind === 'songs') { name = 'Songs'; t = S.tracks.find(x => x.art) || S.tracks[0]; act = `data-act="tab" data-tab="search"`; }
       else continue;
       out.push({ name, t, act });
       if (out.length >= 8) break;
@@ -568,6 +575,7 @@ const App = (() => {
     ${ta && taAlbums.length ? `
     <div class="morelike">${artImg(ta.art, '')}<div><div class="k">More like</div><div class="n">${esc(ta.name)}</div></div></div>
     <div class="rail">${taAlbums.map(a => `<div class="railcard" data-act="open-album" data-id="${esc(a.key)}">${artImg(a.art, '')}<div class="t">${esc(a.name)}</div><div class="s">Album • ${esc(a.artist)}</div></div>`).join('')}</div>` : ''}
+    <div id="home-cat"></div>
     <div class="home-spacer"></div>`}`;
   }
   function hicons() {
@@ -620,69 +628,177 @@ const App = (() => {
     if (bestS) return { kind: 'song', s: bestS };
     return null;
   }
+  /* ---------- v10.7 search: one-to-one copy of the video layout,
+     with Splotify pink (#fbb4d6) wherever the video uses green.
+     Dark search bar (magnifier, X clear, Cancel), suggestion rows
+     (magnifier + diagonal arrow), an initial results list ending in a
+     pink "View all results for '…'" link, then a filtered view with
+     scrollable Songs / Playlists / Artists / Albums pills, a top-artist
+     block with Follow, a Featuring card rail (the user's own playlists
+     featuring that artist), and merged local + catalog song/album rows.
+     Catalog rows are never playable: they say Not downloaded and open
+     the Get audio sheet. Podcasts are omitted: Splotify has none. */
+  function searchData(q) {
+    const plays = id => (S.playCounts && S.playCounts[id]) || 0;
+    const seenA = new Set(); const aList = [];
+    artists().forEach(a => {
+      const key = artistKey(a.name); seenA.add(key);
+      aList.push({ name: a.name, key, followed: S.followedArtists.has(key),
+        plays: a.tracks.reduce((sum, t) => sum + plays(t.id), 0), placeholder: false });
+    });
+    try {
+      S.artists.forEach(ra => {
+        const key = artistKey(ra.name);
+        if (seenA.has(key)) return; seenA.add(key);
+        aList.push({ name: ra.name, key, followed: S.followedArtists.has(key), plays: 0, placeholder: true });
+      });
+    } catch (e) {}
+    const aHits = rankArtistHits(q, aList).slice(0, 8);
+    const sHits = rankSongHits(q, S.tracks.map(t => ({ t, plays: plays(t.id) }))).slice(0, 20);
+    const als = albums().filter(a => (a.name + ' ' + a.artist).toLowerCase().includes(q)).slice(0, 8);
+    const ps = S._pls.filter(pp => pp.name.toLowerCase().includes(q));
+    const top = pickTopResult(aHits, sHits);
+    return { aHits, sHits, als, ps, top };
+  }
+  function searchBarHTML() {
+    const q = S.query;
+    return `<div class="sp-searchbar">${icon('search')}<input id="q" placeholder="What do you want to listen to?" value="${esc(q)}" autocomplete="off">${q ? `<button class="sp-x" data-act="search-clear" aria-label="Clear search">${icon('x')}</button>` : ''}${q ? `<button class="sp-cancel" data-act="search-cancel">Cancel</button>` : ''}</div>`;
+  }
+  function searchSuggestionsHTML(q) {
+    const seen = new Set(); const out = [S.query.trim()];
+    const add = v => { const t = String(v || '').trim(); if (t && normKey(t) !== normKey(q) && !seen.has(normKey(t)) && out.length < 8) { seen.add(normKey(t)); out.push(t); } };
+    seen.add(normKey(q));
+    artists().forEach(a => { if (a.name.toLowerCase().includes(q)) add(a.name); });
+    S.tracks.forEach(t => { if (t.title.toLowerCase().includes(q)) add(t.title); if (t.album && t.album.toLowerCase().includes(q)) add(t.album); });
+    (S.catArtists || []).forEach(a => add(a.name));
+    (S.catSongs || []).forEach(x => add(x.title));
+    return out.map(v => `<div class="trow sp-sugg" data-act="search-suggest" data-id="${esc(v)}"><span style="display:flex;color:var(--sub)">${icon('search', 'width:24px;height:24px')}</span><div class="tmeta"><div class="ttitle">${esc(v)}</div></div><span style="display:flex;color:var(--sub)">${icon('diag', 'width:22px;height:22px')}</span></div>`).join('');
+  }
+  function searchArtistRow(h) {
+    const t = S.tracks.find(t => t.art && trackArtistKeys(t).includes(h.key));
+    const art = t ? artImg(t, 'art') : `<div class="lib-thumb lib-ph round">${icon('person', 'width:26px;height:26px')}</div>`;
+    return `<div class="trow" data-act="open-artist" data-id="${esc(h.name)}">${art}<div class="tmeta"><div class="ttitle">${esc(h.name)}</div><div class="tsub">Artist${h.placeholder && !h.followed ? ' • No songs yet' : ''}</div></div></div>`;
+  }
+  function searchSongsSection(d) {
+    const localRows = d.sHits.map(e => searchSongRow(e.t)).join('');
+    const catRows = (S.catSongs || []).filter(x => !UTAG.findLocal(x, S.tracks))
+      .map(x => catTrackRow(x, { sub: [x.artist, x.album, x.year].filter(Boolean).join(' • ') })).join('');
+    if (!localRows && !catRows) return '';
+    return `<div class="sectionhead"><h2>Songs</h2></div>${localRows}${catRows}`;
+  }
+  function searchArtistsSection(d) {
+    const seen = new Set(d.aHits.map(h => artistKey(h.name)));
+    const catRows = (S.catArtists || []).filter(a => !seen.has(artistKey(a.name))).map(a => `<div class="trow" data-act="open-cat-artist" data-id="${esc(a.id)}"><div class="lib-thumb lib-ph round">${icon('person', 'width:26px;height:26px')}</div><div class="tmeta"><div class="ttitle">${esc(a.name)}</div><div class="tsub">Artist</div></div></div>`).join('');
+    const localRows = d.aHits.map(searchArtistRow).join('');
+    if (!localRows && !catRows) return '';
+    return `<div class="sectionhead"><h2>Artists</h2></div>${localRows}${catRows}`;
+  }
+  function searchAlbumsSection(d) {
+    const seen = new Set(d.als.map(a => normKey(a.artist) + '|' + normKey(a.name)));
+    const byRel = new Map();
+    (S.catSongs || []).forEach(x => {
+      if (!x.releaseId || !x.album) return;
+      if (!byRel.has(x.releaseId)) byRel.set(x.releaseId, x);
+    });
+    const catRows = [...byRel.values()].filter(x => !seen.has(normKey(x.artist) + '|' + normKey(x.album)))
+      .map(x => `<div class="trow" data-act="open-cat-album" data-id="${esc(x.releaseId)}">${catArtImg(x)}<div class="tmeta"><div class="ttitle">${esc(x.album)}</div><div class="tsub">Album • ${esc(x.artist)}</div></div></div>`).join('');
+    const localRows = d.als.map(a => `<div class="trow" data-act="open-album" data-id="${esc(a.key)}">${artImg(a.art, 'art')}<div class="tmeta"><div class="ttitle">${esc(a.name)}</div><div class="tsub">Album • ${esc(a.artist)}</div></div></div>`).join('');
+    if (!localRows && !catRows) return '';
+    return `<div class="sectionhead"><h2>Albums</h2></div>${localRows}${catRows}`;
+  }
+  function searchPlaylistsSection(d) {
+    if (!d.ps.length) return '';
+    return `<div class="sectionhead"><h2>Playlists</h2></div>${d.ps.map(pp => { const t = pp.trackIds.map(id => S.byId.get(id)).find(x => x); return `<div class="trow" data-act="open-playlist" data-id="${pp.id}">${artImg(t, 'art')}<div class="tmeta"><div class="ttitle">${esc(pp.name)}</div><div class="tsub">Playlist • ${pp.trackIds.length} songs</div></div></div>`; }).join('')}`;
+  }
+  function searchTopArtistHTML(d) {
+    if (!d.top || d.top.kind !== 'artist') return '';
+    const a = d.top.a;
+    const t = S.tracks.find(t => t.art && trackArtistKeys(t).includes(a.key));
+    const art = t ? artImg(t, 'top-art') : `<div class="top-art art-ph">${icon('person', 'width:44px;height:44px')}</div>`;
+    return `<div class="sectionhead"><h2>Top artist</h2></div><div class="sp-topartist" data-act="open-artist" data-id="${esc(a.name)}">${art}<div class="tmeta"><div class="ttitle">${esc(a.name)}</div><div class="tsub">Artist</div></div><button class="sp-follow" data-act="artist-follow" data-id="${esc(a.name)}">${a.followed ? 'Following' : 'Follow'}</button></div>`;
+  }
+  function searchFeaturingHTML(d) {
+    if (!d.top || d.top.kind !== 'artist') return '';
+    const key = d.top.a.key;
+    const feats = S._pls.filter(pp => pp.trackIds.some(id => { const t = S.byId.get(id); return t && trackArtistKeys(t).includes(key); }));
+    if (!feats.length) return '';
+    return `<div class="sectionhead"><h2>Featuring ${esc(d.top.a.name)}</h2></div><div class="sp-rail">${feats.map(pp => { const t = pp.trackIds.map(id => S.byId.get(id)).find(x => x && x.art); return `<div class="sp-featcard" data-act="open-playlist" data-id="${pp.id}">${artImg(t, '')}<div class="t">${esc(pp.name)}</div><div class="s">Playlist</div></div>`; }).join('')}</div>`;
+  }
+  function searchSongsPreviewHTML(d) {
+    const rows = d.sHits.slice(0, 5).map(e => searchSongRow(e.t)).join('')
+      + (S.catSongs || []).filter(x => !UTAG.findLocal(x, S.tracks)).slice(0, 5).map(x => catTrackRow(x, { sub: [x.artist, x.album, x.year].filter(Boolean).join(' • ') })).join('');
+    return rows ? `<div class="sectionhead"><h2>Songs</h2></div>${rows}` : '';
+  }
+  function searchAlbumsPreviewHTML(d) {
+    const localRows = d.als.slice(0, 3).map(a => `<div class="trow" data-act="open-album" data-id="${esc(a.key)}">${artImg(a.art, 'art')}<div class="tmeta"><div class="ttitle">${esc(a.name)}</div><div class="tsub">Album • ${esc(a.artist)}</div></div></div>`).join('');
+    const seen = new Set(d.als.map(a => normKey(a.artist) + '|' + normKey(a.name)));
+    const byRel = new Map();
+    (S.catSongs || []).forEach(x => { if (x.releaseId && x.album && !byRel.has(x.releaseId)) byRel.set(x.releaseId, x); });
+    const catRows = [...byRel.values()].filter(x => !seen.has(normKey(x.artist) + '|' + normKey(x.album))).slice(0, 3)
+      .map(x => `<div class="trow" data-act="open-cat-album" data-id="${esc(x.releaseId)}">${catArtImg(x)}<div class="tmeta"><div class="ttitle">${esc(x.album)}</div><div class="tsub">Album • ${esc(x.artist)}</div></div></div>`).join('');
+    const rows = localRows + catRows;
+    return rows ? `<div class="sectionhead"><h2>Albums</h2></div>${rows}` : '';
+  }
+  function paintSearchSections() {
+    const cur = S.stack[S.stack.length - 1] || {};
+    if (cur.v !== 'search' || !S.query.trim()) return;
+    const q = S.query.trim().toLowerCase();
+    const d = searchData(q);
+    const set = (id, html) => { const el = document.getElementById(id); if (el) el.innerHTML = html; };
+    if (!S.searchAll) {
+      // Initial list: patch only the preview containers, so a catalog
+      // arrival never turns the preview into the full filtered list.
+      set('search-sec-songs', searchSongsPreviewHTML(d));
+      set('search-sec-albums', searchAlbumsPreviewHTML(d));
+      return;
+    }
+    set('search-sec-songs', searchSongsSection(d));
+    set('search-sec-artists', searchArtistsSection(d));
+    set('search-sec-albums', searchAlbumsSection(d));
+    set('search-sec-playlists', searchPlaylistsSection(d));
+  }
   function vSearch() {
     const q = S.query.trim().toLowerCase();
     S.viewCtx = { kicker: 'PLAYING FROM SEARCH', name: 'Search', kind: 'search', id: 'search' };
-    let body;
     if (!q) {
-      const genres = {};
-      S.tracks.forEach(t => { const g = t.genre || 'Unknown'; genres[g] = (genres[g] || 0) + 1; });
-      const top = Object.entries(genres).sort((a, b) => b[1] - a[1]).slice(0, 8);
-      const colors = ['#8d67ab', '#e13300', '#1e3264', '#e8115b', '#148a08', '#b49bc8', '#dc148c', '#477d95'];
-      body = `<div class="browse-title">Browse all</div><div class="genre-grid">${top.map(([g, n], i) =>
-        `<div class="genre" style="background:${colors[i % colors.length]}" data-act="open-genre" data-id="${esc(g)}"><span>${esc(g)}</span>${icon('note')}</div>`).join('')}</div>
-        <div class="trow" data-act="open-songs"><span style="display:flex;color:var(--sub)">${icon('note', 'width:30px;height:30px')}</span><div class="tmeta"><div class="ttitle">All songs</div><div class="tsub">${S.tracks.length} songs</div></div><span style="color:var(--sub);display:flex">${icon('chevR')}</span></div>
-        <div class="trow" data-act="open-artists"><span style="display:flex;color:var(--sub)">${icon('person', 'width:30px;height:30px')}</span><div class="tmeta"><div class="ttitle">All artists</div><div class="tsub">${artists().length} artists</div></div><span style="color:var(--sub);display:flex">${icon('chevR')}</span></div>
-        <div class="trow" data-act="open-albums"><span style="display:flex;color:var(--sub)">${icon('disc', 'width:30px;height:30px')}</span><div class="tmeta"><div class="ttitle">All albums</div><div class="tsub">${albums().length} albums</div></div><span style="color:var(--sub);display:flex">${icon('chevR')}</span></div>
-        ${S.tracks.length ? '' : `<div class="empty"><h3>Search your music</h3><p>Import songs first, then find them here.</p><button class="bigbtn" data-act="import">Add music</button></div>`}`;
-    } else {
-      const plays = id => (S.playCounts && S.playCounts[id]) || 0;
-      // v8.0: artists first, like Spotify. Derived artists (with songs) +
-      // roster placeholders, ranked by match quality, follow state, plays.
-      const seenA = new Set();
-      const aList = [];
-      artists().forEach(a => {
-        const key = artistKey(a.name);
-        seenA.add(key);
-        aList.push({ name: a.name, key, followed: S.followedArtists.has(key),
-          plays: a.tracks.reduce((sum, t) => sum + plays(t.id), 0), placeholder: false });
-      });
-      try {
-        S.artists.forEach(ra => {
-          const key = artistKey(ra.name);
-          if (seenA.has(key)) return;
-          seenA.add(key);
-          aList.push({ name: ra.name, key, followed: S.followedArtists.has(key), plays: 0, placeholder: true });
-        });
-      } catch (e) {}
-      const aHits = rankArtistHits(q, aList).slice(0, 8);
-      // Songs underneath: title match outranks artist/album match, then plays.
-      const sHits = rankSongHits(q, S.tracks.map(t => ({ t, plays: plays(t.id) }))).slice(0, 20);
-      const als = albums().filter(a => (a.name + ' ' + a.artist).toLowerCase().includes(q)).slice(0, 8);
-      const ps = S._pls.filter(p => p.name.toLowerCase().includes(q));
-      const row = (name, sub, t, act) => `<div class="trow" ${act}>${artImg(t, 'art')}<div class="tmeta"><div class="ttitle">${esc(name)}</div><div class="tsub">${esc(sub)}</div></div></div>`;
-      const artistRow = h => {
-        const t = S.tracks.find(t => t.art && trackArtistKeys(t).includes(h.key));
-        const art = t ? artImg(t, 'art') : `<div class="lib-thumb lib-ph round">${icon('person', 'width:26px;height:26px')}</div>`;
-        return `<div class="trow" data-act="open-artist" data-id="${esc(h.name)}">${art}<div class="tmeta"><div class="ttitle">${esc(h.name)}</div><div class="tsub">Artist${h.placeholder && !h.followed ? ' \u2022 No songs yet' : ''}</div></div><button class="iconbtn" data-act="artist-follow" data-id="${esc(h.name)}" aria-label="${h.followed ? 'Unfollow' : 'Follow'}">${icon(h.followed ? 'check' : 'plus')}</button></div>`;
-      };
-      const top = pickTopResult(aHits, sHits);
-      const topHtml = !top ? '' : `<div class="sectionhead"><h2>Top result</h2></div>` + (top.kind === 'artist'
-        ? (() => {
-            const t = S.tracks.find(t => t.art && trackArtistKeys(t).includes(top.a.key));
-            const art = t ? artImg(t, 'top-art') : `<div class="top-art art-ph">${icon('person', 'width:44px;height:44px')}</div>`;
-            return `<div class="top-result" data-act="open-artist" data-id="${esc(top.a.name)}">${art}<div class="tmeta"><div class="ttitle">${esc(top.a.name)}</div><div class="tsub">Artist</div></div><button class="bigbtn ${top.a.followed ? '' : 'pink'}" data-act="artist-follow" data-id="${esc(top.a.name)}">${top.a.followed ? 'Following' : 'Follow'}</button></div>`;
-          })()
-        : trackRow(top.s.t));
-      body = `${topHtml}
-      ${aHits.length ? `<div class="sectionhead"><h2>Artists</h2></div>${aHits.map(artistRow).join('')}` : ''}
-      ${sHits.length ? `<div class="sectionhead"><h2>Songs</h2></div>${sHits.map(e => trackRow(e.t)).join('')}` : ''}
-      ${als.length ? `<div class="sectionhead"><h2>Albums</h2></div>${als.map(a => row(a.name, 'Album \u2022 ' + a.artist, a.art, `data-act="open-album" data-id="${esc(a.key)}"`)).join('')}` : ''}
-      ${ps.length ? `<div class="sectionhead"><h2>Playlists</h2></div>${ps.map(p => { const t = p.trackIds.map(id => S.byId.get(id)).find(x => x); return row(p.name, `Playlist \u2022 ${p.trackIds.length} songs`, t, `data-act="open-playlist" data-id="${p.id}"`); }).join('')}` : ''}
-      ${(!aHits.length && !sHits.length && !als.length && !ps.length) ? `<div class="empty"><h3>No results for "${esc(S.query)}"</h3><p>Check the spelling, or try an artist or song title.</p></div>` : ''}
-      ${catBlock()}`;
+      const colors = ['#8d67ab', '#e13300', '#1e3264', '#e8115b', '#148a08', '#b49bc8', '#dc148c', '#477d95', '#ba5d07', '#7d4b32', '#0d73ec', '#503750'];
+      const body = `<div class="browse-title">Browse all</div><div class="genre-grid">${GENRES.map((g, i) =>
+        `<div class="genre" style="background:${colors[i % colors.length]}" data-act="open-genre" data-id="${esc(g)}"><span>${esc(g)}</span>${icon('note')}</div>`).join('')}</div>`
+        + (S.tracks.length ? '' : `<div class="empty"><h3>Search your music</h3><p>Import songs first, then find them here.</p><button class="bigbtn" data-act="import">Add music</button></div>`);
+      return searchBarHTML() + body;
     }
-    return `<div class="searchbox">${icon('search')}<input id="q" placeholder="What do you want to listen to?" value="${esc(S.query)}" autocomplete="off"></div>${body}`;
+    const d = searchData(q);
+    const anyLocal = d.aHits.length || d.sHits.length || d.als.length || d.ps.length;
+    const anyCat = (S.catSongs || []).length || (S.catArtists || []).length;
+    if (!S.searchAll) {
+      // Initial results list, as in the video: suggestions, then a short
+      // artist / playlist / song / album preview, then the pink link.
+      const previewArtists = d.aHits.slice(0, 3).map(searchArtistRow).join('');
+      const previewSongs = searchSongsPreviewHTML(d);
+      const previewAlbums = searchAlbumsPreviewHTML(d);
+      const previewPls = d.ps.slice(0, 3).map(pp => `<div class="trow" data-act="open-playlist" data-id="${pp.id}"><div class="tmeta"><div class="ttitle">${esc(pp.name)}</div><div class="tsub">Playlist • ${pp.trackIds.length} songs</div></div></div>`).join('');
+      return searchBarHTML()
+        + searchSuggestionsHTML(q)
+        + (previewArtists ? `<div class="sectionhead"><h2>Artists</h2></div>${previewArtists}` : '')
+        + (previewPls ? `<div class="sectionhead"><h2>Playlists</h2></div>${previewPls}` : '')
+        + `<div id="search-sec-songs">${previewSongs}</div>`
+        + `<div id="search-sec-albums">${previewAlbums}</div>`
+        + ((!anyLocal && !anyCat) ? `<div class="empty"><h3>No results for "${esc(S.query)}"</h3><p>Check the spelling, or try an artist or song title.</p></div>` : '')
+        + ((anyLocal || anyCat) ? `<button class="sp-viewall" data-act="search-view-all">View all results for '${esc(S.query.trim())}'</button>` : '');
+    }
+    // Filtered view, as in the video.
+    const pills = [['all', 'All'], ['songs', 'Songs'], ['playlists', 'Playlists'], ['artists', 'Artists'], ['albums', 'Albums']];
+    const f = S.searchFilter || 'all';
+    const show = sec => f === 'all' || f === sec;
+    return searchBarHTML()
+      + `<div class="sp-pills">${pills.map(([id, label]) => `<button class="sp-pill${f === id ? ' on' : ''}" data-act="search-filter" data-id="${id}">${label}</button>`).join('')}</div>`
+      + (show('artists') ? searchTopArtistHTML(d) : '')
+      + (f === 'all' ? searchFeaturingHTML(d) : '')
+      + (show('songs') ? `<div id="search-sec-songs">${searchSongsSection(d)}</div>` : '')
+      + (show('artists') ? `<div id="search-sec-artists">${searchArtistsSection(d)}</div>` : '')
+      + (show('albums') ? `<div id="search-sec-albums">${searchAlbumsSection(d)}</div>` : '')
+      + (show('playlists') ? `<div id="search-sec-playlists">${searchPlaylistsSection(d)}</div>` : '')
+      + ((!anyLocal && !anyCat) ? `<div class="empty"><h3>No results for "${esc(S.query)}"</h3><p>Check the spelling, or try an artist or song title.</p></div>` : '');
   }
 
   /* ---------- v10.2 catalog search (shared UTAG metadata) ----------
@@ -708,6 +824,164 @@ const App = (() => {
       return `<div class="trow" data-act="play-track" data-id="${local.id}">${catArtImg(song)}<div class="tmeta"><div class="ttitle">${esc(song.title)}</div><div class="tsub">${esc(sub)}</div></div></div>`;
     }
     return `<div class="trow" data-act="cat-song" data-id="${esc(song.id)}">${catArtImg(song)}<div class="tmeta"><div class="ttitle">${esc(song.title)}</div><div class="tsub">${esc(sub)}</div></div><span style="color:var(--sub);font-size:12px;white-space:nowrap">Not downloaded</span></div>`;
+  }
+  // v10.7 catalog-everywhere helpers
+  const normKey = v => String(v || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+  function catTrackRow(song, opts) {
+    const o = opts || {};
+    const rank = (song.trackNo !== null && song.trackNo !== undefined) ? song.trackNo : (o.pos || '');
+    const sub = o.sub || [song.artist].filter(Boolean).join(' • ');
+    return `<div class="trow cat-row" data-act="cat-song" data-id="${esc(song.id)}">${rank !== '' ? `<span class="ax-rank">${rank}</span>` : ''}${catArtImg(song)}<div class="tmeta"><div class="ttitle">${esc(song.title)}</div><div class="tsub">${esc(sub)}</div></div><span class="cat-notdl">Not downloaded</span></div>`;
+  }
+  // Merge local (playable) + catalog (not downloaded) tracks, in catalog
+  // order. A local track matching a catalog track (utagTrackId stamp, or
+  // normalized artist+title) takes that catalog slot and plays; unmatched
+  // local tracks append after, in local order. Returns html + counts.
+  function mergedAlbumRows(localTracks, catTracks) {
+    const local = localTracks || [];
+    if (!catTracks || !catTracks.length) return { html: local.map(t => trackRow(t)).join(''), total: local.length, downloaded: local.length };
+    const byId = new Map(), byKey = new Map();
+    local.forEach(t => {
+      if (t.utagTrackId) byId.set(String(t.utagTrackId), t);
+      byKey.set(normKey(t.artist) + '|' + normKey(t.title), t);
+    });
+    const used = new Set(); let html = '', downloaded = 0;
+    catTracks.forEach((song, i) => {
+      const lt = byId.get(String(song.id)) || byKey.get(normKey(song.artist) + '|' + normKey(song.title));
+      if (lt && !used.has(lt.id)) { used.add(lt.id); downloaded++; html += trackRow(lt); }
+      else if (!lt) html += catTrackRow(song, { pos: i + 1, sub: song.artist || '' });
+    });
+    local.forEach(t => { if (!used.has(t.id)) html += trackRow(t); });
+    return { html, total: catTracks.length + local.filter(t => !used.has(t.id)).length, downloaded: local.length };
+  }
+  function searchSongRow(t) {
+    const playing = Player.current && Player.current.id === t.id;
+    let saved = false;
+    try { saved = libraryHas(t.id) || Player.isLiked(t.id); } catch (e) {}
+    return `<div class="trow${playing ? ' playing' : ''}"><div style="cursor:pointer;display:flex;align-items:center;gap:12px;flex:1;min-width:0" data-act="play-track" data-id="${t.id}">${artImg(t, 'art')}<div class="tmeta"><div class="ttitle">${esc(t.title)}</div><div class="tsub">${esc(t.artist)}</div></div></div><span class="eq" style="color:var(--pink);width:18px;height:18px">${icon('eq')}</span><button class="iconbtn search-save${saved ? ' saved' : ''}" data-act="track-toggle-lib" data-id="${t.id}" aria-label="${saved ? 'Saved' : 'Save'}">${icon(saved ? 'check' : 'plus')}</button><button class="dotsbtn" data-act="track-menu" data-id="${t.id}" aria-label="More options">${icon('dots')}</button></div>`;
+  }
+  function getCatSongAll(id) {
+    const sid = String(id);
+    const pools = [S.catSongs, S.catArtist && S.catArtist.songs, S.catAlbum && S.catAlbum.tracks,
+      S.catalogAlbum && S.catalogAlbum.tracks, S.catArtistRel && S.catArtistRel.songs];
+    for (const pool of pools) {
+      const hit = (pool || []).find(x => String(x.id) === sid);
+      if (hit) return hit;
+    }
+    return getCatSong(id);
+  }
+  async function kickAlbumCatalog(key) {
+    const cur = S.stack[S.stack.length - 1] || {};
+    if (cur.v !== 'album' || cur.id !== key) return;
+    const a = albumByKey(key);
+    if (!a || a.single) return;
+    if (S.catAlbumKey === key && S.catAlbum) { paintAlbumCatalog(key); return; }
+    if (S.catAlbumKey === key && S.catAlbum === false) return; // already failed: stay local
+    S.catAlbumKey = key;
+    try {
+      const res = await UTAG.catalogAlbumFor(a.artist, a.name);
+      if (!res || !res.tracks.length) { S.catAlbum = false; return; }
+      S.catAlbum = res;
+      paintAlbumCatalog(key);
+    } catch (e) { S.catAlbum = false; }
+  }
+  function paintAlbumCatalog(key) {
+    const cur = S.stack[S.stack.length - 1] || {};
+    if (cur.v !== 'album' || cur.id !== key || !S.catAlbum || S.catAlbum === false) return;
+    const tracksEl = document.getElementById('album-tracks');
+    const metaEl = document.getElementById('album-meta');
+    if (!tracksEl) return;
+    const a = albumByKey(key);
+    const m = mergedAlbumRows(a.tracks, S.catAlbum.tracks);
+    tracksEl.innerHTML = m.html;
+    if (metaEl) {
+      const edition = S.catAlbum.release && S.catAlbum.release.title && normKey(S.catAlbum.release.title) !== normKey(a.name)
+        ? ` • ${esc(S.catAlbum.release.title)}` : '';
+      metaEl.textContent = `${a.single ? 'Single' : 'Album'} • ${a.artist} • ${m.total} songs • ${m.downloaded} downloaded${edition ? ' • ' + S.catAlbum.release.title : ''}`;
+    }
+  }
+  async function kickArtistCatalog(name) {
+    const cur = S.stack[S.stack.length - 1] || {};
+    if (!['artist', 'artistReleases'].includes(cur.v) || cur.id !== name) return;
+    if (S.catArtistRelName === name && S.catArtistRel) { paintArtistCatalog(name); return; }
+    if (S.catArtistRelName === name && S.catArtistRel === false) return;
+    S.catArtistRelName = name; S.catArtistRel = null;
+    try {
+      const rel = await UTAG.catalogArtistReleases(name);
+      const songs = rel.artistId ? await UTAG.catalogArtistSongs(rel.artistId) : [];
+      S.catArtistRel = { artistId: rel.artistId, releases: rel.releases || [], songs: songs || [] };
+      paintArtistCatalog(name);
+    } catch (e) { S.catArtistRel = false; }
+  }
+  function paintArtistCatalog(name) {
+    const cur = S.stack[S.stack.length - 1] || {};
+    if (!['artist', 'artistReleases'].includes(cur.v) || cur.id !== name) return;
+    const rel = S.catArtistRel;
+    if (!rel || rel === false) return;
+    const relEl = document.getElementById('cat-artist-rel');
+    if (relEl) {
+      const a = artistViewModel(name);
+      const localTitles = new Set((a ? artistReleases(a).map(x => normKey(x.name)) : []));
+      const extra = rel.releases.filter(r => !localTitles.has(normKey(r.title)));
+      relEl.innerHTML = extra.length ? `<div class="sectionhead ax-section"><h2>More from the catalog</h2></div>${extra.map(r => `<div class="ax-release" data-act="open-cat-album" data-id="${esc(r.id)}"><div class="art" style="border-radius:0;overflow:hidden">${r.art ? `<img class="art" src="${esc(r.art)}" alt="" onerror="App.artErr(this)">` : `<div class="art art-ph">${icon('note')}</div>`}</div><div class="tmeta"><div class="ttitle">${esc(r.title)}</div><div class="tsub">Album${r.year ? ' • ' + r.year : ''} • ${r.count} songs • Not downloaded</div></div><span class="ax-chev">${icon('chevR')}</span></div>`).join('')}` : '';
+    }
+    const songsEl = document.getElementById('cat-artist-songs');
+    if (songsEl && cur.v === 'artist') {
+      const a = artistViewModel(name);
+      const localKeys = new Set((a ? a.tracks.map(t => normKey(t.artist) + '|' + normKey(t.title)) : []));
+      const extra = rel.songs.filter(x => !localKeys.has(normKey(x.artist) + '|' + normKey(x.title)))
+        .filter(x => !UTAG.findLocal(x, S.tracks)).slice(0, 30);
+      songsEl.innerHTML = extra.length ? `<div class="sectionhead ax-section"><h2>Catalog songs</h2></div>${extra.map(x => catTrackRow(x, { sub: [x.artist, x.album, x.year].filter(Boolean).join(' • ') })).join('')}` : '';
+    }
+  }
+  async function kickHomeCatalog() {
+    const cur = S.stack[S.stack.length - 1] || {};
+    if (cur.v !== 'home') return;
+    const libTracks = S.library.map(id => S.byId.get(id)).filter(Boolean);
+    const counts = {};
+    libTracks.forEach(t => { trackArtistKeys(t).forEach(k => { counts[k] = (counts[k] || 0) + 1; }); });
+    const topKey = Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] || [...S.followedArtists][0];
+    if (!topKey) return;
+    const ta = artists().find(a => artistKey(a.name) === topKey);
+    const name = ta ? ta.name : topKey;
+    if (S.catHomeName === name && S.catHome) { paintHomeCatalog(name); return; }
+    if (S.catHomeName === name && S.catHome === false) return;
+    S.catHomeName = name; S.catHome = null;
+    try {
+      const rel = await UTAG.catalogArtistReleases(name);
+      S.catHome = rel.releases || [];
+      paintHomeCatalog(name);
+    } catch (e) { S.catHome = false; }
+  }
+  function paintHomeCatalog(name) {
+    const el = document.getElementById('home-cat');
+    if (!el || !S.catHome || S.catHome === false) return;
+    const localTitles = new Set(albums().map(a => normKey(a.name)));
+    const extra = S.catHome.filter(r => !localTitles.has(normKey(r.title))).slice(0, 10);
+    el.innerHTML = extra.length ? `<div class="morelike"><div><div class="k">From the catalog</div><div class="n">${esc(name)}</div></div></div><div class="rail">${extra.map(r => `<div class="railcard" data-act="open-cat-album" data-id="${esc(r.id)}">${r.art ? `<img src="${esc(r.art)}" alt="" onerror="App.artErr(this)">` : `<div class="art-ph">${icon('note')}</div>`}<div class="t">${esc(r.title)}</div><div class="s">Album • Not downloaded</div></div>`).join('')}</div>` : '';
+  }
+  function vCatalogAlbum(id) {
+    const ca = S.catalogAlbum || {};
+    S.viewCtx = { kicker: 'PLAYING FROM ALBUM', name: ca.release ? ca.release.title : 'Album', kind: 'album', id: 'cat:' + id };
+    const head = `<div class="pagehead"><button class="iconbtn" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><h1>${esc(ca.release ? ca.release.title : 'Album')}</h1><span style="width:44px"></span></div>`;
+    if (!ca || ca.id !== id) return head + `<div class="empty"><p>Loading album…</p></div>`;
+    if (ca.loading) return head + skelTrow() + skelTrow() + skelTrow();
+    if (!ca.tracks || !ca.tracks.length) return head + `<div class="empty"><p>No songs found for this album.</p></div>`;
+    const localTracks = S.tracks.filter(t => (t.album || '') && normKey(t.album) === normKey(ca.release.title));
+    const m = mergedAlbumRows(localTracks, ca.tracks);
+    return detailHead('go-back', ca.release.art ? `<img class="hero-art" src="${esc(ca.release.art)}" alt="" onerror="App.artErr(this)">` : heroArt(localTracks.find(t => t.art)), ca.release.title, `Album • ${m.total} songs • ${m.downloaded} downloaded`) + playRow() + m.html;
+  }
+  async function kickCatalogAlbum(id) {
+    const cur = S.stack[S.stack.length - 1] || {};
+    if (cur.v !== 'catalogAlbum' || cur.id !== id) return;
+    if (S.catalogAlbum && S.catalogAlbum.id === id && !S.catalogAlbum.loading) return;
+    S.catalogAlbum = { id, loading: true, tracks: [], release: null };
+    try {
+      const d = await UTAG.catalogReleaseTracks(id);
+      if (S.catalogAlbum && S.catalogAlbum.id === id) { S.catalogAlbum = { id, loading: false, tracks: d.tracks || [], release: d.release }; render(); }
+    } catch (e) {
+      if (S.catalogAlbum && S.catalogAlbum.id === id) { S.catalogAlbum = { id, loading: false, tracks: [], release: null }; render(); }
+    }
   }
   function catSongsHTML() {
     if (S.catQ !== S.query.trim()) return `<div id="cat-songs">${skelTrow()}${skelTrow()}</div>`;
@@ -749,7 +1023,7 @@ const App = (() => {
       if (!res) { S.catSongs = []; S.catArtists = []; }
       else { S.catSongs = res.songs || []; S.catArtists = res.artists || []; }
       S.catReady = true;
-      paintCatalogSections();
+      paintCatalogSections(); paintSearchSections();
     }, 350);
   }
   function getCatSong(id) {
@@ -1097,6 +1371,10 @@ const App = (() => {
         items.push({ kind: 'playlist', id: p.id, name: p.name, sub: 'Playlist \u2022 ' + n + ' song' + (n === 1 ? '' : 's'), ts: p.created || 0, act: 'data-act="open-playlist" data-id="' + p.id + '"', pl: p });
       }
     }
+    // v10.7 Library rule: Artists here = followed artists ONLY, Albums
+    // here = albums with at least one track saved to the library ONLY.
+    // The full downloaded collection is NOT listed here, and the catalog
+    // is never listed here. (Search is where everything is browsed.)
     if (chip === 'all' || chip === 'artists') {
       S.artists.forEach(a => {
         if (!a.followed || !match(a.name)) return;
@@ -1186,16 +1464,19 @@ const App = (() => {
     S.viewCtx = { kicker: 'PLAYING FROM PLAYLIST', name: p.name, kind: 'playlist', id: p.id };
     return detailHead('go-back', artHTML, p.name, `Playlist • ${ts.length} song${ts.length === 1 ? '' : 's'}`)
       + playRow(p.trackIds)
-      + (ts.length ? ts.map(t => trackRow(t)).join('') : `<div class="empty"><p>This playlist is empty.</p><button class="bigbtn" data-act="open-songs">Find songs</button></div>`)
+      + (ts.length ? ts.map(t => trackRow(t)).join('') : `<div class="empty"><p>This playlist is empty.</p><button class="bigbtn" data-act="tab" data-tab="search">Find songs</button></div>`)
       + `<div class="sectionhead"><h2></h2><button data-act="delete-playlist" data-id="${p.id}" style="color:#ff7b7b">DELETE PLAYLIST</button></div>`;
   }
   function vAlbum(key) {
     const a = albumByKey(key);
     if (!a) return vLibrary();
     S.viewCtx = { kicker: 'PLAYING FROM ALBUM', name: a.name, kind: 'album', id: a.key };
-    return detailHead('go-back', heroArt(a.art), a.name, `${a.single ? 'Single' : 'Album'} • ${esc(a.artist)} • ${a.tracks.length} song${a.tracks.length === 1 ? '' : 's'}`)
+    // v10.7: local rows render immediately; the full UTAG tracklist is
+    // patched into #album-tracks by kickAlbumCatalog (play-all only ever
+    // picks data-act="play-track" rows, so catalog rows can't enter a queue).
+    return `<div class="detail-hero"><button class="iconbtn back" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button>${heroArt(a.art)}<h1>${esc(a.name)}</h1><div class="meta" id="album-meta">${a.single ? 'Single' : 'Album'} • ${esc(a.artist)} • ${a.tracks.length} song${a.tracks.length === 1 ? '' : 's'}</div></div>`
       + playRow()
-      + a.tracks.map(t => trackRow(t)).join('');
+      + `<div id="album-tracks">${a.tracks.map(t => trackRow(t)).join('')}</div>`;
   }
   function vArtist(name) {
     const a = artistViewModel(name);
@@ -1252,6 +1533,7 @@ const App = (() => {
       </div>
       <nav class="ax-tabs"><button class="${S.artistTab === 'music' ? 'on' : ''}" data-act="artist-tab" data-id="music">Music</button><button class="${S.artistTab === 'clips' ? 'on' : ''}" data-act="artist-tab" data-id="clips">Clips</button></nav>
       ${S.artistTab === 'clips' ? clips : music}
+      <div id="cat-artist-rel"></div><div id="cat-artist-songs"></div>
       <div class="ax-bottom"></div>
     </div>`;
   }
@@ -1276,6 +1558,7 @@ const App = (() => {
       <header class="ax-relbar"><button class="ax-back solid" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><div><h1>Releases</h1><p>${esc(a.name)}</p></div><span></span></header>
       <div class="ax-chips">${filters.map(([g, label]) => `<button class="${S.artistFilter === g ? 'on' : ''}" data-act="artist-filter" data-id="${g}">${label}</button>`).join('')}</div>
       ${body || `<div class="empty"><h3>No releases found</h3><p>Releases for ${esc(a.name)} will appear here.</p></div>`}
+      <div id="cat-artist-rel"></div>
       <div class="ax-bottom"></div>
     </div>`;
   }
@@ -1285,31 +1568,11 @@ const App = (() => {
     return detailHead('go-back', `<div class="liked-heart-tile">${icon('heartF')}</div>`, 'Liked Songs', `${ids.length} song${ids.length === 1 ? '' : 's'}`)
       + (ids.length ? playRow(ids) + ids.map(id => trackRow(S.byId.get(id))).join('') : `<div class="empty">${icon('heart', 'width:64px;height:64px;color:var(--pink)')}<h3>Songs you like will live here</h3></div>`);
   }
-  function vSongs() {
-    const ts = [...S.tracks].sort((a, b) => a.title.localeCompare(b.title));
-    S.viewCtx = { kicker: 'PLAYING FROM SONGS', name: 'Songs', kind: 'songs', id: 'songs' };
-    // All songs browser: no play-all/shuffle-all — this is browsable, never a play context.
-    return `<div class="pagehead"><button class="iconbtn" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><h1>Songs</h1><button class="iconbtn" data-act="import" aria-label="Add music">${icon('plus')}</button></div>`
-      + (ts.length ? `<div class="sdb-note">Tap a song to play it, or save it to your library from \u22ef</div>` + ts.map(t => trackRow(t)).join('') : `<div class="empty"><h3>No songs yet</h3><button class="bigbtn pink" data-act="import">Add music</button></div>`);
-  }
   function vPlaylists() {
     const likedN = Player.state.liked.size;
     return `<div class="pagehead"><button class="iconbtn" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><h1>Playlists</h1><button class="iconbtn" data-act="create-playlist" aria-label="New playlist">${icon('plus')}</button></div>
-    <div class="trow" data-act="open-liked"><div class="liked-heart-tile" style="width:56px;height:56px">${icon('heartF', 'width:30px;height:30px')}</div><div class="tmeta"><div class="ttitle">Liked Songs</div><div class="tsub">Playlist • ${likedN} song${likedN === 1 ? '' : 's'}</div></div></div>
-    ${S._pls.map(p => { const t = S.byId.get(p.trackIds[0]); return `<div class="trow" data-act="open-playlist" data-id="${p.id}">${artImg(t, 'art')}<div class="tmeta"><div class="ttitle">${esc(p.name)}</div><div class="tsub">Playlist • ${p.trackIds.length} songs</div></div></div>`; }).join('')}`;
-  }
-  function vAlbums() {
-    const als = albums();
-    const reg = als.filter(a => !a.single), sng = als.filter(a => a.single);
-    const row = a => `<div class="trow" data-act="open-album" data-id="${esc(a.key)}">${artImg(a.art, 'art')}<div class="tmeta"><div class="ttitle">${esc(a.name)}</div><div class="tsub">${a.single ? 'Single' : 'Album'} • ${esc(a.artist)}</div></div></div>`;
-    const body = reg.map(row).join('') + (sng.length ? `<div class="sectionhead"><h2>Singles</h2></div>` + sng.map(row).join('') : '');
-    return `<div class="pagehead"><button class="iconbtn" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><h1>Albums</h1><span style="width:44px"></span></div>
-    ${body || `<div class="empty"><p>No albums yet.</p></div>`}`;
-  }
-  function vArtists() {
-    const as = artists();
-    return `<div class="pagehead"><button class="iconbtn" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><h1>Artists</h1><span style="width:44px"></span></div>
-    ${as.map(a => `<div class="trow" data-act="open-artist" data-id="${esc(a.name)}"><div class="art" style="border-radius:50%;overflow:hidden">${artImg(a.art, '')}</div><div class="tmeta"><div class="ttitle">${esc(a.name)}</div><div class="tsub">Artist</div></div></div>`).join('') || `<div class="empty"><p>No artists yet.</p></div>`}`;
+    <div class="trow" data-act="open-liked"><div class="liked-heart-tile" style="width:56px;height:56px">${icon('heartF', 'width:30px;height:30px')}</div><div class="tmeta"><div class="ttitle">Liked Songs</div><div class="tsub">Playlist \u2022 ${likedN} song${likedN === 1 ? '' : 's'}</div></div></div>
+    ${S._pls.map(p => { const t = S.byId.get(p.trackIds[0]); return `<div class="trow" data-act="open-playlist" data-id="${p.id}">${artImg(t, 'art')}<div class="tmeta"><div class="ttitle">${esc(p.name)}</div><div class="tsub">Playlist \u2022 ${p.trackIds.length} songs</div></div></div>`; }).join('')}`;
   }
   /* ================= Made by Splotify =================
      Curated playlists, computed on render from local signals only:
@@ -2158,10 +2421,18 @@ const App = (() => {
     }
     checkingUpdate = false;
   }
+  // v10.7 fixed genre list: every genre gets a tile, whether or not
+  // anything is downloaded under it yet. UTAG carries no genre field
+  // (verified live), so genre pages are downloaded songs only. 'Unknown'
+  // is not a genre and gets no tile; untagged songs stay findable via
+  // Search, Songs in an album, and artist pages.
+  const GENRES = ['Pop', 'Hip-Hop', 'Rap', 'R&B', 'Rock', 'Alternative', 'Indie', 'Electronic', 'Dance', 'House', 'Techno', 'Country', 'Folk', 'Jazz', 'Blues', 'Soul', 'Funk', 'Reggae', 'Latin', 'K-Pop', 'J-Pop', 'Metal', 'Punk', 'Gospel', 'Classical', 'Soundtrack', 'Ambient', 'Lo-Fi', 'Afrobeat', 'World', "Children's"];
   function vGenre(g) {
-    const ts = S.tracks.filter(t => (t.genre || 'Unknown') === g);
+    const ts = S.tracks.filter(t => (t.genre || '') === g);
     S.viewCtx = { kicker: 'PLAYING FROM SONGS', name: g, kind: 'genre', id: g };
-    return detailHead('go-back', heroArt(ts.find(t => t.art)), g, `${ts.length} songs`) + playRow(ts.map(t => t.id)) + ts.map(t => trackRow(t)).join('');
+    return detailHead('go-back', heroArt(ts.find(t => t.art)), g, `${ts.length} songs`)
+      + (ts.length ? playRow(ts.map(t => t.id)) + ts.map(t => trackRow(t)).join('')
+        : `<div class="empty"><h3>No ${esc(g)} songs downloaded yet</h3><p>Search the catalog and download one, or import audio.</p><button class="bigbtn pink" data-act="tab" data-tab="search">Search songs</button></div>`);
   }
 
   /* Spotify transfer (v7.0): pull playlists, Liked Songs, and followed
@@ -2290,7 +2561,8 @@ const App = (() => {
     home: vHome, search: vSearch, library: vLibrary, settings: vSettings,
     playlist: id => vPlaylist(id), album: id => vAlbum(id), artist: id => vArtist(id), artistReleases: id => vArtistReleases(id),
     catalogArtist: id => vCatalogArtist(id),
-    liked: vLiked, songs: vSongs, playlists: vPlaylists, albums: vAlbums, artists: vArtists,
+    catalogAlbum: id => vCatalogAlbum(id),
+    liked: vLiked, playlists: vPlaylists,
     curated: id => vCurated(id), genre: id => vGenre(id),
     notifs: () => vStub('Notifications', 'bell', "You're all caught up."),
     history: () => vStub('Listening history', 'history', 'Your recent plays live in Your Library.'),
@@ -2322,7 +2594,11 @@ const App = (() => {
     view().innerHTML = VIEWS[cur.v](cur.id);
     view().scrollTop = sameView ? st : 0;
     view().onscroll = null;
-    if (cur.v === 'artist') bindArtistScroll();
+    if (cur.v === 'home') kickHomeCatalog();
+    if (cur.v === 'artist') { bindArtistScroll(); kickArtistCatalog(cur.id); }
+    if (cur.v === 'artistReleases') kickArtistCatalog(cur.id);
+    if (cur.v === 'album') kickAlbumCatalog(cur.id);
+    if (cur.v === 'catalogAlbum') kickCatalogAlbum(cur.id);
     if (cur.v === 'driveBackup') paintDbBgMode();
     if (cur.v === 'fixerKeys') bindFixerKeys();
     if (cur.v === 'sdb') paintSDB();
@@ -2360,7 +2636,7 @@ const App = (() => {
     });
     const q = document.getElementById('q');
     if (q) {
-      q.addEventListener('input', () => { S.query = q.value; const pos = q.selectionStart; render(); const nq = document.getElementById('q'); nq.focus(); nq.setSelectionRange(pos, pos); });
+      q.addEventListener('input', () => { S.query = q.value; S.searchAll = false; S.searchFilter = 'all'; const pos = q.selectionStart; render(); const nq = document.getElementById('q'); nq.focus(); nq.setSelectionRange(pos, pos); });
       // v10.2: debounced catalog search for the current query (local
       // results render immediately; catalog sections patch in place).
       kickCatalog();
@@ -3280,6 +3556,17 @@ const App = (() => {
     switch (act) {
       case 'tab': if (el.dataset.tab === 'create') { openCreateSheet(); break; } nav(el.dataset.tab); break;
       /* v7.0 library chrome */
+      case 'search-clear': case 'search-cancel': S.query = ''; S.searchAll = false; S.searchFilter = 'all'; render(); break;
+      case 'search-suggest': S.query = id; S.searchAll = false; S.searchFilter = 'all'; render(); break;
+      case 'search-view-all': S.searchAll = true; S.searchFilter = 'all'; render(); break;
+      case 'search-filter': S.searchFilter = id; render(); break;
+      case 'track-toggle-lib': {
+        const t = S.byId.get(Number(id)); if (!t) break;
+        if (libraryHas(t.id)) { await libraryRemove(t.id); toast('Removed from your library'); }
+        else { await libraryAdd(t.id); toast('Added to your library'); }
+        render(); break;
+      }
+      case 'open-cat-album': S.catalogAlbum = { id, loading: true, tracks: [], release: null }; nav('catalogAlbum', id); break;
       case 'lib-chip': S.libChip = (S.libChip === id ? 'all' : id); render(); break;
       case 'lib-sort': S.libSort = S.libSort === 'az' ? 'recent' : 'az'; render(); break;
       case 'lib-view': S.libGrid = !S.libGrid; render(); break;
@@ -3564,10 +3851,7 @@ const App = (() => {
         break;
       }
       case 'open-liked': nav('liked'); break;
-      case 'open-songs': nav('songs'); break;
       case 'open-playlists': nav('playlists'); break;
-      case 'open-albums': nav('albums'); break;
-      case 'open-artists': nav('artists'); break;
       case 'open-curated': nav('curated', id); break;
       case 'open-stations': nav('stations'); break;
       case 'open-podcasts': nav('podcasts'); break;
@@ -3596,7 +3880,7 @@ const App = (() => {
         break;
       }
       case 'play-all': case 'shuffle-all': {
-        const ids = [...el.closest('#view').querySelectorAll('.trow[data-id]')].map(r => Number(r.dataset.id));
+        const ids = [...el.closest('#view').querySelectorAll('.trow[data-act="play-track"]')].map(r => Number(r.dataset.id)).filter(Number.isFinite);
         const ctx = ctxOf();
         if (act === 'shuffle-all' && !Player.state.shuffle) await Player.toggleShuffle();
         await Player.playContext(ctx, ids, ids[0]);
@@ -3768,13 +4052,13 @@ const App = (() => {
         }
         break;
       }
-      case 'cat-song': { const song = getCatSong(id); if (song) openCatSongSheet(song); break; }
+      case 'cat-song': { const song = getCatSongAll(id); if (song) openCatSongSheet(song); break; }
       case 'upload-review-submit': await submitUploadReview(); break;
       case 'upload-review-skip': await skipUploadReview(); break;
-      case 'cat-upload': { const song = getCatSong(id); if (song) await uploadCatSong(song); break; }
-      case 'cat-queue': { const song = getCatSong(id); if (song) await queueCatSong(song); break; }
+      case 'cat-upload': { const song = getCatSongAll(id); if (song) await uploadCatSong(song); break; }
+      case 'cat-queue': { const song = getCatSongAll(id); if (song) await queueCatSong(song); break; }
       case 'cat-signin': case 'cat-signup': {
-        const song = getCatSong(id);
+        const song = getCatSongAll(id);
         const emailEl = document.getElementById('cat-email');
         const passEl = document.getElementById('cat-pass');
         const email = emailEl ? emailEl.value.trim() : '';
