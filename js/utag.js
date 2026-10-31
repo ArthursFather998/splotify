@@ -912,7 +912,19 @@ const UTAG = (() => {
   function matchLocal(song, local) {
     if (!song || !local) return false;
     if (local.utagTrackId && song.id && String(local.utagTrackId) === String(song.id)) return true;
-    return keyFor(song.artist, song.title) === keyFor(local.artist, local.title);
+    if (norm(song.title || '') !== norm(local.title || '')) return false;
+    const sa = norm(song.artist || ''), la = norm(local.artist || '');
+    if (sa === la) return true;
+    // v10.8: a combined credit must not defeat a match. UTAG stores
+    // "THE LINE (feat. d4vd)" under artist "The Kid LAROI", while a
+    // local tag reads "The Kid LAROI, d4vd" — same song, different
+    // credit string. Same title + one artist token set inside the
+    // other = same song. Disjoint artists (same title, different
+    // singer) still do NOT match.
+    const sT = new Set(sa.split(' ').filter(Boolean)), lT = new Set(la.split(' ').filter(Boolean));
+    if (!sT.size || !lT.size) return false;
+    const subset = (a, b) => [...a].every(t => b.has(t));
+    return subset(sT, lT) || subset(lT, sT);
   }
   function findLocal(song, localTracks) {
     const list = localTracks || [];

@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v10.7';
+  const APP_VERSION = 'v10.8';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -679,10 +679,16 @@ const App = (() => {
     const art = t ? artImg(t, 'art') : `<div class="lib-thumb lib-ph round">${icon('person', 'width:26px;height:26px')}</div>`;
     return `<div class="trow" data-act="open-artist" data-id="${esc(h.name)}">${art}<div class="tmeta"><div class="ttitle">${esc(h.name)}</div><div class="tsub">Artist${h.placeholder && !h.followed ? ' • No songs yet' : ''}</div></div></div>`;
   }
+  function catSub(song) {
+    const parts = [song.artist];
+    if (song.album && normKey(song.album) !== normKey(song.title)) parts.push(song.album);
+    if (song.year) parts.push(song.year);
+    return parts.filter(Boolean).join(' • ');
+  }
   function searchSongsSection(d) {
     const localRows = d.sHits.map(e => searchSongRow(e.t)).join('');
     const catRows = (S.catSongs || []).filter(x => !UTAG.findLocal(x, S.tracks))
-      .map(x => catTrackRow(x, { sub: [x.artist, x.album, x.year].filter(Boolean).join(' • ') })).join('');
+      .map(x => catTrackRow(x, { sub: catSub(x) })).join('');
     if (!localRows && !catRows) return '';
     return `<div class="sectionhead"><h2>Songs</h2></div>${localRows}${catRows}`;
   }
@@ -726,7 +732,7 @@ const App = (() => {
   }
   function searchSongsPreviewHTML(d) {
     const rows = d.sHits.slice(0, 5).map(e => searchSongRow(e.t)).join('')
-      + (S.catSongs || []).filter(x => !UTAG.findLocal(x, S.tracks)).slice(0, 5).map(x => catTrackRow(x, { sub: [x.artist, x.album, x.year].filter(Boolean).join(' • ') })).join('');
+      + (S.catSongs || []).filter(x => !UTAG.findLocal(x, S.tracks)).slice(0, 5).map(x => catTrackRow(x, { sub: catSub(x) })).join('');
     return rows ? `<div class="sectionhead"><h2>Songs</h2></div>${rows}` : '';
   }
   function searchAlbumsPreviewHTML(d) {
@@ -829,7 +835,11 @@ const App = (() => {
   const normKey = v => String(v || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
   function catTrackRow(song, opts) {
     const o = opts || {};
-    const rank = (song.trackNo !== null && song.trackNo !== undefined) ? song.trackNo : (o.pos || '');
+    // v10.8: track numbers belong ONLY in an album tracklist. Search and
+    // artist lists used to show a song's album position (1, 8, 13…),
+    // which read as a broken ranking. Rank is shown only when the
+    // caller explicitly asks (merged album rows).
+    const rank = o.showRank ? ((song.trackNo !== null && song.trackNo !== undefined) ? song.trackNo : (o.pos || '')) : '';
     const sub = o.sub || [song.artist].filter(Boolean).join(' • ');
     return `<div class="trow cat-row" data-act="cat-song" data-id="${esc(song.id)}">${rank !== '' ? `<span class="ax-rank">${rank}</span>` : ''}${catArtImg(song)}<div class="tmeta"><div class="ttitle">${esc(song.title)}</div><div class="tsub">${esc(sub)}</div></div><span class="cat-notdl">Not downloaded</span></div>`;
   }
@@ -847,9 +857,10 @@ const App = (() => {
     });
     const used = new Set(); let html = '', downloaded = 0;
     catTracks.forEach((song, i) => {
-      const lt = byId.get(String(song.id)) || byKey.get(normKey(song.artist) + '|' + normKey(song.title));
+      const lt = byId.get(String(song.id)) || byKey.get(normKey(song.artist) + '|' + normKey(song.title))
+        || (typeof UTAG !== 'undefined' && UTAG.matchLocal ? local.find(t => !used.has(t.id) && UTAG.matchLocal(song, t)) : null);
       if (lt && !used.has(lt.id)) { used.add(lt.id); downloaded++; html += trackRow(lt); }
-      else if (!lt) html += catTrackRow(song, { pos: i + 1, sub: song.artist || '' });
+      else if (!lt) html += catTrackRow(song, { pos: i + 1, sub: song.artist || '', showRank: true });
     });
     local.forEach(t => { if (!used.has(t.id)) html += trackRow(t); });
     return { html, total: catTracks.length + local.filter(t => !used.has(t.id)).length, downloaded: local.length };
@@ -931,7 +942,7 @@ const App = (() => {
       const localKeys = new Set((a ? a.tracks.map(t => normKey(t.artist) + '|' + normKey(t.title)) : []));
       const extra = rel.songs.filter(x => !localKeys.has(normKey(x.artist) + '|' + normKey(x.title)))
         .filter(x => !UTAG.findLocal(x, S.tracks)).slice(0, 30);
-      songsEl.innerHTML = extra.length ? `<div class="sectionhead ax-section"><h2>Catalog songs</h2></div>${extra.map(x => catTrackRow(x, { sub: [x.artist, x.album, x.year].filter(Boolean).join(' • ') })).join('')}` : '';
+      songsEl.innerHTML = extra.length ? `<div class="sectionhead ax-section"><h2>Catalog songs</h2></div>${extra.map(x => catTrackRow(x, { sub: catSub(x) })).join('')}` : '';
     }
   }
   async function kickHomeCatalog() {
