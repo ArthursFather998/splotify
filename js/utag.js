@@ -1217,6 +1217,7 @@ const UTAG = (() => {
   async function approveProposal(id) { return fnCall({ action: 'metadata_proposal_approve', proposal_id: id }); }
   async function rejectProposal(id, note) { return fnCall({ action: 'metadata_proposal_reject', proposal_id: id, review_note: note || null }); }
   async function retryDatumJob(id) { return fnCall({ action: 'datum_retry', job_id: id }); }
+  async function runDatum() { return fnCall({ action: 'datum_run' }); }
   async function adminUsers() {
     const data = await fnCall({ action: 'list_users' });
     return (data && data.users) || [];
@@ -1364,5 +1365,5 @@ const UTAG = (() => {
   }
 
   try { window.addEventListener('online', () => drain()); } catch (e) {}
-  return { lookup, fixTrack, enrich, ensureLyrics, learn, submit, drain, migrate, stats, norm, fixerLog, listAudio, audioUrl, audioBlob, megaFolderLink, setMegaFolderLink, listMegaFolder, megaFolderBlob, getSession, setSession, clearSession, signIn, signUp, catalogSearch, catalogArtistSongs, catalogReleaseTracks, catalogAlbumFor, catalogArtistReleases, catalogDiscography, matchLocal, findLocal, queueDatumRip, uploadReview, submitUpload, getRole, activityData, approveProposal, rejectProposal, retryDatumJob, adminUsers, setUserRole, refreshSession, logHistory, migrateLocalData, createArtist, createRelease, createTrack };
+  return { lookup, fixTrack, enrich, ensureLyrics, learn, submit, drain, migrate, stats, norm, fixerLog, listAudio, audioUrl, audioBlob, megaFolderLink, setMegaFolderLink, listMegaFolder, megaFolderBlob, getSession, setSession, clearSession, signIn, signUp, catalogSearch, catalogArtistSongs, catalogReleaseTracks, catalogAlbumFor, catalogArtistReleases, catalogDiscography, matchLocal, findLocal, queueDatumRip, uploadReview, submitUpload, getRole, activityData, approveProposal, rejectProposal, retryDatumJob, runDatum, adminUsers, setUserRole, refreshSession, logHistory, migrateLocalData, createArtist, createRelease, createTrack };
 })();

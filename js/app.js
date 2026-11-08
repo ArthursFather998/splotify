@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v10.18';
+  const APP_VERSION = 'v10.19';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -1506,7 +1506,7 @@ const App = (() => {
     const events = (a.events || []).map(ev => `<div class="setrow"><div><div>${esc(ev.event || '')}</div><div class="sub">${esc(ev.message || '')} · ${actDate(ev.created_at)}</div></div></div>`).join('');
     let out = head;
     out += `<div class="setgroup"><h2>My proposals</h2>${mine || '<div class="sub" style="padding:8px 4px">No proposals yet.</div>'}</div>`;
-    out += `<div class="setgroup"><h2>${a.isAdmin ? 'DATUM queue' : 'My DATUM jobs'}</h2>${jobs || '<div class="sub" style="padding:8px 4px">No DATUM jobs yet.</div>'}</div>`;
+    out += `<div class="setgroup"><h2>${a.isAdmin ? 'DATUM queue' : 'My DATUM jobs'}</h2>${a.isAdmin ? `<div style="padding:0 4px 8px"><button class="mini-btn" data-act="act-run-datum">Run in cloud</button></div>` : ''}${jobs || '<div class="sub" style="padding:8px 4px">No DATUM jobs yet.</div>'}</div>`;
     if (a.isAdmin) {
       const pending = (a.review || []).filter(p => p.status === 'pending');
       out += `<div class="setgroup"><h2>Review queue</h2>${pending.map(p => actProposalRow(p, true)).join('') || '<div class="sub" style="padding:8px 4px">Nothing waiting for review.</div>'}</div>`;
@@ -4154,6 +4154,11 @@ const App = (() => {
       }
       case 'act-retry': {
         try { await UTAG.retryDatumJob(id); toast('Job queued again'); } catch (e) { toast(e && e.message ? e.message : 'Retry failed'); }
+        await loadActivity();
+        break;
+      }
+      case 'act-run-datum': {
+        try { await UTAG.runDatum(); toast('Cloud run started'); } catch (e) { toast(e && e.message ? e.message : 'Run failed'); }
         await loadActivity();
         break;
       }
