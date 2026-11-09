@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v10.19';
+  const APP_VERSION = 'v10.20';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -215,6 +215,9 @@ const App = (() => {
     try {
       const u = artURL(t);
       const img = new Image();
+      // Hosted cover art (catalog) needs CORS for the canvas read;
+      // without it the canvas taints and the tint just stays unset.
+      img.crossOrigin = 'anonymous';
       img.onload = () => {
         try {
           const cv = document.createElement('canvas'); cv.width = cv.height = 24;
@@ -778,7 +781,10 @@ const App = (() => {
       else if (act === 'open-playlist') { const p = (S._pls || []).find(x => String(x.id) === String(id)); if (p) recordSearchRecent({ kind: 'playlist', id, name: p.name, sub: 'Playlist • ' + p.trackIds.length + ' songs' }); }
       else if (act === 'open-cat-artist') { const a = (S.catArtists || []).find(x => String(x.id) === String(id)); recordSearchRecent({ kind: 'cat-artist', id, name: a ? a.name : String(id), sub: 'Artist' }); }
       else if (act === 'open-cat-album') { const x = (S.catSongs || []).find(s => String(s.releaseId) === String(id)); const ra = !x && (S.catAlbums || []).find(a => String(a.id) === String(id)); if (x) recordSearchRecent({ kind: 'cat-album', id, name: x.album, sub: 'Album • ' + x.artist, art: x.art || null }); else if (ra) recordSearchRecent({ kind: 'cat-album', id, name: ra.title, sub: 'Album • ' + ra.artist, art: ra.art || null }); }
-      else if (act === 'play-track') { const t = S.byId.get(Number(id)); if (t) recordSearchRecent({ kind: 'song', id: String(t.id), name: t.title, sub: 'Song • ' + t.artist }); }
+      else if (act === 'play-track') {
+        if (typeof id === 'string' && id.indexOf('cat:') === 0) { const s = getCatSongAll(id.slice(4)); if (s) recordSearchRecent({ kind: 'cat-song', id: String(s.id), name: s.title, sub: 'Song • ' + s.artist, art: s.art || null }); }
+        else { const t = S.byId.get(Number(id)); if (t) recordSearchRecent({ kind: 'song', id: String(t.id), name: t.title, sub: 'Song • ' + t.artist }); }
+      }
       else if (act === 'cat-song') { const s = getCatSongAll(id); if (s) recordSearchRecent({ kind: 'cat-song', id: String(s.id), name: s.title, sub: 'Song • ' + s.artist, art: s.art || null }); }
     } catch (e) {}
   }
@@ -1027,11 +1033,38 @@ const App = (() => {
     if (song.art) return `<img class="art" src="${esc(song.art)}" alt="" loading="lazy" onerror="App.artErr(this)">`;
     return `<div class="art art-ph">${icon('note')}</div>`;
   }
+  /* v10.20 streamed playback: which catalog tracks have audio, kept in
+     S.audioByTrack (catalog track id -> audio row id). Filled lazily
+     per view so a render never blocks on the whole catalog, and cached
+     for the session. A queue id of 'cat:<catalog-uuid>' is a streamed
+     track; anything else is a local track id. */
+  function refId(v) {
+    const s = String(v == null ? '' : v);
+    return s.indexOf('cat:') === 0 ? s : Number(s);
+  }
+  function hasAudio(song) {
+    return !!(song && S.audioByTrack && S.audioByTrack.has(String(song.id)));
+  }
+  async function ensureAudioFor(songs) {
+    if (typeof UTAG === 'undefined' || !UTAG.audioForTracks) return;
+    const ids = (songs || []).map(s => String(s.id)).filter(Boolean);
+    const missing = ids.filter(id => !(S.audioByTrack && S.audioByTrack.has(id)));
+    if (!missing.length) return;
+    if (!S.audioByTrack) S.audioByTrack = new Map();
+    try {
+      const map = await UTAG.audioForTracks(missing);
+      for (const [k, v] of map) S.audioByTrack.set(k, v);
+    } catch (e) { /* unknown stays unknown; the row just won't play */ }
+  }
   function catSongRow(song) {
     const local = (typeof UTAG !== 'undefined' && UTAG.findLocal) ? UTAG.findLocal(song, S.tracks) : null;
     const sub = [song.artist, song.album, song.year].filter(x => x !== '' && x !== null && x !== undefined).join(' \u2022 ');
     if (local) {
       return `<div class="trow" data-act="play-track" data-id="${local.id}">${catArtImg(song)}<div class="tmeta"><div class="ttitle">${esc(song.title)}</div><div class="tsub">${esc(sub)}</div></div></div>`;
+    }
+    const playing = Player.current && String(Player.current.id) === 'cat:' + song.id;
+    if (hasAudio(song)) {
+      return `<div class="trow cat-row${playing ? ' playing' : ''}" data-act="play-track" data-id="cat:${esc(song.id)}">${catArtImg(song)}<div class="tmeta"><div class="ttitle">${esc(song.title)}</div><div class="tsub">${esc(sub)}</div></div><button class="dotsbtn" data-act="cat-menu" data-id="${esc(song.id)}" aria-label="More options">${icon('dots')}</button></div>`;
     }
     return `<div class="trow cat-row" data-act="cat-song" data-id="${esc(song.id)}">${catArtImg(song)}<div class="tmeta"><div class="ttitle">${esc(song.title)}</div><div class="tsub">${esc(sub)}</div></div><button class="dotsbtn" data-act="cat-menu" data-id="${esc(song.id)}" aria-label="More options">${icon('dots')}</button></div>`;
   }
@@ -1044,6 +1077,10 @@ const App = (() => {
   function catTrackRow(song, opts) {
     const o = opts || {};
     const sub = o.sub || [song.artist].filter(Boolean).join(' • ');
+    const playing = Player.current && String(Player.current.id) === 'cat:' + song.id;
+    if (hasAudio(song)) {
+      return `<div class="trow cat-row${playing ? ' playing' : ''}" data-act="play-track" data-id="cat:${esc(song.id)}">${catArtImg(song)}<div class="tmeta"><div class="ttitle">${esc(song.title)}</div><div class="tsub">${esc(sub)}</div></div><button class="dotsbtn" data-act="cat-menu" data-id="${esc(song.id)}" aria-label="More options">${icon('dots')}</button></div>`;
+    }
     return `<div class="trow cat-row" data-act="cat-song" data-id="${esc(song.id)}">${catArtImg(song)}<div class="tmeta"><div class="ttitle">${esc(song.title)}</div><div class="tsub">${esc(sub)}</div></div><button class="dotsbtn" data-act="cat-menu" data-id="${esc(song.id)}" aria-label="More options">${icon('dots')}</button></div>`;
   }
   // Merge local (playable) + catalog (not downloaded) tracks, in catalog
@@ -1096,6 +1133,7 @@ const App = (() => {
       const res = await UTAG.catalogAlbumFor(a.artist, a.name);
       if (!res || !res.tracks.length) { S.catAlbum = false; return; }
       S.catAlbum = res;
+      await ensureAudioFor(res.tracks);
       paintAlbumCatalog(key);
     } catch (e) { S.catAlbum = false; }
   }
@@ -1124,6 +1162,7 @@ const App = (() => {
       const rel = await UTAG.catalogArtistReleases(name);
       const songs = rel.artistId ? await UTAG.catalogArtistSongs(rel.artistId) : [];
       S.catArtistRel = { artistId: rel.artistId, releases: rel.releases || [], songs: songs || [] };
+      await ensureAudioFor(songs);
       paintArtistCatalog(name);
     } catch (e) { S.catArtistRel = false; }
   }
@@ -1192,7 +1231,7 @@ const App = (() => {
     S.catalogAlbum = { id, loading: true, tracks: [], release: null };
     try {
       const d = await UTAG.catalogReleaseTracks(id);
-      if (S.catalogAlbum && S.catalogAlbum.id === id) { S.catalogAlbum = { id, loading: false, tracks: d.tracks || [], release: d.release }; render(); }
+      if (S.catalogAlbum && S.catalogAlbum.id === id) { S.catalogAlbum = { id, loading: false, tracks: d.tracks || [], release: d.release }; await ensureAudioFor(d.tracks || []); render(); }
     } catch (e) {
       if (S.catalogAlbum && S.catalogAlbum.id === id) { S.catalogAlbum = { id, loading: false, tracks: [], release: null }; render(); }
     }
@@ -1236,6 +1275,7 @@ const App = (() => {
       if (seq !== S.catSeq) return; // a newer query took over
       if (!res) { S.catSongs = []; S.catArtists = []; S.catAlbums = []; }
       else { S.catSongs = res.songs || []; S.catArtists = res.artists || []; S.catAlbums = res.albums || []; }
+      await ensureAudioFor(S.catSongs);
       S.catReady = true;
       paintCatalogSections(); paintSearchSections();
     }, 350);
@@ -1256,11 +1296,16 @@ const App = (() => {
     if (!ca.songs || !ca.songs.length) return head + (S.isAdmin ? `<div style="padding:0 16px 12px"><button class="bigbtn" data-act="cat-add-track-artist" data-id="${esc(ca.name || '')}">Add song</button></div>` : '') + `<div class="empty"><p>No songs found.</p></div>`;
     return head + (S.isAdmin ? `<div style="padding:0 16px 12px"><button class="bigbtn" data-act="cat-add-track-artist" data-id="${esc(ca.name || '')}">Add song</button></div>` : '') + `<div class="sectionhead"><h2>Songs</h2></div>${ca.songs.map(catSongRow).join('')}`;
   }
-  /* Get audio sheet for a catalog-only song: exactly two options. */
+  /* Get audio sheet for a catalog-only song. Songs with audio also
+     offer Download: save the song to this phone, stamped to the
+     catalog track so it links exactly from then on. */
   function openCatSongSheet(song) {
     if (!song) return;
     const sub = [song.artist, song.album, song.year].filter(x => x !== '' && x !== null && x !== undefined).join(' \u2022 ');
+    const dl = hasAudio(song)
+      ? `<div class="sheet-item" data-act="cat-download" data-id="${esc(song.id)}"><span><b>Download</b><div class="sub">Save to this phone</div></span></div>` : '';
     openSheet(`<div style="padding:10px 20px 24px"><h3 style="margin:8px 0 4px;font-size:17px">${esc(song.title)}</h3><div style="color:var(--sub);font-size:13px;margin-bottom:14px">${esc(sub)}</div>`
+      + dl
       + `<div class="sheet-item" data-act="cat-upload" data-id="${esc(song.id)}"><span><b>Upload audio</b></span></div>`
       + `<div class="sheet-item" data-act="cat-queue" data-id="${esc(song.id)}"><span><b>Queue DATUM rip</b></span></div></div>`);
   }
@@ -1302,7 +1347,7 @@ const App = (() => {
     else render();
     try {
       const songs = await UTAG.catalogArtistSongs(id);
-      if (S.catArtist && S.catArtist.id === id) { S.catArtist.songs = songs || []; S.catArtist.loading = false; S.catArtist.done = true; render(); }
+      if (S.catArtist && S.catArtist.id === id) { S.catArtist.songs = songs || []; S.catArtist.loading = false; S.catArtist.done = true; await ensureAudioFor(songs || []); render(); }
     } catch (e) { if (S.catArtist && S.catArtist.id === id) { S.catArtist.songs = []; S.catArtist.loading = false; S.catArtist.done = true; render(); } }
   }
   function openCatCreateChooser() {
@@ -1454,6 +1499,54 @@ const App = (() => {
       toast(before.has(t.id) ? 'Already in your music' : 'Added to your music');
     };
     inp.click();
+  }
+  /* v10.20: save a streamed song to the phone. The bytes come from the
+     same fetch the player uses; Importer saves them like any other
+     import, then the catalog id is stamped on the local track (same
+     pattern as the Get-audio upload) so the song links exactly and
+     plays from the phone from then on. */
+  async function downloadCatSong(song) {
+    if (!song) return false;
+    let audioId = S.audioByTrack && S.audioByTrack.get(String(song.id));
+    if (!audioId && typeof UTAG !== 'undefined' && UTAG.audioForTrack) {
+      try { audioId = await UTAG.audioForTrack(song.id); } catch (e) { audioId = null; }
+    }
+    if (!audioId) { toast('Nothing to download for this song yet'); return false; }
+    closeSheet();
+    toast('Downloading…');
+    let blob = null;
+    try { blob = await UTAG.audioBlob(audioId); } catch (e) { toast('Could not download this song. Try again.'); return false; }
+    if (!blob) { toast('Could not download this song. Try again.'); return false; }
+    const safeName = (String(song.artist || '') + ' - ' + String(song.title || '')).replace(/[\\/:*?"<>|]/g, '').trim() || 'song';
+    const file = new File([blob], safeName + '.mp3', { type: blob.type || 'audio/mpeg' });
+    try { await Importer.importFiles([file]); } catch (e) { toast('Could not save this song. Try again.'); return false; }
+    try { await refreshTracks(); } catch (e) {}
+    const t = S.tracks.find(x => x.fileName === file.name && x.fileSize === file.size);
+    if (t) {
+      try {
+        if (String(t.utagTrackId || '') !== String(song.id)) {
+          await DB.updateTrack(t.id, { utagTrackId: song.id });
+          t.utagTrackId = song.id;
+        }
+      } catch (e) {}
+    }
+    render(); paintMini();
+    return true;
+  }
+  /* v10.20: liking a streamed song saves it to the library, and the
+     library holds songs on the phone: download it first, then like
+     the local copy. */
+  async function likeRemoteTrack(ref) {
+    const uuid = String(ref).slice(4);
+    const song = getCatSongAll(uuid);
+    if (!song) return false;
+    const ok = await downloadCatSong(song);
+    if (!ok) return false;
+    const local = UTAG.findLocal(song, S.tracks);
+    if (!local) return false;
+    await Player.toggleLike(local.id);
+    paintNowPlaying();
+    return true;
   }
 
   /* ---- v10.4 Settings > Activity + account management ----
@@ -2154,9 +2247,9 @@ const App = (() => {
       <div id="sdb-utag-list"><div class="sub" style="padding:8px 4px">Loading catalog audio…</div></div>
     </div>
     <div class="setgroup"><h2>Import from Mega folder</h2>
-      <div class="sub" style="padding:0 4px 8px">Link the DATUM/SSDB folder, not the empty root SSDB folder. The link is stored only on this iPhone.</div>
+      <div class="sub" style="padding:0 4px 8px">Paste the link to your music folder. The link is stored only on this phone.</div>
       <input id="sdb-mega-link" placeholder="Mega folder link" autocomplete="off" autocapitalize="off" spellcheck="false" style="width:100%;box-sizing:border-box;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;color:var(--txt);font-size:15px;margin:0 0 8px" />
-      <div class="setrow" data-act="sdb-import-mega-folder"><div>Import folder from Mega<div class="sub">Download every song in the folder into the SDB</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
+      <div class="setrow" data-act="sdb-import-mega-folder"><div>Import folder from Mega<div class="sub">Download every song in the folder to this phone</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
       <div id="sdb-mega-progress" class="sub" style="padding:8px 4px"></div>
     </div>
     <div class="setgroup"><h2>Connect to Server</h2>
@@ -2175,7 +2268,7 @@ const App = (() => {
       if (!megaInp.dataset.bound) {
         megaInp.dataset.bound = '1';
         megaInp.value = savedLink;
-        megaInp.addEventListener('change', () => { if (typeof UTAG.setMegaFolderLink === 'function') UTAG.setMegaFolderLink(megaInp.value); toast('Mega folder link saved on this iPhone'); });
+        megaInp.addEventListener('change', () => { if (typeof UTAG.setMegaFolderLink === 'function') UTAG.setMegaFolderLink(megaInp.value); toast('Folder link saved on this phone'); });
       } else if (!megaInp.value) { megaInp.value = savedLink; }
     }
     let list = null;
@@ -2190,7 +2283,7 @@ const App = (() => {
       return;
     }
     box.innerHTML = `<div class="sub" style="padding:0 4px 8px">${list.length} song${list.length === 1 ? '' : 's'} available from the catalog.</div>
-      <div class="setrow" data-act="sdb-import-all-utag"><div>Import all from catalog<div class="sub">Download every DATUM song into the SDB</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
+      <div class="setrow" data-act="sdb-import-all-utag"><div>Import all from catalog<div class="sub">Download every song from the catalog to this phone</div></div><span style="color:var(--sub)">${icon('download')}</span></div>
       <div id="sdb-utag-progress" class="sub" style="padding:8px 4px"></div>`;
   }
   /* utag fixer keys: AcoustID + fanart.tv for the engine. The engine reads
@@ -3088,7 +3181,7 @@ const App = (() => {
     else { mart.removeAttribute('src'); mart.style.display = 'none'; if (mph) mph.style.display = 'none'; }
     document.getElementById('mp-title').textContent = t.title;
     document.getElementById('mp-artist').textContent = t.artist;
-    document.getElementById('mp-play').innerHTML = icon(Player.isPlaying ? 'pause' : 'play');
+    document.getElementById('mp-play').innerHTML = Player.state.loading ? '<span class="spin"></span>' : icon(Player.isPlaying ? 'pause' : 'play');
     document.getElementById('mp-devices').innerHTML = icon('devices');
     tint(t);
   }
@@ -3150,7 +3243,7 @@ const App = (() => {
     rp.innerHTML = `<img src="icons/${Player.state.repeat === 'one' ? 'repeat-one-pink' : 'repeat-all-pink'}.png" class="sprite${Player.state.repeat !== 'off' ? '' : ' sprite-off'}" alt="Repeat">`;
     rp.classList.toggle('on', Player.state.repeat !== 'off');
     const pp = document.getElementById('np-play');
-    pp.innerHTML = icon(Player.isPlaying ? 'pause' : 'play');
+    pp.innerHTML = Player.state.loading ? '<span class="spin"></span>' : icon(Player.isPlaying ? 'pause' : 'play');
     pp.classList.toggle('playing', Player.isPlaying);
     document.getElementById('np-close').innerHTML = icon('chevD');
     document.getElementById('np-menu').innerHTML = icon('dots');
@@ -3494,7 +3587,14 @@ const App = (() => {
   function queueSheet() {
     const cur = Player.current;
     const up = Player.queueList();
-    const row = id => { const t = S.byId.get(id); if (!t) return ''; return `<div class="trow" data-act="queue-jump" data-id="${id}">${artImg(t, 'art')}<div class="tmeta"><div class="ttitle">${esc(t.title)}</div><div class="tsub">${esc(t.artist)}</div></div></div>`; };
+    const row = id => {
+      if (typeof id === 'string' && id.indexOf('cat:') === 0) {
+        const s = getCatSongAll(id.slice(4));
+        if (!s) return '';
+        return `<div class="trow" data-act="queue-jump" data-id="${id}">${catArtImg(s)}<div class="tmeta"><div class="ttitle">${esc(s.title)}</div><div class="tsub">${esc(s.artist)}</div></div></div>`;
+      }
+      const t = S.byId.get(id); if (!t) return ''; return `<div class="trow" data-act="queue-jump" data-id="${id}">${artImg(t, 'art')}<div class="tmeta"><div class="ttitle">${esc(t.title)}</div><div class="tsub">${esc(t.artist)}</div></div></div>`;
+    };
     openSheet(`<div class="sheet-title">Queue</div>
       ${cur ? `<div class="sheet-item" style="color:var(--sub);font-size:13px">NOW PLAYING</div>` + row(cur.id) : ''}
       ${up.length ? `<div class="sheet-item" style="color:var(--sub);font-size:13px">NEXT UP</div>` + up.map(row).join('') : '<div class="empty"><p>Nothing queued.</p></div>'}`);
@@ -4198,7 +4298,7 @@ const App = (() => {
         };
         inp.click(); break;
       }
-      case 'sdb-server-placeholder': toast('Connect to server is not available yet'); break;
+      case 'sdb-server-placeholder': toast('Not available yet'); break;
       case 'sdb-drive-placeholder': toast('Import from Google Drive is not available yet'); break;
       case 'sdb-import-all-utag': {
         if (S.sdbImportingAll) { toast('Import from catalog is already running'); break; }
@@ -4231,21 +4331,21 @@ const App = (() => {
         break;
       }
       case 'sdb-import-mega-folder': {
-        if (S.sdbImportingMega) { toast('Mega folder import is already running'); break; }
+        if (S.sdbImportingMega) { toast('Folder import is already running'); break; }
         const megaInp = document.getElementById('sdb-mega-link');
         let megaLink = megaInp ? megaInp.value.trim() : '';
         if (megaLink && typeof UTAG.setMegaFolderLink === 'function') UTAG.setMegaFolderLink(megaLink);
         else if (!megaLink && typeof UTAG.megaFolderLink === 'function') megaLink = UTAG.megaFolderLink();
-        if (!megaLink) { toast('Paste a Mega folder link first'); break; }
-        if (typeof UTAG.listMegaFolder !== 'function') { toast('Mega folder import needs the latest app version — update Splotify and try again'); break; }
+        if (!megaLink) { toast('Paste a folder link first'); break; }
+        if (typeof UTAG.listMegaFolder !== 'function') { toast('Folder import needs the latest app version. Update Splotify and try again.'); break; }
         S.sdbImportingMega = true;
         try {
           const prog = () => document.getElementById('sdb-mega-progress');
-          if (prog()) prog().textContent = 'Listing Mega folder…';
+          if (prog()) prog().textContent = 'Listing folder…';
           let list = null, listErr = null;
           try { list = await UTAG.listMegaFolder(megaLink); } catch (e) { listErr = e; }
           if (listErr) { if (prog()) prog().textContent = listErr.message; toast(listErr.message); }
-          else if (!list.length) { if (prog()) prog().textContent = 'No audio files found — check you linked DATUM/SSDB, not the empty root SSDB folder.'; toast('No audio files found in that Mega folder'); }
+          else if (!list.length) { if (prog()) prog().textContent = 'No audio files found. Check you linked the right folder.'; toast('No audio files found in that folder'); }
           else {
             const existing = new Set((S.tracks || []).map(t => t.fileName).filter(Boolean));
             let imported = 0, skipped = 0, failed = 0;
@@ -4264,9 +4364,9 @@ const App = (() => {
             }
             await refreshTracks();
             if (prog()) prog().textContent = '';
-            toast(`Mega folder import done: ${imported} imported, ${skipped} skipped, ${failed} failed`);
+            toast(`Folder import done: ${imported} imported, ${skipped} skipped, ${failed} failed`);
           }
-        } catch (e) { toast('Could not import Mega folder: ' + (e && e.message ? e.message : 'unknown error')); }
+        } catch (e) { toast('Could not import that folder. Try again.'); }
         finally { S.sdbImportingMega = false; }
         break;
       }
@@ -4357,7 +4457,7 @@ const App = (() => {
         break;
       }
       case 'play-all': case 'shuffle-all': {
-        const ids = [...el.closest('#view').querySelectorAll('.trow[data-act="play-track"]')].map(r => Number(r.dataset.id)).filter(Number.isFinite);
+        const ids = [...el.closest('#view').querySelectorAll('.trow[data-act="play-track"]')].map(r => refId(r.dataset.id)).filter(v => (typeof v === 'string' && v) || (typeof v === 'number' && Number.isFinite(v) && v > 0));
         const ctx = ctxOf();
         if (act === 'shuffle-all' && !Player.state.shuffle) await Player.toggleShuffle();
         await Player.playContext(ctx, ids, ids[0]);
@@ -4535,6 +4635,7 @@ const App = (() => {
       case 'upload-review-skip': await skipUploadReview(); break;
       case 'cat-upload': { const song = getCatSongAll(id); if (song) await uploadCatSong(song); break; }
       case 'cat-queue': { const song = getCatSongAll(id); if (song) await queueCatSong(song); break; }
+      case 'cat-download': { const song = getCatSongAll(id); if (song) await downloadCatSong(song); break; }
       case 'cat-signin': case 'cat-signup': {
         const song = getCatSongAll(id);
         const emailEl = document.getElementById('cat-email');
@@ -4557,14 +4658,14 @@ const App = (() => {
         // browsing the SDB plays just that song; library contexts
         // (playlist/album/artist/liked) keep full-list queues.
         const sdbBrowse = ['songs', 'search', 'genre'].includes(ctx.kind);
-        const ids = sdbBrowse ? [Number(id)] : [...el.closest('#view').querySelectorAll('.trow[data-id]')].map(r => Number(r.dataset.id));
+        const ids = sdbBrowse ? [refId(id)] : [...el.closest('#view').querySelectorAll('.trow[data-act="play-track"]')].map(r => refId(r.dataset.id)).filter(v => (typeof v === 'string' && v) || (typeof v === 'number' && Number.isFinite(v) && v > 0));
         const sameCtx = Player.state.ctx && Player.state.ctx.kind === ctx.kind && String(Player.state.ctx.id) === String(ctx.id);
-        if (sameCtx && Player.state.list.join() === ids.join()) await Player.playId(Number(id));
-        else await Player.playContext(ctx, ids, Number(id));
+        if (sameCtx && Player.state.list.join() === ids.join()) await Player.playId(refId(id));
+        else await Player.playContext(ctx, ids, refId(id));
         openNP();
         break;
       }
-      case 'queue-jump': closeSheet(); await Player.jumpToQueueId(Number(id)); break;
+      case 'queue-jump': closeSheet(); await Player.jumpToQueueId(refId(id)); break;
       case 'track-menu': trackSheet(Number(id)); break;
       case 'sheet-like': await Player.toggleLike(Number(id)); closeSheet(); paintNowPlaying(); break;
       case 'sheet-download': closeSheet(); downloadTrack(Number(id)); break;
@@ -4644,7 +4745,7 @@ const App = (() => {
      Permanent: the audio lives in IndexedDB. */
   async function runADF() {
     const tracks = [...SDB.all()];
-    if (!tracks.length) { toast('No songs in the SDB'); return; }
+    if (!tracks.length) { toast('No songs saved yet'); return; }
     const score = t => (libraryHas(t.id) ? 2 : 0) + ((S._pls || []).some(p => (p.trackIds || []).includes(t.id)) ? 1 : 0);
     const pickDups = list => {
       const groups = new Map();
@@ -4826,6 +4927,29 @@ const App = (() => {
     if (S._bound) return; S._bound = true;
     Player.on('track', () => { paintMini(); paintNowPlaying(); render(); });
     Player.on('state', () => { paintMini(); paintNowPlaying(); paintDbBgMode(); });
+    Player.on('track-error', () => { toast('Could not play this song. Try again.'); });
+    /* v10.20: the player resolves streamed tracks through this. A ref of
+       'cat:<catalog-uuid>' becomes a metadata shell at once plus a byte
+       loader the player calls when it is time to play. */
+    if (Player.setRemoteResolver) Player.setRemoteResolver(async (ref) => {
+      const uuid = String(ref).slice(4);
+      const song = getCatSongAll(uuid);
+      if (!song) throw new Error('Song not found');
+      let audioId = S.audioByTrack && S.audioByTrack.get(uuid);
+      if (!audioId) {
+        if (!UTAG.audioForTrack) throw new Error('No audio');
+        audioId = await UTAG.audioForTrack(uuid);
+        if (!audioId) throw new Error('No audio');
+        if (!S.audioByTrack) S.audioByTrack = new Map();
+        S.audioByTrack.set(uuid, audioId);
+      }
+      const shell = {
+        id: ref, title: song.title || 'Unknown Title', artist: song.artist || 'Unknown Artist',
+        album: song.album || '', year: song.year || '', trackNo: song.trackNo || 0,
+        art: song.art || null, duration: 0, file: null, _remote: true, utagTrackId: uuid,
+      };
+      return { shell, loadBytes: () => UTAG.audioBlob(audioId) };
+    });
     /* Unfinished Drive backup? Pick it back up on its own — unless the user
        deliberately paused it. Also re-check when the app comes back to the
        foreground, covering background kills without a full relaunch. */
@@ -5002,7 +5126,7 @@ const App = (() => {
       const cb = await SpImport.handleCallback();
       if (cb === 'ok') {
         const data = SpImport.takeCallbackData();
-        if (data) { toast('Spotify connected \u2014 matching your SDB\u2026'); await runSpImportData(data); }
+        if (data) { toast('Spotify connected. Matching your music…'); await runSpImportData(data); }
       } else if (cb === 'blocked') {
         toast('Spotify blocked the app \u2014 use the data export instead');
         nav('spotifyImport');
@@ -5031,7 +5155,7 @@ const App = (() => {
     boot, nav, showAuthGate, toast, logRecent, logPlay,
     artURL, artImg, artErr,
     searchTier, rankArtistHits, rankSongHits, pickTopResult, vSearch,
-    libraryAdd, libraryRemove, libraryHas,
+    libraryAdd, libraryRemove, libraryHas, likeRemoteTrack,
     upsertArtist, setArtistFollowed, notePlaylist,
     onLibraryChanged: async () => {
       await refreshTracks();

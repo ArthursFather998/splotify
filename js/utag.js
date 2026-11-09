@@ -656,7 +656,18 @@ const UTAG = (() => {
      so titles are fetched in a second query instead of an embedded join. */
   async function listAudio() {
     try {
-      const rows = await fetchJSON(BASE + '/splotify_track_audio_public?select=id,storage_path,file_name,source,created_at,track_id&order=created_at.desc&limit=200', 12000);
+      // Paged: the catalog grows past any single-page cap, so walk the
+      // view in 1000-row pages until a short page ends the list.
+      const out = [];
+      let offset = 0;
+      for (;;) {
+        const rows = await fetchJSON(BASE + '/splotify_track_audio_public?select=id,storage_path,file_name,source,created_at,track_id&order=created_at.desc&limit=1000&offset=' + offset, 15000);
+        if (!rows || !rows.length) break;
+        out.push(...rows);
+        if (rows.length < 1000) break;
+        offset += rows.length;
+      }
+      const rows = out;
       const list = (rows || []).map(r => ({
         id: r.id, storage_path: r.storage_path, file_name: r.file_name || '',
         source: r.source || 'datum', created_at: r.created_at || '',
@@ -665,7 +676,13 @@ const UTAG = (() => {
       const tids = [...new Set((rows || []).map(r => r.track_id).filter(Boolean))];
       if (tids.length) {
         try {
-          const trs = await fetchJSON(BASE + '/splotify_tracks?select=id,title,artists:splotify_artists(canonical_name)&id=in.(' + tids.map(encodeURIComponent).join(',') + ')', 12000);
+          // Chunked: a single in.(...) with thousands of ids overflows URLs.
+          const trs = [];
+          for (let i = 0; i < tids.length; i += 100) {
+            const chunk = tids.slice(i, i + 100);
+            const got = await fetchJSON(BASE + '/splotify_tracks?select=id,title,artists:splotify_artists(canonical_name)&id=in.(' + chunk.map(encodeURIComponent).join(',') + ')', 12000);
+            if (got) trs.push(...got);
+          }
           const byId = new Map((trs || []).map(t => [String(t.id), t]));
           const tByRow = new Map((rows || []).map(r => [String(r.id), r.track_id]));
           for (const item of list) {
@@ -679,6 +696,31 @@ const UTAG = (() => {
       }
       return list;
     } catch (e) { return null; }
+  }
+
+  /* v10.20: which catalog tracks have playable audio, in one cheap
+     query per batch. Reads the public audio view filtered to available
+     rows only, so a track with a row that is not ready yet never
+     renders as playable. Returns a Map of catalog track id -> audio
+     row id. Chunked at 50 ids per request so the URL stays short. */
+  async function audioForTracks(trackIds) {
+    const map = new Map();
+    const ids = [...new Set((trackIds || []).map(String).filter(Boolean))];
+    for (let i = 0; i < ids.length; i += 50) {
+      const chunk = ids.slice(i, i + 50);
+      try {
+        const rows = await fetchJSON(BASE + '/splotify_track_audio_public?select=id,track_id&status=eq.available&track_id=in.(' + chunk.map(encodeURIComponent).join(',') + ')&limit=1000', 12000);
+        for (const r of (rows || [])) {
+          if (r && r.track_id && r.id && !map.has(String(r.track_id))) map.set(String(r.track_id), String(r.id));
+        }
+      } catch (e) { /* this chunk stays unknown; the row just won't play */ }
+    }
+    return map;
+  }
+  async function audioForTrack(trackId) {
+    if (!trackId) return null;
+    const map = await audioForTracks([trackId]);
+    return map.get(String(trackId)) || null;
   }
 
   /* DATUM / SDB: signed URL for one track_audio row, via utag-control.
@@ -697,13 +739,11 @@ const UTAG = (() => {
      Mega rows: a Mega link is NOT a direct file URL, so fetch()
      would just return a web page. Instead, megajs downloads the
      encrypted chunks and decrypts them in the browser, and the
-     decrypted bytes become the Blob that Importer.importFiles
-     saves to SDB. After that import, playback is local, so the
-     Mega download delay is paid once per song, not on every play.
-     megajs is loaded lazily from a CDN only when a Mega row is
-     actually imported, so Supabase imports never load it. This
-     path is written, not yet phone-tested: it needs a real Mega
-     link from a real Mega upload before it can be claimed live. */
+     decrypted bytes become the Blob. Two callers share this path:
+     the player (streamed playback, bytes used once and dropped) and
+     the import flows (bytes saved to the phone). megajs is loaded
+     lazily from a CDN only when a Mega row is actually fetched, so
+     Supabase rows never load it. */
   async function audioBlob(audioId) {
     if (!getSession()) throw new Error('Sign in first');
     const data = await fnCall({ action: 'audio_url', audio_id: audioId });
@@ -713,11 +753,11 @@ const UTAG = (() => {
         const file = mega.File.fromURL(data.mega_url);
         const buf = await file.downloadBuffer();
         return new Blob([buf], { type: 'audio/mpeg' });
-      } catch (e) { throw new Error('Mega download failed: ' + (e && e.message ? e.message : 'unknown error')); }
+      } catch (e) { throw new Error('Could not get this song. Try again.'); }
     }
     if (!data.signed_url) throw new Error('Catalog did not return a download link');
     const r = await fetch(data.signed_url);
-    if (!r.ok) throw new Error('Catalog download failed');
+    if (!r.ok) throw new Error('Could not get this song. Try again.');
     return await r.blob();
   }
 
@@ -743,24 +783,24 @@ const UTAG = (() => {
   }
   async function listMegaFolder(url) {
     const link = (url || '').trim();
-    if (!link) throw new Error('Paste a Mega folder link first');
-    if (link.indexOf('/folder/') === -1) throw new Error('That is not a Mega folder link');
-    if (link.indexOf('#') === -1) throw new Error('That folder link has no decryption key - copy the full link including the part after #');
+    if (!link) throw new Error('Paste a folder link first');
+    if (link.indexOf('/folder/') === -1) throw new Error("That isn't a folder link");
+    if (link.indexOf('#') === -1) throw new Error('That link is incomplete. Copy the full link, including the part after #.');
     let mega;
     try { mega = await import(['https:', '', 'esm.sh', 'megajs'].join('/')); }
-    catch (e) { throw new Error('Could not load the Mega library'); }
+    catch (e) { throw new Error("Couldn't open that link"); }
     let root;
     try { root = mega.File.fromURL(link); }
-    catch (e) { throw new Error('Could not read that Mega folder link'); }
+    catch (e) { throw new Error("Couldn't open that folder link"); }
     let selected = root;
     try {
       const loaded = await root.loadAttributes();
       if (loaded) selected = loaded;
-    } catch (e) { throw new Error('Could not open that Mega folder: ' + (e && e.message ? e.message : 'unknown error')); }
+    } catch (e) { throw new Error('Could not open that folder. Check the link includes the full key after #.'); }
     if (!selected) selected = root;
     const kids0 = selected.children || [];
-    if (!kids0.length && selected.name && !selected.directory) throw new Error('That link points to a single file, not a folder - paste the folder link');
-    if (!kids0.length && !selected.name) throw new Error('Could not open that Mega folder - check the link includes the full key after #');
+    if (!kids0.length && selected.name && !selected.directory) throw new Error('That link is a single file, not a folder');
+    if (!kids0.length && !selected.name) throw new Error('Could not open that folder. Check the link includes the full key after #.');
     const out = [];
     async function walk(node, prefix) {
       let kids = node.children || [];
@@ -785,7 +825,7 @@ const UTAG = (() => {
     try {
       const buf = await entry.megaFile.downloadBuffer();
       return new Blob([buf], { type: megaAudioType(entry.name) });
-    } catch (e) { throw new Error('Mega download failed: ' + (e && e.message ? e.message : 'unknown error')); }
+    } catch (e) { throw new Error('Could not download this song. Try again.'); }
   }
 
   /* ---- Phase 2: shared catalog search + per-user DATUM queue ----
@@ -1365,5 +1405,5 @@ const UTAG = (() => {
   }
 
   try { window.addEventListener('online', () => drain()); } catch (e) {}
-  return { lookup, fixTrack, enrich, ensureLyrics, learn, submit, drain, migrate, stats, norm, fixerLog, listAudio, audioUrl, audioBlob, megaFolderLink, setMegaFolderLink, listMegaFolder, megaFolderBlob, getSession, setSession, clearSession, signIn, signUp, catalogSearch, catalogArtistSongs, catalogReleaseTracks, catalogAlbumFor, catalogArtistReleases, catalogDiscography, matchLocal, findLocal, queueDatumRip, uploadReview, submitUpload, getRole, activityData, approveProposal, rejectProposal, retryDatumJob, runDatum, adminUsers, setUserRole, refreshSession, logHistory, migrateLocalData, createArtist, createRelease, createTrack };
+  return { lookup, fixTrack, enrich, ensureLyrics, learn, submit, drain, migrate, stats, norm, fixerLog, listAudio, audioForTracks, audioForTrack, audioUrl, audioBlob, megaFolderLink, setMegaFolderLink, listMegaFolder, megaFolderBlob, getSession, setSession, clearSession, signIn, signUp, catalogSearch, catalogArtistSongs, catalogReleaseTracks, catalogAlbumFor, catalogArtistReleases, catalogDiscography, matchLocal, findLocal, queueDatumRip, uploadReview, submitUpload, getRole, activityData, approveProposal, rejectProposal, retryDatumJob, runDatum, adminUsers, setUserRole, refreshSession, logHistory, migrateLocalData, createArtist, createRelease, createTrack };
 })();

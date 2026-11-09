@@ -44,21 +44,34 @@ const Player = (() => {
 
   const S = {
     ctx: null,          // {kicker, name, kind, id}
-    list: [],           // track ids in context order
+    list: [],           // track ids in context order (numbers for local
+                        // tracks, 'cat:<catalog-uuid>' for streamed ones)
     order: null,        // shuffled index order or null
     pos: 0,             // position within (order || list)
     shuffle: false,
     repeat: 'off',      // off | all | one
     track: null,        // current track object
     playing: false,
+    loading: false,     // true while a streamed track's audio is fetching
     liked: new Set(),
     trackCache: new Map(),
   };
   const curId = () => (S.order ? S.list[S.order[S.pos]] : S.list[S.pos]);
   let lastCountedId = null; // play-count dedupe: one count per track start
 
+  /* v10.20 streamed tracks: a queue id of the form 'cat:<catalog-uuid>'
+     is not in the local database. The app registers a resolver that
+     turns the ref into a metadata shell plus a byte loader; the player
+     shows the shell at once and starts playback when the bytes land.
+     The resolver lives in app.js because only it knows the catalog
+     pools and the audio map. */
+  function isRemoteId(id) { return typeof id === 'string' && id.indexOf('cat:') === 0; }
+  let remoteResolver = null;
+  function setRemoteResolver(fn) { remoteResolver = typeof fn === 'function' ? fn : null; }
+
   async function ensureTrack(id) {
     if (S.trackCache.has(id)) return S.trackCache.get(id);
+    if (isRemoteId(id)) return null; // streamed: resolved by loadRemote
     const t = await DB.getTrack(id);
     if (t) S.trackCache.set(id, t);
     return t;
@@ -74,6 +87,7 @@ const Player = (() => {
   }
 
   async function load(id, autoplay) {
+    if (isRemoteId(id)) return loadRemote(id, autoplay);
     const t = await ensureTrack(id);
     if (!t) return false;
     S.track = t;
@@ -85,6 +99,59 @@ const Player = (() => {
     syncPlayState();
     saveNow();
     return true;
+  }
+  /* Streamed track: show the shell (title, artist, art) at once so the
+     player never sits blank, fetch the audio, then play. A fetch that
+     already happened this session is reused from the cache. Returns
+     false when the song cannot be fetched; callers decide whether to
+     tell the user (explicit tap) or just move on (queue advance). */
+  async function loadRemote(id, autoplay) {
+    const cached = S.trackCache.get(id);
+    if (cached && cached.file) {
+      S.track = cached;
+      S.loading = false;
+      await out.setTrack(cached);
+      setMediaSession(cached);
+      emit('track', cached);
+      if (autoplay) {
+        if (cached.utagTrackId && typeof UTAG !== 'undefined' && UTAG.logHistory) { try { UTAG.logHistory(cached.utagTrackId); } catch (e) {} }
+        try { await out.play(); } catch (e) {}
+      }
+      syncPlayState();
+      saveNow();
+      return true;
+    }
+    if (!remoteResolver) return false;
+    let resolved = null;
+    try { resolved = await remoteResolver(id); } catch (e) { resolved = null; }
+    if (!resolved || !resolved.shell || typeof resolved.loadBytes !== 'function') return false;
+    const shell = resolved.shell;
+    S.track = shell;
+    S.loading = true;
+    setMediaSession(shell);
+    emit('track', shell);
+    syncPlayState();
+    try {
+      const blob = await resolved.loadBytes();
+      if (!blob) throw new Error('empty audio');
+      const full = Object.assign({}, shell, { file: blob });
+      S.trackCache.set(id, full);
+      S.track = full;
+      S.loading = false;
+      await out.setTrack(full);
+      emit('track', full);
+      if (autoplay) {
+        if (full.utagTrackId && typeof UTAG !== 'undefined' && UTAG.logHistory) { try { UTAG.logHistory(full.utagTrackId); } catch (e) {} }
+        try { await out.play(); } catch (e) {}
+      }
+      syncPlayState();
+      saveNow();
+      return true;
+    } catch (e) {
+      S.loading = false;
+      syncPlayState();
+      return false;
+    }
   }
   function setMediaSession(t) {
     if (NATIVE_MODE) return; // native remote commands own the lock screen
@@ -114,8 +181,9 @@ const Player = (() => {
       // The player often learns the duration before the record has one
       // (e.g. imported while the tag reader was unavailable). Persist it so
       // Track Info and the singles duration veto see it after reload.
+      // Streamed tracks have no local record: keep it in memory only.
       S.track.duration = out.duration;
-      DB.updateTrack(S.track.id, { duration: out.duration }).catch(() => {});
+      if (!S.track._remote) DB.updateTrack(S.track.id, { duration: out.duration }).catch(() => {});
       emit('duration', { id: S.track.id, duration: out.duration });
     }
     emit('time', { cur: out.currentTime, dur: out.duration || 0 });
@@ -156,6 +224,8 @@ const Player = (() => {
     get audio() { return out; },
     get current() { return S.track; },
     get isPlaying() { return S.playing; },
+    get loading() { return !!S.loading; },
+    setRemoteResolver,
     get msFailed() { return msFailed.slice(); },
 
     async init() {
@@ -198,7 +268,8 @@ const Player = (() => {
       if (S.shuffle) { S.order = shuffledOrder(trackIds.length, idx); S.pos = 0; }
       else S.pos = idx;
       S.trackCache.clear();
-      await load(curId(), true);
+      const ok = await load(curId(), true);
+      if (!ok) emit('track-error', { id: curId() });
       App.logRecent(ctx);
       emit('queue', null);
     },
@@ -206,7 +277,8 @@ const Player = (() => {
       const i = S.list.indexOf(id);
       if (i >= 0) {
         S.pos = S.order ? S.order.indexOf(i) : i;
-        await load(id, true);
+        const ok = await load(id, true);
+        if (!ok) emit('track-error', { id });
       } else {
         // play standalone (e.g. from search): context = single track
         await api.playContext({ kicker: 'PLAYING FROM SONGS', name: '', kind: 'single', id: 'single' }, [id], id);
@@ -227,11 +299,24 @@ const Player = (() => {
     pause() { out.pause(); },
     async next(auto) {
       if (!S.list.length) return;
-      if (S.pos < (S.order ? S.order.length : S.list.length) - 1) { S.pos++; await load(curId(), true); }
-      else if (S.repeat === 'all') {
-        if (S.shuffle) S.order = shuffledOrder(S.list.length);
-        S.pos = 0; await load(curId(), true);
-      } else { out.pause(); out.currentTime = 0; syncPlayState(); }
+      // A track that cannot load (stream gone, local file missing) must
+      // never stall the queue: keep advancing until one plays, or the
+      // queue runs out. One quiet failure notice if nothing plays.
+      let played = false;
+      let guard = 0;
+      for (;;) {
+        if (S.pos < (S.order ? S.order.length : S.list.length) - 1) { S.pos++; }
+        else if (S.repeat === 'all') {
+          if (S.shuffle) S.order = shuffledOrder(S.list.length);
+          S.pos = 0;
+        } else { break; }
+        if (await load(curId(), true)) { played = true; break; }
+        if (++guard >= S.list.length) break;
+      }
+      if (!played) {
+        if (S.repeat !== 'all') { out.pause(); out.currentTime = 0; syncPlayState(); }
+        else emit('track-error', { id: curId() });
+      }
       emit('queue', null);
     },
     async prev() {
@@ -281,6 +366,12 @@ const Player = (() => {
     },
     isLiked(id) { return S.liked.has(id); },
     async toggleLike(id) {
+      if (isRemoteId(id)) {
+        // Liking saves the song to the library, and the library holds
+        // songs on the phone: download it first, then like the local copy.
+        if (typeof App !== 'undefined' && App.likeRemoteTrack) { await App.likeRemoteTrack(id); return; }
+        return;
+      }
       id = Number(id);
       if (S.liked.has(id)) S.liked.delete(id);
       else { S.liked.add(id); try { await App.libraryAdd(id); } catch (e) {} }
