@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v10.21';
+  const APP_VERSION = 'v10.22';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -981,6 +981,12 @@ const App = (() => {
   function vSearch() {
     const q = S.query.trim().toLowerCase();
     S.viewCtx = { kicker: 'PLAYING FROM SEARCH', name: 'Search', kind: 'search', id: 'search' };
+    // The catalog search is async: while it is still running for this
+    // query, no result list is final, so the empty state stays hidden
+    // instead of flashing "No results" and then lingering under the
+    // rows when they arrive (the empty state is not inside a section
+    // the arrival repaint touches).
+    const catSettled = !!(S.catQ && String(S.catQ).toLowerCase() === q && S.catReady);
     if (!q) {
       const colors = ['#8d67ab', '#e13300', '#1e3264', '#e8115b', '#148a08', '#b49bc8', '#dc148c', '#477d95', '#ba5d07', '#7d4b32', '#0d73ec', '#503750'];
       const body = `<div class="browse-title">Browse all</div><div class="genre-grid">${GENRES.map((g, i) =>
@@ -1000,7 +1006,7 @@ const App = (() => {
       return searchBarHTML()
         + searchSuggestionsHTML(q)
         + `<div id="search-sec-flat">${flat}</div>`
-        + ((!flat && !anyLocal && !anyCat) ? `<div class="empty"><h3>No results for "${esc(S.query)}"</h3><p>Check the spelling, or try an artist or song title.</p></div>` : '');
+        + ((!flat && !anyLocal && !anyCat && catSettled) ? `<div class="empty"><h3>No results for "${esc(S.query)}"</h3><p>Check the spelling, or try an artist or song title.</p></div>` : '');
     }
     // Filtered view, as in the video.
     const pills = [['all', 'All'], ['songs', 'Songs'], ['playlists', 'Playlists'], ['artists', 'Artists'], ['albums', 'Albums']];
@@ -1014,7 +1020,7 @@ const App = (() => {
       + (show('artists') ? `<div id="search-sec-artists">${searchArtistsSection(d)}</div>` : '')
       + (show('albums') ? `<div id="search-sec-albums">${searchAlbumsSection(d)}</div>` : '')
       + (show('playlists') ? `<div id="search-sec-playlists">${searchPlaylistsSection(d)}</div>` : '')
-      + ((!anyLocal && !anyCat) ? `<div class="empty"><h3>No results for "${esc(S.query)}"</h3><p>Check the spelling, or try an artist or song title.</p></div>` : '');
+      + ((!anyLocal && !anyCat && catSettled) ? `<div class="empty"><h3>No results for "${esc(S.query)}"</h3><p>Check the spelling, or try an artist or song title.</p></div>` : '');
   }
 
   /* ---------- v10.2 catalog search (shared UTAG metadata) ----------
@@ -1045,6 +1051,19 @@ const App = (() => {
   function hasAudio(song) {
     return !!(song && S.audioByTrack && S.audioByTrack.has(String(song.id)));
   }
+  // The heart for a streamed song reflects its local copy: Player's
+  // liked set holds local ids only, so asking it about a 'cat:' ref
+  // always says unliked — and a tap on that heart would then remove
+  // a like that was already there.
+  function isLikedFor(t) {
+    if (!t) return false;
+    if (typeof t.id === 'string' && t.id.indexOf('cat:') === 0) {
+      const song = getCatSongAll(String(t.id).slice(4));
+      const local = (song && typeof UTAG !== 'undefined' && UTAG.findLocal) ? UTAG.findLocal(song, S.tracks) : null;
+      return local ? Player.isLiked(local.id) : false;
+    }
+    return Player.isLiked(t.id);
+  }
   async function ensureAudioFor(songs) {
     if (typeof UTAG === 'undefined' || !UTAG.audioForTracks) return;
     const ids = (songs || []).map(s => String(s.id)).filter(Boolean);
@@ -1060,9 +1079,12 @@ const App = (() => {
     const local = (typeof UTAG !== 'undefined' && UTAG.findLocal) ? UTAG.findLocal(song, S.tracks) : null;
     const sub = [song.artist, song.album, song.year].filter(x => x !== '' && x !== null && x !== undefined).join(' \u2022 ');
     if (local) {
-      return `<div class="trow" data-act="play-track" data-id="${local.id}">${catArtImg(song)}<div class="tmeta"><div class="ttitle">${esc(song.title)}</div><div class="tsub">${esc(sub)}</div></div></div>`;
+      const playing = Player.current && Player.current.id === local.id;
+      return `<div class="trow${playing ? ' playing' : ''}" data-act="play-track" data-id="${local.id}">${catArtImg(song)}<div class="tmeta"><div class="ttitle">${esc(song.title)}</div><div class="tsub">${esc(sub)}</div></div><button class="dotsbtn" data-act="track-menu" data-id="${local.id}" aria-label="More options">${icon('dots')}</button></div>`;
     }
-    const playing = Player.current && String(Player.current.id) === 'cat:' + song.id;
+    // A streamed shell has no audio yet: it is not "playing" until the
+    // bytes land, or a failed row would keep the playing highlight.
+    const playing = Player.current && Player.current.file && String(Player.current.id) === 'cat:' + song.id;
     if (hasAudio(song)) {
       return `<div class="trow cat-row${playing ? ' playing' : ''}" data-act="play-track" data-id="cat:${esc(song.id)}">${catArtImg(song)}<div class="tmeta"><div class="ttitle">${esc(song.title)}</div><div class="tsub">${esc(sub)}</div></div><button class="dotsbtn" data-act="cat-menu" data-id="${esc(song.id)}" aria-label="More options">${icon('dots')}</button></div>`;
     }
@@ -1077,7 +1099,7 @@ const App = (() => {
   function catTrackRow(song, opts) {
     const o = opts || {};
     const sub = o.sub || [song.artist].filter(Boolean).join(' • ');
-    const playing = Player.current && String(Player.current.id) === 'cat:' + song.id;
+    const playing = Player.current && Player.current.file && String(Player.current.id) === 'cat:' + song.id;
     if (hasAudio(song)) {
       return `<div class="trow cat-row${playing ? ' playing' : ''}" data-act="play-track" data-id="cat:${esc(song.id)}">${catArtImg(song)}<div class="tmeta"><div class="ttitle">${esc(song.title)}</div><div class="tsub">${esc(sub)}</div></div><button class="dotsbtn" data-act="cat-menu" data-id="${esc(song.id)}" aria-label="More options">${icon('dots')}</button></div>`;
     }
@@ -1119,7 +1141,18 @@ const App = (() => {
       const hit = (pool || []).find(x => String(x.id) === sid);
       if (hit) return hit;
     }
+    // Session cache: pools rotate as the user searches, but a song that
+    // was shown or played must stay resolvable for its queue and for
+    // resume after reload.
+    if (S._catSongCache) { const hit = S._catSongCache.get(sid); if (hit) return hit; }
     return getCatSong(id);
+  }
+  // Keep every catalog song the user has seen in a session-wide cache
+  // keyed by id, so the resolver never depends on whichever pool
+  // happens to be loaded right now.
+  function cacheCatSongs(songs) {
+    if (!S._catSongCache) S._catSongCache = new Map();
+    (songs || []).forEach(s => { if (s && s.id) S._catSongCache.set(String(s.id), s); });
   }
   async function kickAlbumCatalog(key) {
     const cur = S.stack[S.stack.length - 1] || {};
@@ -1133,6 +1166,7 @@ const App = (() => {
       const res = await UTAG.catalogAlbumFor(a.artist, a.name);
       if (!res || !res.tracks.length) { S.catAlbum = false; return; }
       S.catAlbum = res;
+      paintAlbumCatalog(key);
       await ensureAudioFor(res.tracks);
       paintAlbumCatalog(key);
     } catch (e) { S.catAlbum = false; }
@@ -1162,6 +1196,10 @@ const App = (() => {
       const rel = await UTAG.catalogArtistReleases(name);
       const songs = rel.artistId ? await UTAG.catalogArtistSongs(rel.artistId) : [];
       S.catArtistRel = { artistId: rel.artistId, releases: rel.releases || [], songs: songs || [] };
+      cacheCatSongs(songs);
+      // Paint the rows at once, then fill in audio availability: the
+      // lookup can take seconds, and the rows must not wait for it.
+      paintArtistCatalog(name);
       await ensureAudioFor(songs);
       paintArtistCatalog(name);
     } catch (e) { S.catArtistRel = false; }
@@ -1231,7 +1269,7 @@ const App = (() => {
     S.catalogAlbum = { id, loading: true, tracks: [], release: null };
     try {
       const d = await UTAG.catalogReleaseTracks(id);
-      if (S.catalogAlbum && S.catalogAlbum.id === id) { S.catalogAlbum = { id, loading: false, tracks: d.tracks || [], release: d.release }; await ensureAudioFor(d.tracks || []); render(); }
+      if (S.catalogAlbum && S.catalogAlbum.id === id) { S.catalogAlbum = { id, loading: false, tracks: d.tracks || [], release: d.release }; cacheCatSongs(d.tracks); render(); await ensureAudioFor(d.tracks || []); if (S.catalogAlbum && S.catalogAlbum.id === id) render(); }
     } catch (e) {
       if (S.catalogAlbum && S.catalogAlbum.id === id) { S.catalogAlbum = { id, loading: false, tracks: [], release: null }; render(); }
     }
@@ -1267,16 +1305,35 @@ const App = (() => {
     S._catTimer = setTimeout(async () => {
       const qq = (S.query || '').trim();
       if (!qq || qq !== q) return;
-      S.catQ = qq; S.catReady = false;
+      S.catReady = false;
       const seq = ++S.catSeq;
       paintCatalogSections();
       let res = null;
       try { res = await UTAG.catalogSearch(qq); } catch (e) { res = null; }
       if (seq !== S.catSeq) return; // a newer query took over
-      if (!res) { S.catSongs = []; S.catArtists = []; S.catAlbums = []; }
-      else { S.catSongs = res.songs || []; S.catArtists = res.artists || []; S.catAlbums = res.albums || []; }
-      await ensureAudioFor(S.catSongs);
+      if (!res) {
+        S.catSongs = []; S.catArtists = []; S.catAlbums = [];
+        S.catQ = qq;
+        // One automatic retry: a failed fetch looks identical to "no
+        // results", so give the network one more chance before leaving
+        // it. The flag keeps it to a single retry per query.
+        if (S._catRetried !== qq) {
+          S._catRetried = qq;
+          setTimeout(() => {
+            const cur = S.stack[S.stack.length - 1] || {};
+            if (cur.v === 'search' && (S.query || '').trim() === qq && S.catQ === qq) { S.catQ = null; kickCatalog(); }
+          }, 8000);
+        }
+      }
+      else { S.catSongs = res.songs || []; S.catArtists = res.artists || []; S.catAlbums = res.albums || []; S.catQ = qq; S._catRetried = null; }
+      cacheCatSongs(S.catSongs);
+      // Render the rows at once (as not-yet-playable), then fill in audio
+      // availability: the lookup can take seconds on a slow network, and
+      // the metadata must not wait for it.
       S.catReady = true;
+      paintCatalogSections(); paintSearchSections();
+      await ensureAudioFor(S.catSongs);
+      if (seq !== S.catSeq) return;
       paintCatalogSections(); paintSearchSections();
     }, 350);
   }
@@ -1347,7 +1404,7 @@ const App = (() => {
     else render();
     try {
       const songs = await UTAG.catalogArtistSongs(id);
-      if (S.catArtist && S.catArtist.id === id) { S.catArtist.songs = songs || []; S.catArtist.loading = false; S.catArtist.done = true; await ensureAudioFor(songs || []); render(); }
+      if (S.catArtist && S.catArtist.id === id) { S.catArtist.songs = songs || []; cacheCatSongs(songs); S.catArtist.loading = false; S.catArtist.done = true; render(); await ensureAudioFor(songs || []); if (S.catArtist && S.catArtist.id === id) render(); }
     } catch (e) { if (S.catArtist && S.catArtist.id === id) { S.catArtist.songs = []; S.catArtist.loading = false; S.catArtist.done = true; render(); } }
   }
   function openCatCreateChooser() {
@@ -1507,43 +1564,62 @@ const App = (() => {
      plays from the phone from then on. */
   async function downloadCatSong(song) {
     if (!song) return false;
-    let audioId = S.audioByTrack && S.audioByTrack.get(String(song.id));
-    if (!audioId && typeof UTAG !== 'undefined' && UTAG.audioForTrack) {
-      try { audioId = await UTAG.audioForTrack(song.id); } catch (e) { audioId = null; }
-    }
-    if (!audioId) { toast('Nothing to download for this song yet'); return false; }
-    closeSheet();
-    toast('Downloading…');
-    let blob = null;
-    try { blob = await UTAG.audioBlob(audioId); } catch (e) { toast('Could not download this song. Try again.'); return false; }
-    if (!blob) { toast('Could not download this song. Try again.'); return false; }
-    const safeName = (String(song.artist || '') + ' - ' + String(song.title || '')).replace(/[\\/:*?"<>|]/g, '').trim() || 'song';
-    const file = new File([blob], safeName + '.mp3', { type: blob.type || 'audio/mpeg' });
-    try { await Importer.importFiles([file]); } catch (e) { toast('Could not save this song. Try again.'); return false; }
-    try { await refreshTracks(); } catch (e) {}
-    const t = S.tracks.find(x => x.fileName === file.name && x.fileSize === file.size);
-    if (t) {
-      try {
-        if (String(t.utagTrackId || '') !== String(song.id)) {
-          await DB.updateTrack(t.id, { utagTrackId: song.id });
-          t.utagTrackId = song.id;
-        }
-      } catch (e) {}
-    }
-    render(); paintMini();
-    return true;
+    // Already on the phone (it can land between render and tap, e.g. a
+    // DATUM rip finishing): nothing to fetch, just say so.
+    const existing = (typeof UTAG !== 'undefined' && UTAG.findLocal) ? UTAG.findLocal(song, S.tracks) : null;
+    if (existing) { toast('Already in your music'); return true; }
+    // One download at a time per song: a double-tap must not start two
+    // fetches and import the file twice.
+    if (!S._downloading) S._downloading = new Set();
+    const dlKey = String(song.id);
+    if (S._downloading.has(dlKey)) return false;
+    S._downloading.add(dlKey);
+    try {
+      let audioId = S.audioByTrack && S.audioByTrack.get(String(song.id));
+      if (!audioId && typeof UTAG !== 'undefined' && UTAG.audioForTrack) {
+        try { audioId = await UTAG.audioForTrack(song.id); } catch (e) { audioId = null; }
+      }
+      if (!audioId) { toast('Nothing to download for this song yet'); return false; }
+      closeSheet();
+      toast('Downloading…');
+      let blob = null;
+      try { blob = await UTAG.audioBlob(audioId); } catch (e) { toast('Could not download this song. Try again.'); return false; }
+      if (!blob || !blob.size) { toast('Could not download this song. Try again.'); return false; }
+      const safeName = (String(song.artist || '') + ' - ' + String(song.title || '')).replace(/[\\/:*?"<>|]/g, '').trim() || 'song';
+      const file = new File([blob], safeName + '.mp3', { type: blob.type || 'audio/mpeg' });
+      try { await Importer.importFiles([file]); } catch (e) { toast('Could not save this song. Try again.'); return false; }
+      try { await refreshTracks(); } catch (e) {}
+      const t = S.tracks.find(x => x.fileName === file.name && x.fileSize === file.size);
+      if (t) {
+        try {
+          if (String(t.utagTrackId || '') !== String(song.id)) {
+            await DB.updateTrack(t.id, { utagTrackId: song.id });
+            t.utagTrackId = song.id;
+          }
+        } catch (e) {}
+      }
+      render(); paintMini();
+      toast('Saved to this phone');
+      return true;
+    } finally { S._downloading.delete(dlKey); }
   }
   /* v10.20: liking a streamed song saves it to the library, and the
      library holds songs on the phone: download it first, then like
-     the local copy. */
+     the local copy. A streamed song that is already on the phone is
+     liked in place — never re-downloaded, and never unliked by a tap
+     on a heart that shows the wrong state. */
   async function likeRemoteTrack(ref) {
+    if (String(ref).indexOf('cat:') !== 0) { toast('Could not save this song. Try again.'); return false; }
     const uuid = String(ref).slice(4);
     const song = getCatSongAll(uuid);
-    if (!song) return false;
-    const ok = await downloadCatSong(song);
-    if (!ok) return false;
-    const local = UTAG.findLocal(song, S.tracks);
-    if (!local) return false;
+    if (!song) { toast('Could not save this song. Try again.'); return false; }
+    let local = (typeof UTAG !== 'undefined' && UTAG.findLocal) ? UTAG.findLocal(song, S.tracks) : null;
+    if (!local) {
+      const ok = await downloadCatSong(song);
+      if (!ok) return false;
+      local = UTAG.findLocal(song, S.tracks);
+      if (!local) { toast('Could not save this song. Try again.'); return false; }
+    }
     await Player.toggleLike(local.id);
     paintNowPlaying();
     return true;
@@ -3233,7 +3309,7 @@ const App = (() => {
     document.getElementById('np-title').textContent = t.title;
     document.getElementById('np-artist').textContent = t.artist;
     const like = document.getElementById('np-like');
-    const liked = Player.isLiked(t.id);
+    const liked = isLikedFor(t);
     like.innerHTML = icon(liked ? 'heartF' : 'heart');
     like.classList.toggle('liked', liked);
     const sh = document.getElementById('np-shuffle');
@@ -4459,6 +4535,7 @@ const App = (() => {
       case 'play-all': case 'shuffle-all': {
         const ids = [...el.closest('#view').querySelectorAll('.trow[data-act="play-track"]')].map(r => refId(r.dataset.id)).filter(v => (typeof v === 'string' && v) || (typeof v === 'number' && Number.isFinite(v) && v > 0));
         const ctx = ctxOf();
+        if (!ids.length) break;
         if (act === 'shuffle-all' && !Player.state.shuffle) await Player.toggleShuffle();
         await Player.playContext(ctx, ids, ids[0]);
         break;
@@ -4667,7 +4744,7 @@ const App = (() => {
       }
       case 'queue-jump': closeSheet(); await Player.jumpToQueueId(refId(id)); break;
       case 'track-menu': trackSheet(Number(id)); break;
-      case 'sheet-like': await Player.toggleLike(Number(id)); closeSheet(); paintNowPlaying(); break;
+      case 'sheet-like': { const n = Number(id); if (n) await Player.toggleLike(n); closeSheet(); paintNowPlaying(); break; }
       case 'sheet-download': closeSheet(); downloadTrack(Number(id)); break;
       case 'sheet-addto': addToSheet(Number(id)); break;
       case 'sheet-newpl': {
@@ -4933,8 +5010,17 @@ const App = (() => {
        loader the player calls when it is time to play. */
     if (Player.setRemoteResolver) Player.setRemoteResolver(async (ref) => {
       const uuid = String(ref).slice(4);
-      const song = getCatSongAll(uuid);
+      let song = getCatSongAll(uuid);
+      if (!song) {
+        // Resume after reload: the pools are empty at boot, so the
+        // shell saved in the resume record is the song's metadata.
+        try {
+          const now = await DB.kvGet('now', null);
+          if (now && now.shell && String(now.shell.utagTrackId || now.shell.id) === uuid) song = now.shell;
+        } catch (e) {}
+      }
       if (!song) throw new Error('Song not found');
+      cacheCatSongs([song]);
       let audioId = S.audioByTrack && S.audioByTrack.get(uuid);
       if (!audioId) {
         if (!UTAG.audioForTrack) throw new Error('No audio');
@@ -5073,13 +5159,14 @@ const App = (() => {
     if (!UTAG.getSession()) { showAuthGate(); return; }
     if (S._booted) { S.stack = [{ v: 'home' }]; render(); return; }
     S._booted = true;
+    // Show skeleton content before anything that touches the network:
+    // the session refresh below can take seconds on a slow connection,
+    // and the view would otherwise sit blank on cold start.
+    try { view().innerHTML = vSkeletonHome(); } catch (e) {}
     // Silent refresh up front: fresh tokens return at once (no network);
     // an invalid token drops back to the gate before anything loads.
     // A network failure keeps the old session, so offline use still works.
     try { const s = await UTAG.refreshSession(); if (!s) { showAuthGate(); return; } } catch (e) {}
-    // Show skeleton content immediately: IndexedDB + the player take a moment,
-    // and the view would otherwise sit blank on cold start.
-    try { view().innerHTML = vSkeletonHome(); } catch (e) {}
     await DB.open();
     try { if (navigator.storage && navigator.storage.persist) await navigator.storage.persist(); } catch (e) {}
     await dedupeLibraryOnce();

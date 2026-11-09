@@ -253,11 +253,18 @@ const UTAG = (() => {
     if (s.expires_at && Date.now() < Number(s.expires_at) - 60000) return s;
     let r;
     try {
-      r = await fetch(AUTH_URL + '/token?grant_type=refresh_token', {
-        method: 'POST',
-        headers: { apikey: ANON, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ refresh_token: s.refresh_token }),
-      });
+      // A hung refresh must never hold the app on a blank screen: 10s,
+      // then fall back to the stored session like any network failure.
+      const ctl = new AbortController();
+      const to = setTimeout(() => ctl.abort(), 10000);
+      try {
+        r = await fetch(AUTH_URL + '/token?grant_type=refresh_token', {
+          method: 'POST',
+          headers: { apikey: ANON, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refresh_token: s.refresh_token }),
+          signal: ctl.signal,
+        });
+      } finally { clearTimeout(to); }
     } catch (e) { return s; }
     const data = await r.json().catch(() => ({}));
     if (!r.ok || !data.access_token) { clearSession(); return null; }

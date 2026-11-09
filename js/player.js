@@ -89,11 +89,18 @@ const Player = (() => {
   }
 
   async function load(id, autoplay) {
-    if (isRemoteId(id)) return loadRemote(id, autoplay);
+    const gen = ++loadGen;
+    if (isRemoteId(id)) return loadRemote(id, autoplay, gen);
+    // A local track starting while a remote fetch is in flight owns the
+    // player now: clear the spinner the remote load set, or it sticks
+    // on the play button until that fetch settles.
+    S.loading = false;
     const t = await ensureTrack(id);
     if (!t) return false;
+    if (gen !== loadGen) return false;
     S.track = t;
     await out.setTrack(t);
+    if (gen !== loadGen) return false;
     setMediaSession(t);
     emit('track', t);
     if (autoplay && t.id !== lastCountedId) { lastCountedId = t.id; try { App.logPlay(t.id); } catch (e) {} }
@@ -107,16 +114,20 @@ const Player = (() => {
      already happened this session is reused from the cache. Returns
      false when the song cannot be fetched; callers decide whether to
      tell the user (explicit tap) or just move on (queue advance). */
-  async function loadRemote(id, autoplay) {
+  let loadGen = 0; // every load() call stamps a generation; a load whose
+  // generation is stale by the time an await resolves does nothing, so a
+  // slow fetch can never hijack a newer track the user already started.
+  async function loadRemote(id, autoplay, gen) {
     const cached = S.trackCache.get(id);
     if (cached && cached.file) {
       S.track = cached;
       S.loading = false;
       await out.setTrack(cached);
+      if (gen !== loadGen) return false;
       setMediaSession(cached);
       emit('track', cached);
       if (autoplay) {
-        if (cached.utagTrackId && typeof UTAG !== 'undefined' && UTAG.logHistory) { try { UTAG.logHistory(cached.utagTrackId); } catch (e) {} }
+        if (cached.utagTrackId && cached.utagTrackId !== lastCountedId && typeof UTAG !== 'undefined' && UTAG.logHistory) { lastCountedId = cached.utagTrackId; try { UTAG.logHistory(cached.utagTrackId); } catch (e) {} }
         try { await out.play(); } catch (e) {}
       }
       syncPlayState();
@@ -126,32 +137,40 @@ const Player = (() => {
     if (!remoteResolver) return false;
     let resolved = null;
     try { resolved = await remoteResolver(id); } catch (e) { resolved = null; }
+    if (gen !== loadGen) return false;
     if (!resolved || !resolved.shell || typeof resolved.loadBytes !== 'function') return false;
     const shell = resolved.shell;
     S.track = shell;
     S.loading = true;
+    // The old track stops the moment the new one is tapped: without this
+    // it keeps playing under the shell while the fetch runs, and on a
+    // failed fetch it would keep playing under a song that never loads.
+    try { out.pause(); } catch (e) {}
     setMediaSession(shell);
     emit('track', shell);
     syncPlayState();
     try {
       const blob = await resolved.loadBytes();
+      if (gen !== loadGen) return false;
       if (!blob) throw new Error('empty audio');
       const full = Object.assign({}, shell, { file: blob });
       S.trackCache.set(id, full);
       S.track = full;
       S.loading = false;
       await out.setTrack(full);
+      if (gen !== loadGen) return false;
       emit('track', full);
       if (autoplay) {
-        if (full.utagTrackId && typeof UTAG !== 'undefined' && UTAG.logHistory) { try { UTAG.logHistory(full.utagTrackId); } catch (e) {} }
+        if (full.utagTrackId && full.utagTrackId !== lastCountedId && typeof UTAG !== 'undefined' && UTAG.logHistory) { lastCountedId = full.utagTrackId; try { UTAG.logHistory(full.utagTrackId); } catch (e) {} }
         try { await out.play(); } catch (e) {}
       }
       syncPlayState();
       saveNow();
       return true;
     } catch (e) {
-      S.loading = false;
-      syncPlayState();
+      // Only the current load owns the spinner: a stale load's failure
+      // must not clear the newer load's loading state.
+      if (gen === loadGen) { S.loading = false; syncPlayState(); }
       return false;
     }
   }
@@ -197,8 +216,21 @@ const Player = (() => {
   });
   function saveNow() {
     if (!S.track) return;
+    // Never persist a streamed shell that never loaded as the resume
+    // record, or a reload would try to resume a song with no audio.
+    if (S.track._remote && !S.track.file) return;
     const rawPos = S.order ? S.order[S.pos] : S.pos;
-    DB.kvSet('now', { trackId: S.track.id, rawPos, shuffle: S.shuffle, repeat: S.repeat, ctx: S.ctx, list: S.list.slice(0, 500), at: out.currentTime }).catch(() => {});
+    const rec = { trackId: S.track.id, rawPos, shuffle: S.shuffle, repeat: S.repeat, ctx: S.ctx, list: S.list.slice(0, 500), at: out.currentTime };
+    // A streamed track resumes after reload from its shell metadata:
+    // the catalog pools are empty at boot, so the shell rides along
+    // in the resume record (audio bytes are never stored here).
+    if (S.track._remote) {
+      const { title, artist, album, year, trackNo, art, utagTrackId } = S.track;
+      // The shell is stored song-shaped (bare catalog id), so the
+      // resolver and the session cache can use it like any pool song.
+      rec.shell = { id: utagTrackId, title, artist, album, year, trackNo, art, utagTrackId };
+    }
+    DB.kvSet('now', rec).catch(() => {});
   }
 
   /* MediaSession: every action gets its own guarded registration — one rejected
@@ -270,7 +302,13 @@ const Player = (() => {
       if (S.shuffle) { S.order = shuffledOrder(trackIds.length, idx); S.pos = 0; }
       else S.pos = idx;
       S.trackCache.clear();
-      const ok = await load(curId(), true);
+      let ok = await load(curId(), true);
+      // A dead first track must not stop play-all: keep advancing until
+      // one plays, the same way next() skips dead tracks.
+      while (!ok && S.pos < (S.order ? S.order.length : S.list.length) - 1) {
+        S.pos++;
+        ok = await load(curId(), true);
+      }
       if (!ok) emit('track-error', { id: curId() });
       App.logRecent(ctx);
       emit('queue', null);
@@ -286,13 +324,24 @@ const Player = (() => {
         await api.playContext({ kicker: 'PLAYING FROM SONGS', name: '', kind: 'single', id: 'single' }, [id], id);
       }
     },
-    toggle() {
+    async toggle() {
       if (!S.track) return;
       // Login gate: lock-screen / MediaSession resume must not restart
       // audio after sign-out. Pause anything playing, then show auth.
       if (typeof UTAG !== 'undefined' && UTAG.getSession && !UTAG.getSession()) {
         try { if (!out.paused) out.pause(); } catch (e) {}
         try { App.showAuthGate(); } catch (e) {}
+        return;
+      }
+      // While a streamed track is still fetching, the button waits: the
+      // fetch decides what plays. A streamed track that never loaded is
+      // a shell with no audio — the button retries the load instead of
+      // resuming whatever played before, which would sound like the
+      // wrong song under this title.
+      if (S.loading) return;
+      if (S.track._remote && !S.track.file) {
+        const ok = await load(S.track.id, true);
+        if (!ok) emit('track-error', { id: S.track.id });
         return;
       }
       if (out.paused) out.play().catch(() => {}); else out.pause();
@@ -324,7 +373,12 @@ const Player = (() => {
     async prev() {
       if (!S.list.length) return;
       if (out.currentTime > 3) { out.currentTime = 0; return; }
-      if (S.pos > 0) { S.pos--; await load(curId(), true); }
+      if (S.pos > 0) {
+        S.pos--;
+        let ok = await load(curId(), true);
+        while (!ok && S.pos > 0) { S.pos--; ok = await load(curId(), true); }
+        if (!ok) { out.pause(); out.currentTime = 0; syncPlayState(); }
+      }
       else { out.currentTime = 0; }
       emit('queue', null);
     },
@@ -385,7 +439,6 @@ const Player = (() => {
       const out = [];
       const n = S.list.length;
       for (let k = 1; k < n; k++) {
-        const p = (S.pos + k) % (S.order ? n : n);
         if (!S.order && S.pos + k >= n) break;
         const idx = S.order ? S.order[(S.pos + k) % n] : S.pos + k;
         out.push(S.list[idx]);
@@ -395,8 +448,16 @@ const Player = (() => {
     },
     async jumpToQueueId(id) {
       const raw = S.list.indexOf(id); if (raw < 0) return;
+      const prevPos = S.pos;
       S.pos = S.order ? S.order.indexOf(raw) : raw;
-      await load(id, true); emit('queue', null);
+      const ok = await load(id, true);
+      // A failed jump leaves the queue where it was, but only when the
+      // position still points at the failed track and the current track
+      // is not it (an early failure before any shell). A shell failure
+      // already agrees with the position, and a superseding load must
+      // never be rewound.
+      if (!ok && curId() === id && (!S.track || S.track.id !== id)) S.pos = prevPos;
+      emit('queue', null);
     },
     forgetTrack(id) {
       S.trackCache.delete(id);
