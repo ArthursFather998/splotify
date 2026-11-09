@@ -39,8 +39,10 @@ const Player = (() => {
     };
   }
   const out = NATIVE_MODE ? window.SplotifyNativeOut() : makeWebOut();
-  const listeners = { state: [], track: [], time: [], queue: [], duration: [], volume: [] };
-  const emit = (ev, d) => listeners[ev].forEach(f => { try { f(d); } catch (e) { console.error(e); } });
+  const listeners = { state: [], track: [], time: [], queue: [], duration: [], volume: [], 'track-error': [] };
+  // on/emit stay safe for event names with no listeners yet: a missing
+  // array must never throw, or boot dies before the sign-in screen.
+  const emit = (ev, d) => (listeners[ev] || []).forEach(f => { try { f(d); } catch (e) { console.error(e); } });
 
   const S = {
     ctx: null,          // {kicker, name, kind, id}
@@ -219,7 +221,7 @@ const Player = (() => {
   }
 
   const api = {
-    on(ev, fn) { listeners[ev].push(fn); },
+    on(ev, fn) { (listeners[ev] = listeners[ev] || []).push(fn); },
     get state() { return S; },
     get audio() { return out; },
     get current() { return S.track; },
