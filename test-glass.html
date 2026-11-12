@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Glass refraction diagnostic</title>
+<style>
+  body{margin:0;font-family:monospace;background:#111;color:#fff}
+  #readout{background:#fff;color:#000;padding:12px;font-size:14px;line-height:1.7;white-space:pre-wrap}
+  .stage{position:relative;height:340px;overflow:hidden}
+  .stripes{position:absolute;inset:0;background:repeating-linear-gradient(90deg,#e11d48 0 60px,#f59e0b 60px 120px,#84cc16 120px 180px,#06b6d4 180px 240px,#8b5cf6 240px 300px,#ec4899 300px 360px)}
+  .stripes::after{content:'AAAA AAAA AAAA AAAA AAAA';position:absolute;top:120px;left:0;right:0;font-size:64px;font-weight:900;color:#000;letter-spacing:8px}
+  .lines{position:absolute;inset:0;background:repeating-linear-gradient(0deg,transparent 0 30px,rgba(255,255,255,.9) 30px 33px)}
+  .pill{position:absolute;left:50%;transform:translateX(-50%);width:360px;height:64px;border-radius:32px;background:linear-gradient(180deg,rgba(36,36,36,.55),rgba(20,20,20,.55));border:1px solid rgba(255,255,255,.4)}
+  #pillA{top:90px}
+  #pillB{top:210px;backdrop-filter:blur(14px) saturate(1.6);-webkit-backdrop-filter:blur(14px) saturate(1.6)}
+  .cap{position:absolute;left:50%;transform:translateX(-50%);font-size:13px;color:#fff;text-shadow:0 1px 2px #000}
+</style>
+</head>
+<body>
+<svg id="lg-defs" aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden"></svg>
+<div id="readout">running…</div>
+<div class="stage">
+  <div class="stripes"></div>
+  <div class="lines"></div>
+  <div class="cap" style="top:70px">PILL A — url() displacement refraction</div>
+  <div class="pill" id="pillA"></div>
+  <div class="cap" style="top:190px">PILL B — plain blur, no url()</div>
+  <div class="pill" id="pillB"></div>
+</div>
+<script>
+function liquidGlassMap(w, h, r, edge) {
+  const cw = Math.max(8, Math.min(256, Math.round(w)));
+  const ch = Math.max(8, Math.round(cw * h / w));
+  const cv = document.createElement('canvas');
+  cv.width = cw; cv.height = ch;
+  const ctx = cv.getContext('2d');
+  const img = ctx.createImageData(cw, ch);
+  const d = img.data;
+  const sx = w / cw, sy = h / ch;
+  const rr = Math.min(r, Math.min(w, h) / 2);
+  const sd = (px, py) => {
+    const qx = Math.abs(px - w / 2) - (w / 2 - rr);
+    const qy = Math.abs(py - h / 2) - (h / 2 - rr);
+    const ax = Math.max(qx, 0), ay = Math.max(qy, 0);
+    return Math.hypot(ax, ay) + Math.min(Math.max(qx, qy), 0) - rr;
+  };
+  const e = 1.5;
+  for (let y = 0; y < ch; y++) {
+    for (let x = 0; x < cw; x++) {
+      const px = (x + .5) * sx, py = (y + .5) * sy;
+      const s0 = sd(px, py);
+      let t = 0;
+      if (s0 < 0 && s0 > -edge) t = Math.pow(1 + s0 / edge, 5);
+      let gx = (sd(px + e, py) - sd(px - e, py)) / (2 * e);
+      let gy = (sd(px, py + e) - sd(px, py - e)) / (2 * e);
+      const len = Math.hypot(gx, gy) || 1;
+      gx /= len; gy /= len;
+      const o = (y * cw + x) * 4;
+      d[o] = 128 + gx * t * 127;
+      d[o + 1] = 128 + gy * t * 127;
+      d[o + 2] = 128;
+      d[o + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  return cv.toDataURL('image/png');
+}
+function buildGlassFilter(id, w, h, r, scale) {
+  const svg = document.getElementById('lg-defs');
+  const NS = 'http://www.w3.org/2000/svg';
+  let f = document.getElementById(id);
+  if (!f) {
+    f = document.createElementNS(NS, 'filter');
+    f.setAttribute('id', id);
+    f.setAttribute('x', '0%'); f.setAttribute('y', '0%');
+    f.setAttribute('width', '100%'); f.setAttribute('height', '100%');
+    f.setAttribute('color-interpolation-filters', 'sRGB');
+    const feImg = document.createElementNS(NS, 'feImage');
+    feImg.setAttribute('preserveAspectRatio', 'none');
+    feImg.setAttribute('result', 'map');
+    const feDisp = document.createElementNS(NS, 'feDisplacementMap');
+    feDisp.setAttribute('in', 'SourceGraphic');
+    feDisp.setAttribute('in2', 'map');
+    feDisp.setAttribute('xChannelSelector', 'R');
+    feDisp.setAttribute('yChannelSelector', 'G');
+    f.appendChild(feImg); f.appendChild(feDisp);
+    svg.appendChild(f);
+  }
+  const url = liquidGlassMap(w, h, r, 24);
+  const feImg = f.querySelector('feImage');
+  feImg.setAttribute('href', url);
+  feImg.setAttributeNS('http://www.w3.org/1999/xlink', 'xlink:href', url);
+  feImg.setAttribute('x', '0'); feImg.setAttribute('y', '0');
+  feImg.setAttribute('width', String(w)); feImg.setAttribute('height', String(h));
+  f.querySelector('feDisplacementMap').setAttribute('scale', String(scale));
+  return url;
+}
+const pillA = document.getElementById('pillA');
+const w = pillA.offsetWidth, h = pillA.offsetHeight;
+const mapUrl = buildGlassFilter('test', w, h, 32, -80);
+pillA.style.backdropFilter = 'url(#test) blur(6px) saturate(1.6) brightness(1.06)';
+pillA.style.webkitBackdropFilter = 'url(#test) blur(6px) saturate(1.6) brightness(1.06)';
+const cs = getComputedStyle(pillA);
+document.getElementById('readout').textContent =
+  'supports backdrop-filter url(): ' + CSS.supports('backdrop-filter', 'url(#x)') + '\n' +
+  'supports -webkit-backdrop-filter url(): ' + CSS.supports('-webkit-backdrop-filter', 'url(#x)') + '\n' +
+  'filter element exists: ' + !!document.getElementById('test') + '\n' +
+  'map data URL length: ' + mapUrl.length + '\n' +
+  'pill A size: ' + w + 'x' + h + '\n' +
+  'computed backdrop-filter: ' + cs.backdropFilter + '\n' +
+  'computed -webkit-backdrop-filter: ' + cs.webkitBackdropFilter;
+</script>
+</body>
+</html>
