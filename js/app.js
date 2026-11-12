@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v10.32';
+  const APP_VERSION = 'v10.33';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -533,7 +533,7 @@ const App = (() => {
     const sub = [t.album && t.album !== 'Unknown Album' ? t.album : '', t.year || ''].filter(Boolean).join(' • ') || (t.duration ? Importer.fmtDur(t.duration) : t.artist);
     return `<div class="trow ax-track${playing ? ' playing' : ''}" data-act="play-track" data-id="${t.id}">
       <span class="ax-rank">${i + 1}</span>${artImg(t, 'art')}
-      <div class="tmeta" data-act="song-preview" data-id="${t.id}"><div class="ttitle">${esc(t.title)}</div><div class="tsub">${esc(sub)}</div></div>
+      <div class="tmeta"><div class="ttitle">${esc(t.title)}</div><div class="tsub">${esc(sub)}</div></div>
       ${liked ? `<span class="ax-saved">${icon('check')}</span>` : ''}
       <button class="dotsbtn" data-act="track-menu" data-id="${t.id}" aria-label="More options">${icon('dots')}</button>
     </div>`;
@@ -661,7 +661,8 @@ const App = (() => {
 
   // v10.30: the Spotify-style preview sheet from the screenshot: artist row
   // (round photo, Follow/Following pill) + release row (art, title, kind,
-  // add-to-Liked button). Opened by tapping a song's name anywhere.
+  // add-to-Liked button). v10.33: opened by tapping the song's name/artist
+  // on the Now Playing screen, not from list rows.
   function openSongPreview(id) {
     const isCat = typeof id === 'string' && id.indexOf('cat:') === 0;
     const song = isCat ? getCatSongAll(String(id).slice(4)) : S.byId.get(Number(id));
@@ -716,7 +717,7 @@ const App = (() => {
     const playing = Player.current && Player.current.id === t.id;
     return `<div class="trow${playing ? ' playing' : ''}" data-act="play-track" data-id="${t.id}">
       ${artImg(t, 'art')}
-      <div class="tmeta" data-act="song-preview" data-id="${t.id}"><div class="ttitle">${esc(t.title)}</div><div class="tsub">${esc(t.artist)}</div></div>
+      <div class="tmeta"><div class="ttitle">${esc(t.title)}</div><div class="tsub">${esc(t.artist)}</div></div>
       <span class="eq" style="color:var(--pink);width:18px;height:18px">${icon('eq')}</span>
       <button class="dotsbtn" data-act="track-menu" data-id="${t.id}" aria-label="More options">${icon('dots')}</button>
     </div>`;
@@ -1275,15 +1276,15 @@ const App = (() => {
     const sub = [song.artist, song.album, song.year].filter(x => x !== '' && x !== null && x !== undefined).join(' \u2022 ');
     if (local) {
       const playing = Player.current && Player.current.id === local.id;
-      return `<div class="trow${playing ? ' playing' : ''}" data-act="play-track" data-id="${local.id}">${catArtImg(song)}<div class="tmeta" data-act="song-preview" data-id="cat:${esc(song.id)}"><div class="ttitle">${esc(song.title)}</div><div class="tsub">${esc(sub)}</div></div><button class="dotsbtn" data-act="track-menu" data-id="${local.id}" aria-label="More options">${icon('dots')}</button></div>`;
+      return `<div class="trow${playing ? ' playing' : ''}" data-act="play-track" data-id="${local.id}">${catArtImg(song)}<div class="tmeta"><div class="ttitle">${esc(song.title)}</div><div class="tsub">${esc(sub)}</div></div><button class="dotsbtn" data-act="track-menu" data-id="${local.id}" aria-label="More options">${icon('dots')}</button></div>`;
     }
     // A streamed shell has no audio yet: it is not "playing" until the
     // bytes land, or a failed row would keep the playing highlight.
     const playing = Player.current && Player.current.file && String(Player.current.id) === 'cat:' + song.id;
     if (hasAudio(song)) {
-      return `<div class="trow cat-row${playing ? ' playing' : ''}" data-act="play-track" data-id="cat:${esc(song.id)}">${catArtImg(song)}<div class="tmeta" data-act="song-preview" data-id="cat:${esc(song.id)}"><div class="ttitle">${esc(song.title)}</div><div class="tsub">${esc(sub)}</div></div><button class="dotsbtn" data-act="cat-menu" data-id="${esc(song.id)}" aria-label="More options">${icon('dots')}</button></div>`;
+      return `<div class="trow cat-row${playing ? ' playing' : ''}" data-act="play-track" data-id="cat:${esc(song.id)}">${catArtImg(song)}<div class="tmeta"><div class="ttitle">${esc(song.title)}</div><div class="tsub">${esc(sub)}</div></div><button class="dotsbtn" data-act="cat-menu" data-id="${esc(song.id)}" aria-label="More options">${icon('dots')}</button></div>`;
     }
-    return `<div class="trow cat-row" data-act="cat-song" data-id="${esc(song.id)}">${catArtImg(song)}<div class="tmeta" data-act="song-preview" data-id="cat:${esc(song.id)}"><div class="ttitle">${esc(song.title)}</div><div class="tsub">${esc(sub)}</div></div><button class="dotsbtn" data-act="cat-menu" data-id="${esc(song.id)}" aria-label="More options">${icon('dots')}</button></div>`;
+    return `<div class="trow cat-row" data-act="cat-song" data-id="${esc(song.id)}">${catArtImg(song)}<div class="tmeta"><div class="ttitle">${esc(song.title)}</div><div class="tsub">${esc(sub)}</div></div><button class="dotsbtn" data-act="cat-menu" data-id="${esc(song.id)}" aria-label="More options">${icon('dots')}</button></div>`;
   }
   // v10.7 catalog-everywhere helpers
   const normKey = v => searchKey(v);
@@ -4946,7 +4947,6 @@ const App = (() => {
       }
       case 'cat-song': { const song = getCatSongAll(id); if (song) openCatSongSheet(song); break; }
       case 'cat-menu': { const song = getCatSongAll(id); if (song) openCatSongSheet(song); break; }
-      case 'song-preview': openSongPreview(id); break;
       case 'pv-artist': closeSheet(); nav('artist', id); break;
       case 'pv-release': {
         closeSheet();
@@ -5399,6 +5399,9 @@ const App = (() => {
     document.getElementById('np-shuffle').addEventListener('click', () => { tap(); Player.toggleShuffle(); });
     document.getElementById('np-repeat').addEventListener('click', () => { tap(); Player.toggleRepeat(); });
     document.getElementById('np-like').addEventListener('click', () => { tap(); const t = Player.current; if (t) Player.toggleLike(t.id); });
+    // v10.33: tapping the song's name/artist on Now Playing opens the
+    // preview sheet. (The like button beside it keeps its own action.)
+    document.getElementById('np-titlemeta').addEventListener('click', () => { const t = Player.current; if (t) openSongPreview(t.id); });
     document.getElementById('np-devices').addEventListener('click', () => toast('Playing on this iPhone'));
     document.getElementById('np-lyrics-preview-btn').addEventListener('click', openLyrics);
     document.getElementById('np-lyrics-preview').addEventListener('click', openLyrics);
