@@ -1,5 +1,5 @@
-/* UTAG client for Splotify (v10.5).
-   Splotify's fixer engine is in-house (js/fixer.js) since v10.3: it asks
+/* UTAG client for Splotify.
+   Splotify's fixer engine is in-house (js/fixer.js) since it asks
    the UTAG database first, then runs that engine on a miss.
    Lookup order: local UTAG cache (on-device) -> UTAG database (public read).
    Verified / highly confident records apply. Records UTAG is still working
@@ -173,9 +173,9 @@ const UTAG = (() => {
     return { fixed: 0, queued, status: 'review', note: 'Catalog is still verifying' };
   }
 
-  /* ---- pass 2: the fixer engine, in-house since v10.3 ----
+  /* ---- pass 2: the fixer engine, in-house ----
      The engine is a single copy in this codebase (js/fixer.js, copied
-     from the UTAG site's fixer.js — same chain, same guard, no second
+     from the UTAG site's fixer.js - same chain, same guard, no second
      engine). Splotify loads it locally at runtime. API keys are read by
      the engine from this origin's localStorage (utag_acoustid_key /
      utag_fanart_key), set in Splotify's settings. */
@@ -201,10 +201,9 @@ const UTAG = (() => {
     return enginePromise;
   }
 
-  /* Phase 2: unified-platform account session (device-local only).
-     Stored in localStorage — never in IndexedDB, never shared. The
-     access_token becomes auth_token for edge-function actions. Since
-     Phase 5, account auth is the only write credential: the old shared
+  /* Unified-platform account session (device-local only).
+     Stored in localStorage - never in IndexedDB, never shared. The
+     access_token becomes auth_token for edge-function actions. Account auth is the only write credential: the old shared
      site password is gone, and its localStorage key is left unused. */
   const AUTH_URL = 'https://akusfgoeplfqwrrrywfl.supabase.co/auth/v1';
   const SESSION_KEY = 'splotify_account_session';
@@ -231,7 +230,7 @@ const UTAG = (() => {
   /* Build a stored session from an Auth response. expires_at from the
      server is epoch seconds; stored as epoch ms for the 60s check below.
      Old sessions without a refresh token keep working until the token
-     itself stops working — no refresh is invented for them. */
+     itself stops working - no refresh is invented for them. */
   function sessionFromAuth(data, fallbackEmail) {
     const d = data || {};
     let expiresAt = null;
@@ -306,7 +305,7 @@ const UTAG = (() => {
   }
 
   /* Call the control function. A stored account session adds auth_token;
-     since Phase 5 there is no password path at all — without a session,
+     there is no password path at all - without a session,
      authenticated actions fail with "Sign in first". */
   async function fnCall(payload) {
     const c = new AbortController();
@@ -328,8 +327,7 @@ const UTAG = (() => {
       return data;
     } finally { clearTimeout(tm); }
   }
-  /* Run logging went to the UTAG site's Activity tab, which retired in
-     Phase 5 (and the fixer_log action with it). Kept as a no-op so
+  /* Run logging went to the UTAG site's Activity tab, which was retired (and the fixer_log action with it). Kept as a no-op so
      existing callers need no changes. */
   async function fixerLog(op, data) {
     return null;
@@ -340,7 +338,7 @@ const UTAG = (() => {
   }
 
   /* Pass 2: every DB miss runs the fixer engine automatically and fully
-     automatically applies what it finds — the same function as uploading
+     automatically applies what it finds - the same function as uploading
      the audio file on the UTAG fixer. Updates the Splotify track AND the
      UTAG library; every step is logged to the fixer's Activity tab. */
   const AUTO_FIELDS = ['title', 'artist', 'album', 'genre', 'year'];
@@ -356,7 +354,7 @@ const UTAG = (() => {
     let eng;
     try { eng = await ensureEngine(); }
     catch (e) {
-      await log('error', 'fixer:auto', '"' + (t.title || 'Unknown Title') + '": fixer engine failed to load — queued for review.');
+      await log('error', 'fixer:auto', '"' + (t.title || 'Unknown Title') + '": fixer engine failed to load, queued for review.');
       await submit('miss', missPayload(t));
       return { fixed: 0, queued: [], status: 'sent', note: 'Sent for research' };
     }
@@ -366,13 +364,13 @@ const UTAG = (() => {
       info = await eng.parseFile(f);
       audit = await eng.auditFile(info, [], () => {});
     } catch (e) {
-      await log('error', 'fixer:auto', '"' + (t.title || 'Unknown Title') + '": engine error — queued for review.');
+      await log('error', 'fixer:auto', '"' + (t.title || 'Unknown Title') + '": engine error, queued for review.');
       await submit('miss', missPayload(t));
       return { fixed: 0, queued: [], status: 'sent', note: 'Sent for research' };
     }
     const proposals = (audit && audit.proposals) || [];
     if (!proposals.length && !(audit && audit.art) && !(audit && audit.lyrics)) {
-      await log('warn', 'fixer:auto', '"' + (info.title || t.title) + '" by ' + (info.artist || t.artist) + ': engine found nothing — queued for review.');
+      await log('warn', 'fixer:auto', '"' + (info.title || t.title) + '" by ' + (info.artist || t.artist) + ': engine found nothing, queued for review.');
       await submit('miss', missPayload(t));
       return { fixed: 0, queued: [], status: 'sent', note: 'Sent for research' };
     }
@@ -705,7 +703,7 @@ const UTAG = (() => {
     } catch (e) { return null; }
   }
 
-  /* v10.20: which catalog tracks have playable audio, in one cheap
+  /* Which catalog tracks have playable audio, in one cheap
      query per batch. Reads the public audio view filtered to available
      rows only, so a track with a row that is not ready yet never
      renders as playable. Returns a Map of catalog track id -> audio
@@ -835,7 +833,7 @@ const UTAG = (() => {
     } catch (e) { throw new Error('Could not download this song. Try again.'); }
   }
 
-  /* ---- Phase 2: shared catalog search + per-user DATUM queue ----
+  /* ---- Shared catalog search + per-user DATUM queue ----
      Reads shared metadata only; audio is never shared. A catalog failure
      throws, and callers fail soft (local results are never broken by it). */
   const ARTWORK_PUBLIC = 'https://akusfgoeplfqwrrrywfl.supabase.co/storage/v1/object/public/artwork/';
@@ -868,7 +866,7 @@ const UTAG = (() => {
     const pattern = '*' + escLikePattern(q) + '*';
     // Settled, not all-or-nothing: one failed query must not discard
     // the other sides' results (fail soft is the whole point here).
-    // v10.18: releases are queried too, with NO status filter, so an
+    // Releases are queried too, with NO status filter, so an
     // album title like "withered deluxe" finds its release even when
     // no song title matches, and unreleased releases/songs are
     // searchable like everything else. Previously only artist names
@@ -897,7 +895,7 @@ const UTAG = (() => {
     return (rows || []).map(catalogSongFromRow).sort((a, b) =>
       ((b.year || 0) - (a.year || 0)) || String(a.title).localeCompare(String(b.title))).slice(0, 200);
   }
-  /* v10.7: one release's full tracklist, in disc/track order.
+  /* One release's full tracklist, in disc/track order.
      UTAG tracks carry track_number + disc_number (verified live);
      null track numbers sort after numbered tracks, by title. */
   const sortCatTracks = arr => [...arr].sort((a, b) =>
@@ -922,7 +920,7 @@ const UTAG = (() => {
     const exact = rows.find(r => norm(r.canonical_name || '') === want);
     return (exact || rows[0]).id;
   }
-  /* v10.7: fullest UTAG edition of a local album. Same title, or the
+  /* Fullest UTAG edition of a local album. Same title, or the
      title plus an edition suffix (e.g. "Nine Track Mind (Deluxe)").
      The release with the most tracks wins, so an incomplete original
      (2 tracks) does not hide a complete deluxe (16 tracks). */
@@ -949,7 +947,7 @@ const UTAG = (() => {
       ((norm(b.release.title) === want ? 1 : 0) - (norm(a.release.title) === want ? 1 : 0)));
     return done[0];
   }
-  /* v10.7: an artist's catalog releases, grouped from their tracks
+  /* An artist's catalog releases, grouped from their tracks
      (PostgREST has no cheap per-release count here), newest first. */
   async function catalogArtistReleases(artistName) {
     const artistId = await catalogArtistId(artistName);
@@ -965,7 +963,7 @@ const UTAG = (() => {
     const releases = [...byRel.values()].sort((a, b) => ((b.year || 0) - (a.year || 0)) || b.count - a.count || String(a.title).localeCompare(String(b.title)));
     return { artistId, releases };
   }
-  /* v10.15: UTAG-style discography for an artist: the track-grouped
+  /* UTAG-style discography for an artist: the track-grouped
      releases above, merged with the release rows' own type, edition,
      status, date and year, so the app can sort them into UTAG's
      Albums / Singles and EP's / Unreleased tabs. Status follows
@@ -1008,9 +1006,9 @@ const UTAG = (() => {
     if (norm(song.title || '') !== norm(local.title || '')) return false;
     const sa = norm(song.artist || ''), la = norm(local.artist || '');
     if (sa === la) return true;
-    // v10.8: a combined credit must not defeat a match. UTAG stores
+    // A combined credit must not defeat a match. UTAG stores
     // "THE LINE (feat. d4vd)" under artist "The Kid LAROI", while a
-    // local tag reads "The Kid LAROI, d4vd" — same song, different
+    // local tag reads "The Kid LAROI, d4vd" - same song, different
     // credit string. Same title + one artist token set inside the
     // other = same song. Disjoint artists (same title, different
     // singer) still do NOT match.
@@ -1038,14 +1036,14 @@ const UTAG = (() => {
     });
   }
 
-  /* ---- Phase 3: Settings upload review + submit (in-house fixer) ----
+  /* ---- Settings upload review + submit (in-house fixer) ----
      uploadReview(t): UTAG lookup first, then the in-house engine on a
-     DB miss — the same order as fixTrack/autoFix. A catalog record
+     DB miss - the same order as fixTrack/autoFix. A catalog record
      (verified or still under review) is never overwritten by an engine
      run. Returns before/after, a short change list, and the catalog
      ids needed to submit. Nothing here writes to the catalog or
      changes the local track; submitUpload does that, only on success.
-     Genre/art/lyrics are shown in review, but the Phase 1 proposal
+     Genre/art/lyrics are shown in review, but the proposal
      handler has no editable field for them on a track, so a standard
      user's proposals carry only the editable fields (artist name,
      release title/year, track title). */
@@ -1144,7 +1142,7 @@ const UTAG = (() => {
       info: { trackNo: (info && info.trackNo) || t.trackNo || 0, discNo: (info && info.discNo) || t.discNo || 1, durationMs: (info && info.duration) ? Math.round(info.duration * 1000) : base.info.durationMs } };
   }
 
-  /* Role for a catalog submit, via the Phase 1 `me` action. The session
+  /* Role for a catalog submit, via the `me` action. The session
      decides by profile role; with no session there is no role. */
   async function getRole() {
     if (getSession()) {
@@ -1174,11 +1172,11 @@ const UTAG = (() => {
      saves direct via fixer_save; a standard user gets one
      metadata_proposal per catalog entity touched, editable fields
      only. A throw leaves the SDB file and its local metadata exactly
-     as they were — nothing is applied locally until every submit
+     as they were - nothing is applied locally until every submit
      succeeds. A new track whose release does not exist yet cannot be
      proposed (the approve handler needs a release_id): its release
      proposal goes in, the track proposal is deferred, and the result
-     says so — no chained API is invented. */
+     says so - no chained API is invented. */
   async function submitUpload(review) {
     const role = await getRole();
     if (role.kind === 'none') throw new Error('Sign in first');
@@ -1233,8 +1231,8 @@ const UTAG = (() => {
     return { toast: 'Submitted for review', role: 'standard', submitted: proposals.map(p => p.entity_type), deferred };
   }
 
-  /* ---- Phase 4: Activity + account management (Settings) ----
-     All reads go through the Phase 1 edge-function actions, which scope
+  /* ---- Activity + account management (Settings) ----
+     All reads go through the edge-function actions, which scope
      standard users to their own rows server-side. fnCall throws on a
      failed action, so callers surface the server message as a toast. */
   async function activityData() {
@@ -1256,7 +1254,7 @@ const UTAG = (() => {
       review: reviewRes.status === 'fulfilled' && reviewRes.value ? ((reviewRes.value && reviewRes.value.proposals) || []) : [],
     };
   }
-  /* ---- v10.14: manual catalog creates, ported from the UTAG site.
+  /* ---- manual catalog creates, ported from the UTAG site.
      The server actions are admin-gated and duplicate-safe (an
      existing artist/release/track is returned with existed:true
      instead of a second row), so the client only needs to call
@@ -1274,9 +1272,9 @@ const UTAG = (() => {
   }
   async function setUserRole(id, role) { return fnCall({ action: 'set_role', target_user_id: id, role }); }
 
-  /* ---- Phase 6: per-user cloud data via direct PostgREST ----
+  /* ---- Per-user cloud data via direct PostgREST ----
      Per-user tables carry owner-only RLS, so a signed-in user's own
-     token is the credential — no Edge Function action is involved.
+     token is the credential - no Edge Function action is involved.
      Local SDB ids are numbers; cloud rows need catalog UUIDs, so only
      catalog-linked tracks (utagTrackId stamp) can migrate. Anything
      without a catalog link is counted as skipped, never invented. */

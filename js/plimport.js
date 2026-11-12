@@ -4,7 +4,7 @@
  * to read the playlist and match each song to a YouTube audio/lyric upload
  * (dub's matcher already skips music videos). Confident matches are approved
  * automatically, the batch starts, and every finished song is pulled into the
- * library the moment it is ready — the queue can read "1/100" and that one
+ * library the moment it is ready - the queue can read "1/100" and that one
  * song is already playable in Splotify. The job survives app restarts.
  */
 const PlImport = (() => {
@@ -82,7 +82,7 @@ const PlImport = (() => {
     stopLoop();
     if (st && !st.done) {
       st.done = true;
-      st.summary = `Stopped — ${st.imported.length} of ${st.total} songs kept in your library`;
+      st.summary = `Stopped: ${st.imported.length} of ${st.total} songs kept in your library`;
       await set(st);
       // Best effort: tell the converter to stop working on it.
       jpost(`/api/dub/spotify/batch/${st.batchId}/abort`, {}).catch(() => {});
@@ -154,7 +154,7 @@ const PlImport = (() => {
     } catch (e) { return; } // transient network blip: retry next poll
     const phase = (data.batch && data.batch.phase) || '';
     const prog = data.progress || {};
-    // Reconcile: the batch may have moved on without us — the user may have
+    // Reconcile: the batch may have moved on without us - the user may have
     // approved/started it in dub, or we parked too early. If the converter is
     // actively working (or finished), never sit on a stale dead-end: pick the
     // import back up and pull whatever is ready.
@@ -290,7 +290,7 @@ const PlImport = (() => {
     }
     if (fixed) { try { App.onLibraryChanged(); } catch (e) {} }
     }
-    // Dedupe: the pre-v2.5 pileup could save the same song twice. Dub tracks
+    // Dedupe: an old bug could save the same song twice. Dub tracks
     // with identical size + title + artist are the same download: keep one.
     try {
       const fresh = await DB.allTracks();
@@ -443,7 +443,7 @@ const PlImport = (() => {
     if (left <= 0) return 'Finishing up…';
     const p = pacePerHour();
     if (p === null) return 'Finding pace…';
-    if (p < 0.5) return 'Paused — waiting on the converter';
+    if (p < 0.5) return 'Paused, waiting on the converter';
     const hours = left / p;
     if (hours < 1) return 'Roughly ' + Math.max(1, Math.round(hours * 60)) + ' min left';
     if (hours < 48) {
@@ -471,7 +471,7 @@ const PlImport = (() => {
       + row('Could not download', escHtml(String(failed)))
       + row('In your library', escHtml(String(st.imported.length)))
       + row('Pace (last 30 min)', escHtml(pace))
-      + row('Converter is', escHtml(phase + ' — ' + cur))
+      + row('Converter is', escHtml(phase + ': ' + cur))
       + row('Last checked', escHtml(when));
   }
 
@@ -503,7 +503,7 @@ const PlImport = (() => {
         <input id="plimport-input" placeholder="open.spotify.com/playlist/…" autocomplete="off" autocapitalize="off" spellcheck="false"
           style="width:100%;box-sizing:border-box;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;color:var(--txt);font-size:15px;margin:8px 0 12px" />
         <button data-act="plimport-start" style="width:100%;background:var(--acc);color:#fff;border:0;border-radius:12px;padding:14px;font-size:15px;font-weight:700">Start import</button>
-        <p style="color:var(--sub);font-size:12px;line-height:1.5;margin-top:12px">Songs convert one at a time, so a big playlist takes a while. You can leave and come back — it keeps going.</p>`;
+        <p style="color:var(--sub);font-size:12px;line-height:1.5;margin-top:12px">Songs convert one at a time, so a big playlist takes a while. You can leave and come back, it keeps going.</p>`;
       return;
     }
     if (st.done) {

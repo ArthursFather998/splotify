@@ -1,17 +1,17 @@
 {
   "name": "splotify",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Local-first music player for iPhone, built with Capacitor",
   "scripts": {
     "ios:www": "node scripts/prepare-ios-www.js",
     "ios:sync": "npm run ios:www && npx cap sync ios",
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "node search-test.js",
     "build:haptics": "esbuild js/haptics-entry.js --bundle --format=iife --minify --outfile=js/vendor/haptics-bridge.js"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "keywords": ["music", "player", "pwa", "capacitor", "ios"],
+  "author": "Skyler Green",
+  "license": "UNLICENSED",
+  "private": true,
   "dependencies": {
     "@capacitor/cli": "^8.5.2",
     "@capacitor/core": "^8.5.2",

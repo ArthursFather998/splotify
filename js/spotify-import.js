@@ -1,7 +1,7 @@
-/* Splotify Spotify transfer (v7.0) — bring playlists, Liked Songs, and
+/* Splotify Spotify transfer - bring playlists, Liked Songs, and
    followed artists from Spotify into Splotify, matched against the SDB.
    Two routes in: OAuth (PKCE) against the Spotify Web API, or a Spotify
-   data-export ZIP parsed locally. No audio ever moves — pure metadata. */
+   data-export ZIP parsed locally. No audio ever moves - pure metadata. */
 const SpImport = (() => {
   /* ---------- normalization & matching ---------- */
   function norm(s) {
@@ -115,7 +115,7 @@ const SpImport = (() => {
         album: t.album || t.albumName || '',
         uri: t.uri || t.trackUri || null,
       })).filter(t => t.title);
-      // Saved albums (for the Albums chip seed — artist merge happens via artists)
+      // Saved albums (for the Albums chip seed - artist merge happens via artists)
       out.savedAlbums = (lib.albums || []).map(a => ({ artist: a.artist || '', album: a.album || a.albumName || '' })).filter(a => a.album);
       out.found.push('YourLibrary.json: ' + out.liked.length + ' liked songs');
       // Followed artists sometimes live here
@@ -137,7 +137,7 @@ const SpImport = (() => {
       }
       out.found.push('Follow.json: followed artists');
     }
-    // v8.6: detect a streaming-history-only ZIP (the wrong download — the
+    // Detect a streaming-history-only ZIP (the wrong download - the
     // full "Download your data" is a separate request) so the app can say
     // so instead of the cryptic "nothing found".
     const histFiles = names.filter(n => /Streaming_History_.*\.json$/i.test(n));

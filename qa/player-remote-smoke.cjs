@@ -1,6 +1,6 @@
 // Player remote-playback smoke test (qa/player-remote-smoke.cjs).
 // Runs player.js with stubbed browser/DB/app surfaces and exercises the
-// streamed-track paths that killed v10.20/v10.21 in live verification:
+// streamed-track paths that broke in live testing:
 //   1. a failed remote load must stop the previous track (no stale audio
 //      playing under the failed shell) and must not resume it on toggle.
 //   2. a successful remote load plays and caches.

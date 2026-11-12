@@ -2,9 +2,9 @@
 // synthetic touch sequences through a minimal DOM shim. Proves the logic
 // as-shipped, independent of any browser's gesture recognizer.
 const fs = require('fs');
-const src = fs.readFileSync('/home/hatch/workspace/splotify/js/app.js', 'utf8');
-const start = src.indexOf('    // v10.26: site-wide swipe-right to go back.');
-const end = src.indexOf('    // v10.30: drag across the tab bar', start);
+const src = fs.readFileSync(require('path').join(__dirname, '..', 'js', 'app.js'), 'utf8');
+const start = src.indexOf('    // Site-wide swipe-right to go back.');
+const end = src.indexOf('    // Drag across the tab bar', start);
 if (start < 0 || end < 0) { console.log('IIFE NOT FOUND'); process.exit(1); }
 const iife = src.slice(start, end);
 

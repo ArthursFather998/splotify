@@ -1,4 +1,4 @@
-/* UTAG Fixer engine — ported from the Splotify v7/v8 catalog fixer.
+/* UTAG Fixer engine - ported from the Splotify v7/v8 catalog fixer.
    No AI. Sources, in order: library roster → Apple Music → Deezer →
    MusicBrainz → AcoustID fingerprint. Artwork: Apple → Deezer →
    Cover Art Archive → fanart.tv. Lyrics: embedded tags first, then
@@ -323,7 +323,7 @@ window.UtagFixer = (() => {
     const conf = 0.55 + bestScore * 0.4;
     const verified = bestScore >= (qq.a ? 0.85 : 0.92);
     /* When the song itself is confidently identified, the catalog's artist
-       is the truth even under a heavier misspelling — the review screen
+       is the truth even under a heavier misspelling - the review screen
        is the safety net. */
     const artistGate = verified ? 0.7 : 0.85;
     if (strSim(best.trackName, qq.t) >= 0.9 && best.trackName !== t.title && norm(best.trackName) !== norm(t.title)) {
@@ -484,7 +484,7 @@ window.UtagFixer = (() => {
     return { proposals: out, releaseId: (rel && rel.id) || null, artistId: (ac && ac.artist && ac.artist.id) || null };
   }
 
-  /* AcoustID fingerprint. Never runs on his own songs. */
+  /* AcoustID fingerprint. Never runs on my own songs. */
   const acoustidQuery = (fp, dur) => catalogGate(() => acoustidLookupUngated(fp, dur));
   async function acoustidLookupUngated(fp, durSec) {
     const key = getKey("acoustid");
@@ -593,7 +593,7 @@ window.UtagFixer = (() => {
       } catch (e) {}
     }
     if (rgId) {
-      /* AcoustID gives a release-group id — different CAA endpoint. */
+      /* AcoustID gives a release-group id - different CAA endpoint. */
       cands.push({ url: "https://coverartarchive.org/release-group/" + rgId + "/front", w: 1350, source: "Cover Art Archive" });
     }
     if (!cands.length) return null;

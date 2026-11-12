@@ -1,5 +1,5 @@
-/* Splotify — sakura pink Spotify clone for iPhone 16e (390pt) */
-/* v10.24: Montserrat restored (Figtree trial reverted 2026-11-11).
+/* Splotify - sakura pink Spotify clone for iPhone 16e (390pt) */
+/* Montserrat restored (Figtree trial reverted 2026-11-11).
    Figtree files stay on disk so the trial is a one-line revert back. */
 @font-face{font-family:'Montserrat';font-weight:400;font-style:normal;font-display:swap;src:url('../fonts/montserrat-400.woff2') format('woff2')}
 @font-face{font-family:'Montserrat';font-weight:500;font-style:normal;font-display:swap;src:url('../fonts/montserrat-500.woff2') format('woff2')}
@@ -41,7 +41,7 @@ input{font:inherit}
 .trow .eq{display:none}
 .trow.playing .eq{display:block}
 .sectionhead{display:flex;align-items:center;justify-content:space-between;padding:18px 16px 6px}
-/* v8.0 Spotify-style top result card */
+/* Spotify-style top result card */
 .top-result{display:flex;align-items:center;gap:14px;padding:10px 16px;min-height:104px}
 .top-result:active{background:rgba(255,255,255,.06)}
 .top-result .top-art{width:88px;height:88px;flex:none;background:#333;object-fit:cover;border-radius:8px}
@@ -210,7 +210,7 @@ input{font:inherit}
 #np-bottom .iconbtn svg{width:25px;height:25px}
 /* ---------- lyrics preview + full lyrics view ---------- */
 /* Background color is set inline from the cover art's dominant color;
-   #757670 here is only the fallback, matching the Withered screenshot. */
+   #757670 here is only the fallback, matching the Withered cover. */
 #np-lyrics-preview{position:relative;margin:16px;padding:16px 20px;border-radius:16px;background:#757670;flex:none;cursor:pointer}
 #np-lyrics-preview-head{display:flex;align-items:center;justify-content:space-between;font-size:18px;font-weight:700;color:#fff}
 #np-lyrics-preview-head svg{width:22px;height:22px;color:rgba(255,255,255,.8);flex:none}
@@ -425,7 +425,7 @@ input{font:inherit}
 .ax-chips::-webkit-scrollbar{display:none}
 .ax-chips button{flex:none;height:34px;padding:0 15px;border-radius:999px;background:#2c2c2c;color:#fff;font-size:13.5px;font-weight:600}
 .ax-chips button.on{background:var(--pink);color:#171217}
-/* v10.15 UTAG-style discography tabs + card grid (Albums | Singles and EP's | Unreleased) */
+/* UTAG-style discography tabs + card grid (Albums | Singles and EP's | Unreleased) */
 .disc-tabs{display:flex;gap:8px;overflow-x:auto;padding:8px 16px 14px;scrollbar-width:none}
 .disc-tabs::-webkit-scrollbar{display:none}
 .disc-tab{flex:none;height:36px;padding:0 18px;border-radius:999px;background:#2c2c2c;color:#fff;font-size:13.5px;font-weight:600}
@@ -443,7 +443,7 @@ input{font:inherit}
 .ax-bottom{height:26px}
 @media (max-width:360px){.ax-hero-text h1{font-size:44px}.ax-hero{height:380px}}
 
-/* v7.0 Spotify-style library */
+/* Spotify-style library */
 .lib-avatar{width:38px;height:38px;border-radius:50%;background:linear-gradient(135deg,var(--pink),var(--pink-deep));display:flex;align-items:center;justify-content:center;color:#171217;flex:none}
 .lib-chips{display:flex;gap:8px;padding:6px 16px 10px;overflow-x:auto;scrollbar-width:none}
 .lib-chips::-webkit-scrollbar{display:none}
@@ -472,14 +472,14 @@ input{font:inherit}
 .lib-card .liked-heart-tile.lib-liked{width:100%;height:auto;aspect-ratio:1}
 .lib-card .liked-heart-tile.lib-liked svg{width:34%;height:34%}
 
-/* v7.0 player sprites (Sakura recolors of Skyler's art) */
+/* Player sprites (Sakura recolors of my art) */
 #np-shuffle .sprite { width: 46px; height: 46px; object-fit: contain; display: block; }
-#np-shuffle.iconbtn { width: 58px; height: 58px; } /* v8.7: enlarged shuffle button */
+#np-shuffle.iconbtn { width: 58px; height: 58px; } /* Enlarged shuffle button */
 #np-repeat .sprite { width: 30px; height: 30px; object-fit: contain; display: block; }
 #np-shuffle .sprite-off, #np-repeat .sprite-off { opacity: .32; filter: grayscale(1); }
 .sdb-note{padding:10px 16px 4px;color:var(--sub);font-size:13px}
 
-/* v7.0 Spotify transfer review */
+/* Spotify transfer review */
 .sp-review-row{border:1px solid var(--line);border-radius:14px;padding:14px;margin-bottom:12px;background:var(--card)}
 .sp-review-sp .ttitle,.sp-review-sdb .ttitle{font-size:15px;font-weight:600}
 .sp-review-sp .tsub,.sp-review-sdb .tsub{font-size:13px;color:var(--sub);margin-top:2px}
@@ -488,7 +488,7 @@ input{font:inherit}
 .sp-review-btns{display:flex;gap:10px;margin-top:12px}
 .sp-review-btns .bigbtn{flex:1}
 
-/* Made by Splotify — mix cards (banner-art style) */
+/* Made by Splotify - mix cards (banner-art style) */
 .mixcard{flex:none;width:152px}
 .mixart{position:relative;width:152px;height:152px;overflow:hidden;background:#1e1e1e;border-radius:12px}
 .mixart img.mixsingle{width:152px;height:152px;object-fit:cover;display:block}
@@ -509,7 +509,7 @@ input{font:inherit}
 .mixart.hero .mixbanner{font-size:19px;padding:10px 6px}
 .mixart.hero .mixlogo{width:30px;height:30px}
 .mixart.hero .mixlogo img{width:30px;height:30px}
-/* utag fixer — all-songs live list */
+/* utag fixer - all-songs live list */
 .fx-row{display:flex;align-items:center;gap:12px;padding:9px 0;border-bottom:1px solid rgba(255,255,255,.06);cursor:pointer}
 .fx-art{flex:none;width:52px;height:52px;border-radius:8px;overflow:hidden;background:#1e1e1e}
 .fx-art img{width:52px;height:52px;object-fit:cover;display:block}
@@ -532,7 +532,7 @@ input{font:inherit}
    Now Playing chrome is reachable. */
 body.auth-gate #tabbar, body.auth-gate #miniplayer, body.auth-gate #nowplaying{display:none!important}
 
-/* ---------- v10.7 search (video layout, pink replaces green) ---------- */
+/* ---------- Search (Spotify layout, pink replaces green) ---------- */
 .sp-searchrow{display:flex;align-items:center;gap:10px;margin:calc(var(--sat) + 12px) 16px 8px}
 .sp-searchbar{flex:1;display:flex;align-items:center;gap:8px;background:#242424;border:1px solid rgba(255,255,255,.22);border-radius:12px;height:48px;padding:0 12px;color:#fff;min-width:0}
 .sp-searchbar>svg{width:24px;height:24px;flex:none;color:#fff}
@@ -567,17 +567,17 @@ body.auth-gate #tabbar, body.auth-gate #miniplayer, body.auth-gate #nowplaying{d
 .search-save.saved{color:var(--pink)}
 .search-save svg{width:24px;height:24px}
 
-/* v10.20: loading spinner for the play buttons while a streamed song
+/* Loading spinner for the play buttons while a streamed song
    fetches its audio. Plain spinner, no words: the user never needs to
    know where the song is coming from. */
 .spin{display:inline-block;width:20px;height:20px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:spin .8s linear infinite;vertical-align:middle}
 @keyframes spin{to{transform:rotate(360deg)}}
 @media (prefers-reduced-motion:reduce){.spin{animation:none}}
 
-/* v10.23: short fade between screens (navigation only; see render()) */
+/* Short fade between screens (navigation only; see render()) */
 ::view-transition-old(root),::view-transition-new(root){animation-duration:.22s}
 
-/* ---------- v10.30 Liquid Glass: tab orb + song preview sheet ---------- */
+/* ---------- Liquid Glass: tab orb + song preview sheet ---------- */
 #tab-orb{position:absolute;top:10px;bottom:10px;left:0;width:0;border-radius:24px;background:radial-gradient(120% 90% at 50% 0%,rgba(255,255,255,.3),transparent 55%),linear-gradient(180deg,rgba(255,255,255,.34),rgba(255,255,255,.17));backdrop-filter:blur(10px) saturate(1.5);-webkit-backdrop-filter:blur(10px) saturate(1.5);border:1px solid rgba(255,255,255,.34);box-shadow:inset 0 1px 0 rgba(255,255,255,.45),inset 0 -1px 0 rgba(0,0,0,.12),0 4px 14px rgba(0,0,0,.28);z-index:0;pointer-events:none;transition:left .38s cubic-bezier(.32,.72,.35,1),width .38s cubic-bezier(.32,.72,.35,1),filter .15s ease}
 #tab-orb.pressed{filter:brightness(1.35)}
 .pv-row{display:flex;align-items:center;gap:14px;padding:12px 20px;min-height:78px}
@@ -593,10 +593,10 @@ body.auth-gate #tabbar, body.auth-gate #miniplayer, body.auth-gate #nowplaying{d
 .pv-add svg{width:22px;height:22px}
 .pv-add.liked{border-color:#1ed760;color:#1ed760}
 
-/* ---------- v10.34 Liquid Glass per Apple: dispersion rim ---------- */
+/* ---------- Liquid Glass per Apple: dispersion rim ---------- */
 #tabbar::before,#tab-orb::before,#miniplayer::before,#sheet::before,#np-lyrics-preview::before{content:'';position:absolute;inset:0;border-radius:inherit;padding:2px;background:conic-gradient(from 210deg,rgba(255,80,120,.8),rgba(255,200,60,.7),rgba(80,255,170,.7),rgba(80,160,255,.8),rgba(190,90,255,.75),rgba(255,80,120,.8));-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);mask-composite:exclude;opacity:.6;pointer-events:none;mix-blend-mode:screen}
 
-/* ---------- v10.34: respect the phone's accessibility settings ---------- */
+/* ---------- respect the phone's accessibility settings ---------- */
 @media (prefers-reduced-transparency: reduce){
   #tabbar,#sheet{background:#1b1b1b;backdrop-filter:none;-webkit-backdrop-filter:none}
   #miniplayer{background:#3a3a3a;backdrop-filter:none;-webkit-backdrop-filter:none}
@@ -611,7 +611,7 @@ body.auth-gate #tabbar, body.auth-gate #miniplayer, body.auth-gate #nowplaying{d
   #np-title{animation:none!important}
 }
 
-/* ---------- v10.47: Settings > Customize ---------- */
+/* ---------- Settings > Customize ---------- */
 .theme-swatches{display:flex;flex-wrap:wrap;gap:10px;padding:4px 4px 14px}
 .theme-swatch{width:40px;height:40px;border-radius:50%;border:2px solid transparent;cursor:pointer;padding:0;position:relative;flex:none}
 .theme-swatch.on{border-color:#fff;box-shadow:0 0 0 2px var(--bg),0 0 0 4px var(--pink)}

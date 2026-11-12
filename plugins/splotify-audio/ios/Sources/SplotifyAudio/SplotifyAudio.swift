@@ -4,11 +4,11 @@ import AVFoundation
 import MediaPlayer
 
 /**
- * SplotifyAudio — native audio output for the Splotify iOS shell.
+ * SplotifyAudio - native audio output for the Splotify iOS shell.
  *
  * The web app stays the brain (queue, shuffle, repeat, likes, play counts).
  * This plugin is just the speaker: AVPlayer playback with a real
- * MPRemoteCommandCenter setup — previous / play-pause / next on the lock
+ * MPRemoteCommandCenter setup - previous / play-pause / next on the lock
  * screen and Control Center, and explicitly NO +/- interval skip buttons.
  */
 @objc(SplotifyAudio)

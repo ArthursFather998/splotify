@@ -1,6 +1,6 @@
-/* Splotify app — views, router, artwork, sheets. */
+/* Splotify app - views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v10.47';
+  const APP_VERSION = 'v10.48';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -11,32 +11,32 @@ const App = (() => {
     editRecent: false,
     artistFor: '', artistTab: 'music', artistExpanded: false, artistReleasesExpanded: false,
     artistFilter: 'all', followedArtists: new Set(),
-    // v10.15 UTAG discography state: selected tab + merged catalog
+    // UTAG discography state: selected tab + merged catalog
     // discography for the open artist (null = not fetched, false = failed).
     artistDiscTab: 'albums', catDiscogName: '', catDiscog: null,
-    // v7.0: S.tracks/S.byId is the SDB (every song known). S.library is the
+    // S.tracks/S.byId is the SDB (every song known). S.library is the
     // user's library: an ordered array of saved SDB track IDs (membership
     // list, not a copy). S.artists is the artist roster table cache.
     library: [], artists: new Map(),
-    // v7.0 library view state (Spotify-style)
+    // Library view state (Spotify-style)
     libChip: 'all', libSort: 'recent', libGrid: false, libSearching: false, libQ: '',
-    // v7.0 Spotify transfer state
+    // Spotify transfer state
     spReview: [], spMissed: [], spSummary: null, spBusy: false,
-    // v7.0 utag audit state
+    // Utag audit state
     tagReview: [], tagAuditRunning: false,
-    // v10.2 catalog search (shared UTAG metadata; local results untouched).
+    // Catalog search (shared UTAG metadata; local results untouched).
     // catQ: query last fetched/loading; catReady: its fetch settled.
     catQ: '', catSongs: [], catArtists: [], catAlbums: [], catSeq: 0, catReady: false,
     catArtist: null, _catTimer: null,
-    // v10.7 catalog-everywhere state. Catalog rows are metadata only:
+    // Catalog-everywhere state. Catalog rows are metadata only:
     // they never enter a play queue, Liked Songs, a playlist, or the
     // library until the song is downloaded (Get audio).
     searchAll: false, searchFilter: 'all',
-    // v10.13 search suggestions state, on-device only (never synced to
+    // Search suggestions state, on-device only (never synced to
     // the account): past search queries, and entities opened from
     // search. Separate from S.recent, which is recently played.
     searchQueries: [], searchRecents: [],
-    // v10.14 catalog-create gating: null = role not yet checked.
+    // Catalog-create gating: null = role not yet checked.
     // The server is the real gate (non-admin creates are rejected);
     // this flag only decides whether the Create buttons are shown.
     isAdmin: null, _adminLoading: false, _catPendingTrack: false,
@@ -50,7 +50,7 @@ const App = (() => {
   // The SDB is every track Splotify knows. S.tracks/S.byId is the in-memory
   // SDB cache and the DB tracks store is its persistence. The library
   // (S.library) is a separate membership list of saved track IDs.
-  // New code reads the catalog through SDB.* — when Skyler's SDB server
+  // New code reads the catalog through SDB.* - when the SDB server
   // lands, these become its client and the UI does not change.
   const SDB = {
     all: () => S.tracks,
@@ -59,7 +59,7 @@ const App = (() => {
     ids: () => S.tracks.map(t => t.id),
   };
   /* ---------- artist roster ---------- */
-  // Canonical artist table (v7.0). Seeded from js/placeholder-artists.json;
+  // Canonical artist table. Seeded from js/placeholder-artists.json;
   // uploads matching a placeholder activate it; the utag fixer treats this
   // as the canonical roster. Follow state lives here (not in kv).
   const artistIdFor = name => 'a_' + normTitle(name);
@@ -88,7 +88,7 @@ const App = (() => {
     if (followed) S.followedArtists.add(k); else S.followedArtists.delete(k);
     return followed;
   }
-  /* ---------- library membership (v7.0) ---------- */
+  /* ---------- library membership ---------- */
   // The library is an ordered array of saved SDB track IDs. Uploads never
   // touch it; only explicit saves (+ / heart flows / Spotify transfer) do.
   const libraryHas = id => S.library.includes(Number(id));
@@ -109,8 +109,8 @@ const App = (() => {
   }
 
   /* ---------- artwork ---------- */
-  // Curated cover-art overrides (v3.9+): proper art for unreleased tracks that
-  // have no reliable embedded art. Title/album matched, never touches his singles.
+  // Curated cover-art overrides: proper art for unreleased tracks that
+  // have no reliable embedded art. Title/album matched, never touches my singles.
   function normTitle(s) {
     return String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
   }
@@ -144,7 +144,7 @@ const App = (() => {
     // Curated proper covers beat embedded blobs and thumbnails.
     const custom = customArtFor(t);
     if (custom) return custom;
-    // Single-only tracks reference their bundled cover by path (v2.2+).
+    // Single-only tracks reference their bundled cover by path.
     if (typeof t.art === 'string') return t.art;
     if (t.art) {
       let u = S.artURLs.get(t.id);
@@ -152,8 +152,8 @@ const App = (() => {
       return u;
     }
     // No art at all: unreleased d4vd tracks fall back to the deluxe cover
-    // instead of a blank. His own songs never wear d4vd's cover: they get
-    // their bundled single art when the title matches his discography,
+    // instead of a blank. My own songs never wear d4vd's cover: they get
+    // their bundled single art when the title matches my discography,
     // otherwise a blank placeholder.
     const ta = normTitle(t.artist);
     if (!ta || ta === 'unknownartist' || ta.indexOf('d4vd') !== -1) {
@@ -175,7 +175,7 @@ const App = (() => {
   }
   // A dead image must never render the browser's broken-image glyph: swap it
   // for a shimmer skeleton and retry quietly in case it was a blip. If the
-  // retries fail too, the skeleton simply stays — never the broken box.
+  // retries fail too, the skeleton simply stays - never the broken box.
   function artErr(el) {
     try {
       const cls = el.className || '';
@@ -220,7 +220,7 @@ const App = (() => {
       img.crossOrigin = 'anonymous';
       img.onload = () => {
         try {
-          // v10.23: most-saturated color bucket, not a flat average. A 24x24
+          // most-saturated color bucket, not a flat average. A 24x24
           // mean washes every cover out to the same muddy grey-brown; the
           // richest bucket (3-bit channels, saturation-weighted) keeps the
           // cover's real color. Falls back to the most frequent bucket for
@@ -258,10 +258,10 @@ const App = (() => {
   }
   const cssTint = t => { const c = tint(t); return c ? `rgb(${Math.round(c[0] * .7)},${Math.round(c[1] * .7)},${Math.round(c[2] * .7)})` : '#3a3a3a'; };
 
-  /* v10.23 haptics: light tap. Silent no-op on the web / without the bridge. */
+  /* Haptics: light tap. Silent no-op on the web / without the bridge. */
   function tap() { try { if (window.SplotifyHaptics) window.SplotifyHaptics.light(); } catch (e) {} }
 
-  /* v10.23 marquee: long titles scroll instead of cutting off. Rebuilds only
+  /* Marquee: long titles scroll instead of cutting off. Rebuilds only
      when the text changes; the .mq-track holds two copies so the -50% loop
      in CSS is seamless. */
   function setMarquee(el, text) {
@@ -280,7 +280,7 @@ const App = (() => {
     });
   }
 
-  /* v10.23 tinted headers: paint the current detail / artist hero from the
+  /* Tinted headers: paint the current detail / artist hero from the
      artwork tint (fades into #121212, Spotify-style). Called after every
      render and again when a tint finishes loading. */
   function paintDetailHero() {
@@ -305,7 +305,7 @@ const App = (() => {
     }
   }
 
-  /* v10.23 Now Playing background: two layers cross-fade opacity, because
+  /* Now Playing background: two layers cross-fade opacity, because
      CSS cannot animate between gradients. */
   let npBgSide = 0;
   function npSetBg(grad) {
@@ -339,7 +339,7 @@ const App = (() => {
       return a;
     }).sort((a, b) => a.name.localeCompare(b.name));
   }
-  // Virtual single releases, mirroring the Singles & EPs shelf on his
+  // Virtual single releases, mirroring the Singles & EPs shelf on my
   // Spotify artist page. A track tagged to an album can still appear as a
   // single without moving.
   function singleAlbums() {
@@ -384,7 +384,7 @@ const App = (() => {
       .replace(/\s+/g, ' ').trim();
     return n || 'Unknown Artist';
   }
-  // Known aliases: same artist, different tag spelling. Skyler's rule for
+  // Known aliases: same artist, different tag spelling. Rule for
   // d4vd is absolute: anything starting with "d4vd" is the same artist.
   const ARTIST_ALIASES = { 'd4vdd': 'd4vd', 'd4vd_': 'd4vd' };
   function artistKey(s) {
@@ -423,7 +423,7 @@ const App = (() => {
   }
   const albumByKey = k => albums().find(a => a.key === k);
   const artistByName = n => artists().find(a => a.name === n);
-  /* v7.0: unified artist view-model. Derived artists (with SDB songs) first;
+  /* Unified artist view-model. Derived artists (with SDB songs) first;
      roster placeholders (no songs yet) resolve from the artist table so they
      get real pages with follow buttons. */
   function artistViewModel(name) {
@@ -474,7 +474,7 @@ const App = (() => {
       .map(x => ({ ...x, kind: releaseKind(x), group: releaseGroup(x, akey), year: releaseYear(x) }))
       .sort((x, y) => (y.year - x.year) || y.tracks.length - x.tracks.length || x.name.localeCompare(y.name));
   }
-  /* ---------- v10.15 UTAG-style discography tabs ----------
+  /* ---------- UTAG-style discography tabs ----------
      Ported from UTAG's artist page: Albums | Singles and EP's |
      Unreleased, card grid, square art, title, "year • type",
      newest first. Catalog type/status wins on an exact title
@@ -566,7 +566,7 @@ const App = (() => {
   /* ---------- recents ---------- */
   async function loadRecent() {
     S.recent = await DB.kvGet('recent', []);
-    // v10.13: search history, sanitized so a corrupt row can never
+    // Search history, sanitized so a corrupt row can never
     // break the search view (queries are plain strings, recents are
     // {kind, id, name, sub, art} snapshots).
     try {
@@ -590,7 +590,7 @@ const App = (() => {
     S.recent = S.recent.slice(0, 20);
     DB.kvSet('recent', S.recent).catch(() => {});
   }
-  /* ---------- v10.14 catalog-create admin gate ---------- */
+  /* ---------- Catalog-create admin gate ---------- */
   async function ensureAdmin() {
     if (S.isAdmin !== null || S._adminLoading) return;
     S._adminLoading = true;
@@ -614,8 +614,8 @@ const App = (() => {
       DB.kvSet('playCounts', S.playCounts).catch(() => {});
       DB.kvSet('lastPlayed', S.lastPlayed).catch(() => {});
     }
-    /* Phase 6: one cloud history row per play, only for catalog-linked
-       tracks, best-effort — a failed write never interrupts playback. */
+    /* One cloud history row per play, only for catalog-linked
+       tracks, best-effort - a failed write never interrupts playback. */
     try {
       const t = S.byId && S.byId.get(Number(id));
       if (t && t.utagTrackId) UTAG.logHistory(t.utagTrackId);
@@ -659,9 +659,9 @@ const App = (() => {
     S._artRemoved = false;
   }
 
-  // v10.30: the Spotify-style preview sheet from the screenshot: artist row
+  // The Spotify-style preview sheet: artist row
   // (round photo, Follow/Following pill) + release row (art, title, kind,
-  // add-to-Liked button). v10.33: opened by tapping the song's name/artist
+  // add-to-Liked button). Opened by tapping the song's name/artist
   // on the Now Playing screen, not from list rows.
   function openSongPreview(id) {
     const isCat = typeof id === 'string' && id.indexOf('cat:') === 0;
@@ -737,7 +737,7 @@ const App = (() => {
       <div class="empty">${icon('note', 'width:64px;height:64px;color:var(--pink)')}
       <h3>Your music lives here</h3><p>Import audio files from your iPhone and they'll play here, offline, anytime.</p>
       <button class="bigbtn pink" data-act="import">Add music</button></div>`;
-    // v7.0: the SDB is not the library. Empty library gets its own state.
+    // The SDB is not the library. Empty library gets its own state.
     const libCount = S.library.length + S._pls.length + S.followedArtists.size + Player.state.liked.size;
     if (!libCount) return `<div class="home-top"><h1>${greeting()}</h1><div class="home-icons">${hicons()}</div></div>
       <div class="empty">${icon('heart', 'width:64px;height:64px;color:var(--pink)')}
@@ -785,9 +785,9 @@ const App = (() => {
     <button class="iconbtn" data-act="open-settings" aria-label="Settings">${icon('gear')}</button>`;
   }
 
-  /* v8.0 Spotify-style search ranking (pure — unit-tested in node).
+  /* Spotify-style search ranking (pure - unit-tested in node).
      Tier: 0 exact, 1 starts-with, 2 word-starts, 3 contains, 4 no match. */
-  /* v10.23 search folding: ONE normalizer for the query and every candidate.
+  /* Search folding: ONE normalizer for the query and every candidate.
      Accents drop (Beyonce finds Beyonce with the accent), $ reads as s
      (A$AP = asap, $uicideboy$ = suicideboys), apostrophes vanish, every
      other symbol becomes a space, and non-Latin letters are KEPT. The old
@@ -845,7 +845,7 @@ const App = (() => {
         if (tt <= 3) tier = tt;
         else if (at <= 3) tier = 4 + at;
         else if (alt <= 3) tier = 8 + alt;
-        // v10.23: "artist title" typed together matches no single field,
+        // "artist title" typed together matches no single field,
         // so every word must appear somewhere across title+artist+album.
         else if (toks.length > 1 && matchesAllTokens(foldSearch([e.t.title, e.t.artist, e.t.album].filter(Boolean).join(' ')), toks)) tier = 12;
         return { ...e, tier };
@@ -864,8 +864,8 @@ const App = (() => {
     if (bestS) return { kind: 'song', s: bestS };
     return null;
   }
-  /* ---------- v10.7 search: one-to-one copy of the video layout,
-     with Splotify pink (#fbb4d6) wherever the video uses green.
+  /* ---------- Search: laid out like Spotify's,
+     with Splotify pink (#fbb4d6) wherever Spotify uses green.
      Dark search bar (magnifier, X clear, Cancel), suggestion rows
      (magnifier + diagonal arrow), then a filtered view with
      scrollable Songs / Playlists / Artists / Albums pills, a top-artist
@@ -873,8 +873,8 @@ const App = (() => {
      featuring that artist), and merged local + catalog song/album rows.
      Catalog rows are never playable: they are greyed and open
      the Get audio sheet. Podcasts are omitted: Splotify has none.
-     v10.13: the suggestions state itself follows the video (see the
-     v10.13 comment below); running a search is what reaches the
+     the suggestions state itself follows Spotify's behavior (see the
+     comment below); running a search is what reaches the
      filtered view, there is no View all link in suggestions. */
   function searchData(q) {
     const plays = id => (S.playCounts && S.playCounts[id]) || 0;
@@ -899,7 +899,7 @@ const App = (() => {
     const top = pickTopResult(aHits, sHits);
     return { aHits, sHits, als, ps, top };
   }
-  /* ---------- v10.13 search suggestions: exactly the video's behavior.
+  /* ---------- Search suggestions: same behavior as Spotify's.
      Empty search shows Recent searches (entities, not queries). While
      typing, the list is up to 5 text suggestions, past queries first
      (clock icon), then completions (magnifier icon), with the typed
@@ -908,7 +908,7 @@ const App = (() => {
      recorded); tapping its diagonal arrow only FILLS the bar and
      stays in the suggestions view. Below the text suggestions is a
      flat mixed list (artists, then albums, then songs), no section
-     headings, no View all button. Green in the video is Splotify
+     headings, no View all button. Spotify's green is Splotify
      pink; there are no verified badges, and no explicit badge is
      invented (none of Splotify's local/catalog rows carry one). */
   function saveSearchQueries() { try { DB.kvSet('searchQueries', S.searchQueries).catch(() => {}); } catch (e) {} }
@@ -1013,7 +1013,7 @@ const App = (() => {
     const seenAlb = new Set(d.als.map(a => normKey(a.artist) + '|' + normKey(a.name)));
     const byRel = new Map();
     (S.catSongs || []).forEach(x => { if (x.releaseId && x.album && !byRel.has(x.releaseId)) byRel.set(x.releaseId, x); });
-    // v10.18: releases matched by title (S.catAlbums) join the albums
+    // Releases matched by title (S.catAlbums) join the albums
     // derived from matched tracks, so an album-title search surfaces
     // the album even when no track title matches.
     (S.catAlbums || []).forEach(a => { if (a.id && a.title && !byRel.has(a.id)) byRel.set(a.id, { releaseId: a.id, album: a.title, artist: a.artist || '', art: a.art || '' }); });
@@ -1029,7 +1029,7 @@ const App = (() => {
   // Recent searches (empty search): entity rows with art, title,
   // type and artist, a library toggle where one applies, and an X
   // that removes only that entry. Artist and catalog rows have no
-  // toggle in the video; catalog songs cannot be saved until
+  // toggle in Spotify; catalog songs cannot be saved until
   // downloaded, so they get none either.
   function searchRecentHTML() {
     const rows = [];
@@ -1150,7 +1150,7 @@ const App = (() => {
     set('search-sec-albums', searchAlbumsSection(d));
     set('search-sec-playlists', searchPlaylistsSection(d));
   }
-  /* v10.23: the search bar is rendered once; only #search-body is rebuilt while
+  /* The search bar is rendered once; only #search-body is rebuilt while
      typing. Recreating the <input> on every keystroke made iOS flicker the
      keyboard and broke autocorrect / dictation / CJK composition. */
   function vSearch() {
@@ -1189,7 +1189,7 @@ const App = (() => {
     const anyLocal = d.aHits.length || d.sHits.length || d.als.length || d.ps.length;
     const anyCat = (S.catSongs || []).length || (S.catArtists || []).length || (S.catAlbums || []).length;
     if (!S.searchAll) {
-      // Suggestions state, as in the video: text suggestions, then
+      // Suggestions state, as in Spotify: text suggestions, then
       // the flat mixed list. Tapping a suggestion's text or pressing
       // Enter runs the search (filtered view); there is no View all
       // button in this state.
@@ -1199,7 +1199,7 @@ const App = (() => {
         + ((!flat && !anyLocal && !anyCat && catSettled) ? `<div class="empty"><h3>No results for "${esc(S.query)}"</h3><p>Check the spelling, or try an artist or song title.</p></div>` : '')
         + catOfflineNote(!flat && !anyLocal && !anyCat, qRaw);
     }
-    // Filtered view, as in the video.
+    // Filtered view, as in Spotify.
     const pills = [['all', 'All'], ['songs', 'Songs'], ['playlists', 'Playlists'], ['artists', 'Artists'], ['albums', 'Albums']];
     const f = S.searchFilter || 'all';
     const show = sec => f === 'all' || f === sec;
@@ -1214,11 +1214,11 @@ const App = (() => {
       + catOfflineNote(!anyLocal && !anyCat, qRaw);
   }
 
-  /* ---------- v10.2 catalog search (shared UTAG metadata) ----------
+  /* ---------- Catalog search (shared UTAG metadata) ----------
      Local SDB results above are untouched. Catalog sections render from
      S.catSongs/S.catArtists when they belong to the current query; while
      a fetch is in flight they show skeletons, and on failure they vanish
-     (fail soft — local results are never broken by a catalog error).
+     (fail soft - local results are never broken by a catalog error).
      Rows are patched in place when a fetch settles, never by a full
      re-render, so typing is never interrupted. */
   // A failed catalog fetch used to look exactly like "No results". Say what happened.
@@ -1235,7 +1235,7 @@ const App = (() => {
     if (song.art) return `<img class="art" src="${esc(song.art)}" alt="" loading="lazy" onerror="App.artErr(this)">`;
     return `<div class="art art-ph">${icon('note')}</div>`;
   }
-  /* v10.20 streamed playback: which catalog tracks have audio, kept in
+  /* Streamed playback: which catalog tracks have audio, kept in
      S.audioByTrack (catalog track id -> audio row id). Filled lazily
      per view so a render never blocks on the whole catalog, and cached
      for the session. A queue id of 'cat:<catalog-uuid>' is a streamed
@@ -1249,7 +1249,7 @@ const App = (() => {
   }
   // The heart for a streamed song reflects its local copy: Player's
   // liked set holds local ids only, so asking it about a 'cat:' ref
-  // always says unliked — and a tap on that heart would then remove
+  // always says unliked - and a tap on that heart would then remove
   // a like that was already there.
   function isLikedFor(t) {
     if (!t) return false;
@@ -1286,10 +1286,10 @@ const App = (() => {
     }
     return `<div class="trow cat-row" data-act="cat-song" data-id="${esc(song.id)}">${catArtImg(song)}<div class="tmeta"><div class="ttitle">${esc(song.title)}</div><div class="tsub">${esc(sub)}</div></div><button class="dotsbtn" data-act="cat-menu" data-id="${esc(song.id)}" aria-label="More options">${icon('dots')}</button></div>`;
   }
-  // v10.7 catalog-everywhere helpers
+  // Catalog-everywhere helpers
   const normKey = v => searchKey(v);
-  // v10.9: catalog rows are laid out exactly like normal rows (art,
-  // title, artist, dots) and only greyed slightly — no track-number
+  // Catalog rows are laid out exactly like normal rows (art,
+  // title, artist, dots) and only greyed slightly - no track-number
   // column, no "Not downloaded" label pushing the layout out of line.
   // Order in an album still comes from the row's position in the list.
   function catTrackRow(song, opts) {
@@ -1562,7 +1562,7 @@ const App = (() => {
       + `<div class="sheet-item" data-act="cat-upload" data-id="${esc(song.id)}"><span><b>Upload audio</b></span></div>`
       + `<div class="sheet-item" data-act="cat-queue" data-id="${esc(song.id)}"><span><b>Queue DATUM rip</b></span></div></div>`);
   }
-  /* ---------- v10.14 manual catalog creates, ported from UTAG.
+  /* ---------- Manual catalog creates, ported from UTAG.
      Server actions are admin-gated and duplicate-safe; these sheets
      are the UI that was missing from the merge. Forms are Splotify
      sheets, not UTAG modals, but the fields and validation match
@@ -1725,7 +1725,7 @@ const App = (() => {
     try {
       const res = await UTAG.queueDatumRip(song);
       closeSheet();
-      toast(res && res.duplicate ? 'Already queued' : 'Rip queued — will appear in Activity');
+      toast(res && res.duplicate ? 'Already queued' : 'Rip queued, it will appear in Activity');
     } catch (e) { toast('Could not queue rip: ' + (e && e.message ? e.message : 'unknown error')); }
   }
   async function uploadCatSong(song) {
@@ -1753,7 +1753,7 @@ const App = (() => {
     };
     inp.click();
   }
-  /* v10.20: save a streamed song to the phone. The bytes come from the
+  /* Save a streamed song to the phone. The bytes come from the
      same fetch the player uses; Importer saves them like any other
      import, then the catalog id is stamped on the local track (same
      pattern as the Get-audio upload) so the song links exactly and
@@ -1799,10 +1799,10 @@ const App = (() => {
       return true;
     } finally { S._downloading.delete(dlKey); }
   }
-  /* v10.20: liking a streamed song saves it to the library, and the
+  /* Liking a streamed song saves it to the library, and the
      library holds songs on the phone: download it first, then like
      the local copy. A streamed song that is already on the phone is
-     liked in place — never re-downloaded, and never unliked by a tap
+     liked in place - never re-downloaded, and never unliked by a tap
      on a heart that shows the wrong state. */
   async function likeRemoteTrack(ref) {
     if (String(ref).indexOf('cat:') !== 0) { toast('Could not save this song. Try again.'); return false; }
@@ -1821,7 +1821,7 @@ const App = (() => {
     return true;
   }
 
-  /* ---- v10.4 Settings > Activity + account management ----
+  /* ---- Settings > Activity + account management ----
      Activity lives in Settings, never as a main tab. Standard users see
      only their own proposals, jobs, and events (the server scopes all
      three); admins additionally see the full Review queue and the full
@@ -1844,7 +1844,7 @@ const App = (() => {
   }
   function actJobRow(j) {
     const failed = j.status === 'failed';
-    return `<div class="setrow" style="align-items:flex-start"><div style="min-width:0"><div>${esc(j.artist || '')} — ${esc(j.title || '')}</div>`
+    return `<div class="setrow" style="align-items:flex-start"><div style="min-width:0"><div>${esc(j.artist || '')} - ${esc(j.title || '')}</div>`
       + `<div class="sub">${esc(j.status || '')}${j.album ? ' · ' + esc(j.album) : ''}${failed && j.error ? ' · ' + esc(String(j.error).slice(0, 120)) : ''}</div>`
       + `<div class="sub">${actDate(j.created_at)}</div></div>`
       + (failed ? `<button class="mini-btn" data-act="act-retry" data-id="${esc(j.id)}" style="flex-shrink:0">Retry</button>` : '') + `</div>`;
@@ -1935,7 +1935,7 @@ const App = (() => {
     S.usersLoading = false;
     render();
   }
-  /* Settings account sheet: separate from the Phase 2 search sheet, which
+  /* Settings account sheet: separate from the search sheet, which
      stays untouched. After sign-in, the current Account/Activity view reloads. */
   function openSettingsAccountSheet() {
     openSheet(`<div style="padding:10px 20px 24px"><h3 style="margin:8px 0 14px;font-size:17px">Sign in</h3>`
@@ -1952,7 +1952,7 @@ const App = (() => {
     else if (curIs('accounts')) await loadAccounts();
     else render();
   }
-  /* Phase 6: one-time local -> account migration. Local ids are mapped
+  /* One-time local -> account migration. Local ids are mapped
      to catalog UUIDs via the utagTrackId stamp; anything without a
      catalog link is counted as unmapped, never invented, and local
      data is never deleted whatever the outcome. Old local playCounts
@@ -1990,7 +1990,7 @@ const App = (() => {
       try { await DB.kvSet('accountMigrationDone', { at: Date.now(), counts: res, unmapped: plUnmapped + liked.unmapped + library.unmapped }); } catch (e) {}
       toast(`Migrated ${migrated} · skipped ${skipped} (already there or not in catalog)${res.failed ? ' · failed ' + res.failed : ''}`);
     } catch (e) {
-      toast('Migration failed: ' + (e && e.message ? e.message : 'unknown error') + ' — local data untouched');
+      toast('Migration failed: ' + (e && e.message ? e.message : 'unknown error') + '. Local data untouched');
     }
   }
   /* Offer the migration once, the first time an admin signs in and has
@@ -2014,9 +2014,9 @@ const App = (() => {
     } catch (e) {}
   }
 
-  /* v10.3 Settings upload review: one sheet per newly imported song.
+  /* Settings upload review: one sheet per newly imported song.
      The file is already in the SDB and stays there whatever happens
-     next — a failed submit never touches local audio. Dismissing the
+     next - a failed submit never touches local audio. Dismissing the
      sheet drops the rest of the queue. */
   const UPLOAD_FIELD_LABEL = { title: 'Title', artist: 'Artist', album: 'Album', year: 'Year', genre: 'Genre', art: 'Artwork', lyrics: 'Lyrics' };
   async function reviewSdbUploads(tracks) {
@@ -2081,7 +2081,7 @@ const App = (() => {
     await showNextUploadReview();
   }
 
-  /* v7.0 library: Spotify-style. Header (avatar/title/search/+), filter
+  /* Library: Spotify-style. Header (avatar/title/search/+), filter
      chips, sort + grid toggle, pinned Liked Songs, then the library's
      playlists, followed artists, and albums. The SDB never appears here. */
   function libItems() {
@@ -2098,7 +2098,7 @@ const App = (() => {
         items.push({ kind: 'playlist', id: p.id, name: p.name, sub: 'Playlist \u2022 ' + n + ' song' + (n === 1 ? '' : 's'), ts: p.created || 0, act: 'data-act="open-playlist" data-id="' + p.id + '"', pl: p });
       }
     }
-    // v10.7 Library rule: Artists here = followed artists ONLY, Albums
+    // Library rule: Artists here = followed artists ONLY, Albums
     // here = albums with at least one track saved to the library ONLY.
     // The full downloaded collection is NOT listed here, and the catalog
     // is never listed here. (Search is where everything is browsed.)
@@ -2155,7 +2155,7 @@ const App = (() => {
       + '<button class="iconbtn" data-act="lib-view" aria-label="Toggle view">' + icon(S.libGrid ? 'listV' : 'grid', 'width:22px;height:22px') + '</button></div>'
       + body;
   }
-  /* Create sheet (v7.0): shared by the library + button and the Create tab. */
+  /* Create sheet: shared by the library + button and the Create tab. */
   function openCreateSheet() {
     openSheet('<div style="padding:10px 4px 24px"><h3 style="margin:4px 20px 12px;font-size:17px">Create</h3>'
       + '<div class="sheet-item" data-act="create-playlist"><img src="icons/create-tile.svg" style="width:46px;height:46px;border-radius:10px;flex:none" alt=""><span><b>Playlist</b><div class="sub">Create a new playlist</div></span></div></div>');
@@ -2199,7 +2199,7 @@ const App = (() => {
     const a = albumByKey(key);
     if (!a) return vLibrary();
     S.viewCtx = { kicker: 'PLAYING FROM ALBUM', name: a.name, kind: 'album', id: a.key };
-    // v10.7: local rows render immediately; the full UTAG tracklist is
+    // Local rows render immediately; the full UTAG tracklist is
     // patched into #album-tracks by kickAlbumCatalog (play-all only ever
     // picks data-act="play-track" rows, so catalog rows can't enter a queue).
     S._heroTint = a.art;
@@ -2515,7 +2515,7 @@ const App = (() => {
   }
   /* SDB tab (Settings > SDB). Upload Audio runs files and ZIPs through
      the normal SDB pipeline, then shows each newly imported song's
-     fixer review sheet, one at a time (v10.3). Import from UTAG is a single button that imports
+     fixer review sheet, one at a time. Import from UTAG is a single button that imports
      every DATUM-linked track_audio row, downloading each with a signed
      URL from utag-control. Server and Drive rows are placeholders
      only: no auth, no file access, no importing code behind them. */
@@ -2580,7 +2580,7 @@ const App = (() => {
       (sub ? '<div class="sub" style="margin-top:6px">' + sub + '</div>' : '') + '</div>';
     return `<div class="pagehead"><button class="iconbtn" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><h1>Tag source keys</h1><span style="width:44px"></span></div>
     <div style="padding:4px 20px 48px">
-      <p class="sub" style="margin:6px 0 4px">Tag fixing runs on this iPhone — audio never leaves it. These keys unlock its sources. Stored only on this device, never uploaded.</p>
+      <p class="sub" style="margin:6px 0 4px">Tag fixing runs on this iPhone, and audio never leaves it. These keys unlock its sources. Stored only on this device, never uploaded.</p>
       ${inp('set-acoustid', 'AcoustID API key', 'Identifies songs by their sound when tags and file names are both useless.')}
       ${inp('set-fanart', 'fanart.tv API key', 'Extra artwork source for tag fixing.')}
     </div>`;
@@ -2619,7 +2619,7 @@ const App = (() => {
   }
   let exporting = false, exportCancel = false, exportUserPaused = false;
   /* Build one ZIP blob from a list of tracks: stored entries, one track at a
-     time, chunked CRC — memory stays flat no matter the part size. */
+     time, chunked CRC - memory stays flat no matter the part size. */
   async function buildZipBlob(list, ui) {
     const parts = []; const central = []; let offset = 0; const used = new Set();
     const enc = new TextEncoder();
@@ -2713,7 +2713,7 @@ const App = (() => {
     });
   }
   /* Drive backup auto-resume: if the app was killed (not paused by the user)
-     with an unfinished Drive backup, pick it up on its own — the closest an
+     with an unfinished Drive backup, pick it up on its own - the closest an
      iPhone web app can get to "running in the background". */
   function driveBackupUnfinished() {
     try {
@@ -2736,7 +2736,7 @@ const App = (() => {
     const BRIDGE_BIN = 'splotify-bridge-01f7ca01ad84edb7438d7084';
     /* Session id, persisted with the progress: part filenames embed it, so a
        resumed backup must reuse the SAME session or the already-uploaded
-       parts look missing and the run restarts at 0 (v5.8 bug). */
+       parts look missing and the run restarts at 0 (old bug). */
     let sess = Date.now().toString(36);
     if (exporting) return;
     const tracks = S.tracks.filter(t => t.file);
@@ -2774,7 +2774,7 @@ const App = (() => {
           bin = saved.bin; done = saved.done.slice();
           if (saved.sess) sess = saved.sess;
         } else {
-          // Cancelled: back out and keep the saved progress for next time —
+          // Cancelled: back out and keep the saved progress for next time -
           // never start fresh over it.
           exporting = false;
           return;
@@ -2791,7 +2791,7 @@ const App = (() => {
     /* Session unification (drive): the bridge may hold parts from a richer
        interrupted session of this same backup (same part count) under a
        different session tag. Adopt the richest one and continue under its tag
-       instead of re-uploading — the batch split is deterministic, so same
+       instead of re-uploading - the batch split is deterministic, so same
        part numbers mean same contents. The per-part HEAD check below
        re-validates every adopted part. */
     if (toDrive) {
@@ -2900,8 +2900,8 @@ const App = (() => {
         const blob = await buildZipBlob(batches[b], ui);
         const name = toDrive ? 'splotify-backup-' + sess + '-part' + (b + 1) + '-of-' + batches.length + '.zip' : 'splotify-backup-part' + (b + 1) + '-of-' + batches.length + '.zip';
         await uploadPart(blob, bin, name, frac => {
-          if (toDrive) { dbPaint(b, 0.5 + frac * 0.5, bytesBefore + batchSizes[b], 'Uploading part ' + (b + 1) + ' of ' + batches.length + ' — ' + Math.round(frac * 100) + '%'); return; }
-          devPaint(b, 0.5 + frac * 0.5, bytesBefore + batchSizes[b], 'Uploading part ' + (b + 1) + ' of ' + batches.length + ' — ' + Math.round(frac * 100) + '%');
+          if (toDrive) { dbPaint(b, 0.5 + frac * 0.5, bytesBefore + batchSizes[b], 'Uploading part ' + (b + 1) + ' of ' + batches.length + ': ' + Math.round(frac * 100) + '%'); return; }
+          devPaint(b, 0.5 + frac * 0.5, bytesBefore + batchSizes[b], 'Uploading part ' + (b + 1) + ' of ' + batches.length + ': ' + Math.round(frac * 100) + '%');
           if (exportCancel) throw new Error('cancelled');
         });
         if (exportCancel) throw new Error('cancelled');
@@ -2910,11 +2910,11 @@ const App = (() => {
     } catch (e) {
       save();
       const cancelled = e && e.message === 'cancelled';
-      if (toDrive) Object.assign(dbUI, { phase: cancelled ? 'paused' : 'failed', note: cancelled ? '' : 'Upload failed — check Wi-Fi and try again.' });
-      else Object.assign(devUI, { phase: cancelled ? 'paused' : 'failed', note: cancelled ? '' : 'Upload failed — check Wi-Fi and try again.' });
+      if (toDrive) Object.assign(dbUI, { phase: cancelled ? 'paused' : 'failed', note: cancelled ? '' : 'Upload failed. Check Wi-Fi and try again.' });
+      else Object.assign(devUI, { phase: cancelled ? 'paused' : 'failed', note: cancelled ? '' : 'Upload failed. Check Wi-Fi and try again.' });
       finish(cancelled
-        ? (toDrive ? 'Backup paused' : 'Export paused — your progress is saved')
-        : 'Upload failed — reopen Export to resume when Wi-Fi is back');
+        ? (toDrive ? 'Backup paused' : 'Export paused, your progress is saved')
+        : 'Upload failed. Reopen Export to resume when Wi-Fi is back');
       return;
     }
     try { localStorage.removeItem(SKEY); } catch (e) { /* ignore */ }
@@ -2928,8 +2928,8 @@ const App = (() => {
     Object.assign(devUI, { phase: 'done', part: batches.length, frac: 1, upBytes: totalBytes, link: url, note: '' });
     finish();
   }
-  /* Drive Backup screen (v5.6): a dedicated view showing what the backup is
-     doing — phase, part progress, GB moved, elapsed time — instead of the
+  /* Drive Backup screen: a dedicated view showing what the backup is
+     doing - phase, part progress, GB moved, elapsed time - instead of the
      toast card. The export loop below paints it live via paintDB hooks. */
   const dbUI = { phase: 'idle', part: 0, parts: 0, frac: 0, upBytes: 0, totalBytes: 0, t0: 0, note: '' };
   let dbTimer = null;
@@ -2947,8 +2947,8 @@ const App = (() => {
     if (!el) return;
     const playing = (typeof Player !== 'undefined') && Player.isPlaying;
     el.innerHTML = playing
-      ? '<span style="color:var(--pink)">&#9679;</span> Background-safe: music is playing — you can leave Splotify and the backup keeps going.'
-      : 'Keep Splotify open — iOS pauses uploads in the background. Tip: play any song and you can leave the app.';
+      ? '<span style="color:var(--pink)">&#9679;</span> Background-safe: music is playing, so you can leave Splotify and the backup keeps going.'
+      : 'Keep Splotify open, since iOS pauses uploads in the background. Tip: play any song and you can leave the app.';
   }
   function vDriveBackup() {
     const u = dbUI;
@@ -2968,7 +2968,7 @@ const App = (() => {
       statusText = u.note || 'Sending…';
       actionBtn = '<button class="bigbtn" data-act="db-pause" style="margin-top:26px">Pause</button>';
     } else if (u.phase === 'paused') {
-      statusText = 'Paused — your progress is saved.';
+      statusText = 'Paused. Your progress is saved.';
       actionBtn = '<button class="bigbtn pink" data-act="db-start" style="margin-top:26px">Resume backup</button>';
     } else if (u.phase === 'moving') {
       statusText = 'Everything is sent.';
@@ -2978,7 +2978,7 @@ const App = (() => {
       actionBtn = '<button class="bigbtn pink" data-act="db-start" style="margin-top:26px">Try again</button>';
     } else if (savedParts) {
       statusText = 'You have an unfinished backup.';
-      actionBtn = '<button class="bigbtn pink" data-act="db-start" style="margin-top:26px">Resume backup — ' + savedParts.n + ' of ' + savedParts.of + ' parts sent</button>';
+      actionBtn = '<button class="bigbtn pink" data-act="db-start" style="margin-top:26px">Resume backup: ' + savedParts.n + ' of ' + savedParts.of + ' parts sent</button>';
     } else {
       statusText = 'Send your whole library to Google Drive, organized by album.';
       actionBtn = '<button class="bigbtn pink" data-act="db-start" style="margin-top:26px">Start backup</button>';
@@ -3004,7 +3004,7 @@ const App = (() => {
       </div>
       <div style="margin-top:18px">
         ${stepRow(s1, '1 · Sending from your phone', 'Songs upload in parts with resume.')}
-        ${stepRow(s2, '2 · Moving to your Drive', u.phase === 'moving' ? 'Running on my side now — I\u2019ll message you when your songs are in Drive.' : 'Starts automatically when the upload finishes.')}
+        ${stepRow(s2, '2 · Moving to your Drive', u.phase === 'moving' ? 'Running on my side now, I\u2019ll message you when your songs are in Drive.' : 'Starts automatically when the upload finishes.')}
       </div>
       <div style="margin-top:14px;border-top:1px solid rgba(255,255,255,.1);padding-top:6px">
         <div style="display:flex;justify-content:space-between;padding:8px 0;font-size:14px"><span style="color:var(--sub)">Part</span><span id="db-part" style="font-weight:700">${u.parts ? u.part + ' of ' + u.parts : '—'}</span></div>
@@ -3015,7 +3015,7 @@ const App = (() => {
       <div style="text-align:center">${actionBtn}</div>
     </div>`;
   }
-  /* Export-to-device screen (v5.8): the same full progress screen as Drive
+  /* Export-to-device screen: the same full progress screen as Drive
      Backup, for the ZIP-parts-to-private-link export. */
   const devUI = { phase: 'idle', part: 0, parts: 0, frac: 0, upBytes: 0, totalBytes: 0, t0: 0, note: '', link: '' };
   let devTimer = null;
@@ -3043,12 +3043,12 @@ const App = (() => {
       statusText = u.note || 'Working…';
       actionBtn = '<button class="bigbtn" data-act="dev-pause" style="margin-top:26px">Pause</button>';
     } else if (u.phase === 'paused') {
-      statusText = 'Paused — your progress is saved.';
+      statusText = 'Paused. Your progress is saved.';
       actionBtn = '<button class="bigbtn pink" data-act="dev-start" style="margin-top:26px">Resume export</button>';
     } else if (u.phase === 'done') {
       statusText = 'Your songs are packed and uploaded.';
       actionBtn = '<button class="bigbtn" data-act="dev-done" style="margin-top:26px">Done</button>';
-      extra = '<div style="margin-top:20px"><div style="color:var(--sub);font-size:13px;margin-bottom:8px">Download link (works for 6 days) — copy it and send it to me:</div>' +
+      extra = '<div style="margin-top:20px"><div style="color:var(--sub);font-size:13px;margin-bottom:8px">Download link (works for 6 days). Copy it and send it to me:</div>' +
         '<div style="display:flex;gap:8px;align-items:center"><input id="dev-link" readonly value="' + esc(u.link) + '" ' +
         'style="flex:1;min-width:0;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;color:var(--txt);font-size:13px" />' +
         '<button class="bigbtn" data-act="dev-copy" style="margin:0;padding:12px 18px;flex-shrink:0">Copy</button></div></div>';
@@ -3057,7 +3057,7 @@ const App = (() => {
       actionBtn = '<button class="bigbtn pink" data-act="dev-start" style="margin-top:26px">Try again</button>';
     } else if (savedParts) {
       statusText = 'You have an unfinished export.';
-      actionBtn = '<button class="bigbtn pink" data-act="dev-start" style="margin-top:26px">Resume export — ' + savedParts.n + ' of ' + savedParts.of + ' parts uploaded</button>';
+      actionBtn = '<button class="bigbtn pink" data-act="dev-start" style="margin-top:26px">Resume export: ' + savedParts.n + ' of ' + savedParts.of + ' parts uploaded</button>';
     } else {
       statusText = 'Pack your whole library into a private download link.';
       actionBtn = '<button class="bigbtn pink" data-act="dev-start" style="margin-top:26px">Start export</button>';
@@ -3091,12 +3091,12 @@ const App = (() => {
         <div style="display:flex;justify-content:space-between;padding:8px 0;font-size:14px"><span style="color:var(--sub)">Elapsed</span><span id="dev-time" style="font-weight:700">${devElapsed()}</span></div>
       </div>
       ${extra}
-      <div style="color:var(--sub);font-size:13px;margin-top:14px">Keep Splotify open — iOS pauses uploads in the background. Tip: play any song and you can leave the app.</div>
+      <div style="color:var(--sub);font-size:13px;margin-top:14px">Keep Splotify open, since iOS pauses uploads in the background. Tip: play any song and you can leave the app.</div>
       <div style="text-align:center">${actionBtn}</div>
     </div>`;
   }
-  /* Export hub (v5.8): one "Export music" entry opens this chooser with the
-     two destinations — device link and Google Drive. */
+  /* Export hub: one "Export music" entry opens this chooser with the
+     two destinations - device link and Google Drive. */
   function vExportHub() {
     const card = (act, title, sub, ic) =>
       '<div class="setrow" data-act="' + act + '" style="padding:18px 16px"><div style="font-size:16px;font-weight:700">' + title +
@@ -3124,7 +3124,7 @@ const App = (() => {
       row.dataset.act = act;
     };
     if (window.SplotifyNative) {
-      paint(false, 'Native app build — updates come with a new install', APP_VERSION + ' native', 'check-update');
+      paint(false, 'Native app build, updates come with a new install', APP_VERSION + ' native', 'check-update');
       return;
     }
     if (!('serviceWorker' in navigator)) {
@@ -3139,16 +3139,16 @@ const App = (() => {
       const m = txt.match(/splotify-(v\d+\.\d+)/);
       const latest = m ? m[1] : null;
       if (latest && latest !== APP_VERSION) {
-        paint(true, 'Version ' + latest + ' is ready — tap to update', 'Update', 'apply-update');
+        paint(true, 'Version ' + latest + ' is ready, tap to update', 'Update', 'apply-update');
       } else {
         paint(false, 'You are on the latest version (' + APP_VERSION + ')', APP_VERSION, 'check-update');
       }
     } catch (e) {
-      paint(false, 'Could not check for updates — tap to retry', APP_VERSION, 'check-update');
+      paint(false, 'Could not check for updates, tap to retry', APP_VERSION, 'check-update');
     }
     checkingUpdate = false;
   }
-  // v10.7 fixed genre list: every genre gets a tile, whether or not
+  // Fixed genre list: every genre gets a tile, whether or not
   // anything is downloaded under it yet. UTAG carries no genre field
   // (verified live), so genre pages are downloaded songs only. 'Unknown'
   // is not a genre and gets no tile; untagged songs stay findable via
@@ -3162,7 +3162,7 @@ const App = (() => {
         : `<div class="empty"><h3>No ${esc(g)} songs yet</h3><p>Search the catalog or import audio.</p><button class="bigbtn pink" data-act="tab" data-tab="search">Search songs</button></div>`);
   }
 
-  /* Spotify transfer (v7.0): pull playlists, Liked Songs, and followed
+  /* Spotify transfer: pull playlists, Liked Songs, and followed
      artists from Spotify, matched against the SDB. No audio ever moves. */
   function vSpotifyImport() {
     S.viewCtx = null;
@@ -3245,7 +3245,7 @@ const App = (() => {
       data.source = 'export';
       if (!data.playlists.length && !data.liked.length && !data.artists.length) {
         if (data.historyOnly) {
-          toast('That ZIP is only your listening history — download your full account data from Spotify\u2019s privacy page to import playlists');
+          toast('That ZIP is only your listening history. Download your full account data from Spotify\u2019s privacy page to import playlists');
           return;
         }
         toast('No playlists, liked songs, or artists found' + (data.found.length ? ' (saw: ' + data.found.join('; ') + ')' : ''));
@@ -3256,10 +3256,10 @@ const App = (() => {
       toast('Could not read that ZIP: ' + (e && e.message ? e.message : e));
     }
   }
-  /* v7.0 utag review: uncertain corrections, before/after, approve or skip. */
+  /* Utag review: uncertain corrections, before/after, approve or skip. */
   function vTagReview() {
     S.viewCtx = null;
-    // v7.8 review triage: highest confidence first.
+    // Review triage: highest confidence first.
     const items = [...(S.tagReview || [])].sort((a, b) => ((b.proposal || {}).confidence || 0) - ((a.proposal || {}).confidence || 0));
     return `<div class="pagehead"><button class="iconbtn" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><h1>Review corrections</h1><span style="width:44px"></span></div>
     <div style="padding:8px 16px 48px">
@@ -3293,7 +3293,7 @@ const App = (() => {
     curated: id => vCurated(id), genre: id => vGenre(id),
     notifs: () => vStub('Notifications', 'bell', "You're all caught up."),
     history: () => vStub('Listening history', 'history', 'Your recent plays live in Your Library.'),
-    stations: () => vStub('Stations', 'radio', 'Stations need streaming — your library is local-only.'),
+    stations: () => vStub('Stations', 'radio', 'Stations need streaming, and your library is local-only.'),
     podcasts: () => vStub('Podcasts', 'radio', 'No podcasts here yet.'),
     videos: () => vStub('Videos', 'playRect', 'No videos here yet.'),
     plimport: () => vPlImport(),
@@ -3314,7 +3314,7 @@ const App = (() => {
   };
   function render() {
     const cur = S.stack[S.stack.length - 1] || { v: 'home' };
-    // v10.14: resolve the admin flag once for views that show Create
+    // Resolve the admin flag once for views that show Create
     // buttons, so a signed-in admin sees them without opening Account.
     if (['artist', 'album', 'catalogAlbum', 'catalogArtist', 'settings'].includes(cur.v) && S.isAdmin === null) {
       try { if (UTAG.getSession()) ensureAdmin(); } catch (e) {}
@@ -3324,7 +3324,7 @@ const App = (() => {
     const st = view().scrollTop;
     const sameView = S._lastViewKey === cur.v + '|' + (cur.id || '');
     const qHadFocus = document.activeElement && document.activeElement.id === 'q';
-    // v10.26: clear any swipe-back exit transform before swapping content.
+    // Clear any swipe-back exit transform before swapping content.
     view().style.transition = 'none';
     view().style.transform = '';
     view().style.opacity = '';
@@ -3341,7 +3341,7 @@ const App = (() => {
     if (cur.v === 'sdb') paintSDB();
     if (cur.v === 'tagFixer') {
       paintTagFixResults();
-      // v8.4: skip buttons need the skip set; render immediately, then again
+      // Skip buttons need the skip set; render immediately, then again
       // once it's loaded (bounded wait so a slow DB can't blank the list).
       buildFixList(); paintFixUI();
       Promise.race([ensureSkipIds(), new Promise(r => setTimeout(r, 4000))])
@@ -3362,7 +3362,7 @@ const App = (() => {
           const el = document.getElementById('set-account');
           if (el) el.textContent = (d.signedIn && d.profile && d.profile.email) ? d.profile.email : 'Not signed in';
         }).catch(() => { const el = document.getElementById('set-account'); if (el) el.textContent = 'Not signed in'; });
-        // v10.47: Customize — custom color picker.
+        // Customize - custom color picker.
         const ci = document.getElementById('theme-custom-input');
         if (ci) ci.addEventListener('change', () => { const th = readTheme(); saveTheme({ ...th, color: ci.value }); render(); });
       } catch (e) {}
@@ -3395,10 +3395,10 @@ const App = (() => {
         if (S._searchPaint) clearTimeout(S._searchPaint);
         S._searchPaint = setTimeout(() => { S._searchPaint = null; paintSearchLive(); kickCatalog(); }, 90);
       });
-      // v10.13: Enter / the keyboard search key RUNS the search, like
+      // Enter / the keyboard search key RUNS the search, like
       // tapping a suggestion's text, then dismisses the keyboard.
       q.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); executeSearch(q.value); const nq = document.getElementById('q'); if (nq) nq.blur(); } });
-      // v10.2: debounced catalog search for the current query (local
+      // Debounced catalog search for the current query (local
       // results render immediately; catalog sections patch in place).
       kickCatalog();
       if (qHadFocus) { q.focus(); q.setSelectionRange(q.value.length, q.value.length); }
@@ -3436,7 +3436,7 @@ const App = (() => {
     if (!el) return;
     try { const e = await DB.usage(); el.textContent = e.usage ? (e.usage / 1048576).toFixed(0) + ' MB stored on this iPhone' : 'Stored on this iPhone'; } catch (e) {}
   }
-  // v10.30: position the Liquid Glass orb behind the active tab.
+  // Position the Liquid Glass orb behind the active tab.
   function paintTabOrb() {
     const bar = document.getElementById('tabbar');
     const orb = document.getElementById('tab-orb');
@@ -3735,7 +3735,7 @@ const App = (() => {
     box.querySelectorAll('.lyr-prev-line').forEach((el, li) => { el.style.opacity = li === 0 ? '1' : li === 1 ? '.85' : li === 2 ? '.7' : '.55'; });
     // Preview lines do not seek: tapping the card opens the full view,
     // where tapping a line seeks. Seeking from the preview would both
-    // seek and open, which is not what the screenshot does.
+    // seek and open, which is not what Spotify does.
   }
   function renderLyricsFull() {
     const box = document.getElementById('lyrics-full-lines');
@@ -3952,8 +3952,8 @@ const App = (() => {
     setTimeout(() => URL.revokeObjectURL(a.href), 20000);
   }
 
-  /* utag fixer screen (v5.8): a dedicated view showing the auto fixer working
-     live — per-song before/after, run stats — plus manual tag editing. */
+  /* utag fixer screen: a dedicated view showing the auto fixer working
+     live - per-song before/after, run stats - plus manual tag editing. */
   const fixUI = { running: false, album: '', albumIdx: 0, albumCount: 0, scanned: 0, matched: 0, fixed: 0, notFound: 0, sent: 0, log: [] };
   const TAG_FIELDS = ['title', 'artist', 'album', 'albumArtist', 'genre'];
   const TAG_LABEL = { title: 'Title', artist: 'Artist', album: 'Album', albumArtist: 'Album artist', genre: 'Genre' };
@@ -3987,7 +3987,7 @@ const App = (() => {
     try { UTAG.stats().then(s => set('fix-memory', (s.cached ? s.cached + ' record' + (s.cached === 1 ? '' : 's') + ' cached from UTAG' : '') + (s.waiting ? (s.cached ? ' · ' : '') + s.waiting + ' waiting to send to UTAG' : ''))); } catch (e) {}
     try {
       const skipped = (S.tracks || []).filter(t => !trackNeedsFix(t)).length;
-      set('fix-skipped', skipped ? skipped + ' song' + (skipped === 1 ? '' : 's') + ' already have metadata — skipped' : '');
+      set('fix-skipped', skipped ? skipped + ' song' + (skipped === 1 ? '' : 's') + ' already have metadata, skipped' : '');
     } catch (e) {}
     set('fix-scope', fixUI.scopeTitle ? 'Fixing songs by ' + fixUI.scopeTitle : '');
     set('fix-status', fixUI.running
@@ -3999,7 +3999,7 @@ const App = (() => {
         '<div class="setrow" data-act="tag-edit" data-id="' + e.id + '"><div>' + esc(e.title) +
         '<div class="sub">' + esc(e.artist) + ' · ' + esc(e.changes) + '</div></div>' +
         '<span style="color:var(--sub)">' + icon('chevR', 'width:20px;height:20px') + '</span></div>'
-      ).join('') || '<div style="color:var(--sub);font-size:13px">Nothing fixed yet — run Fix tags and watch it work.</div>';
+      ).join('') || '<div style="color:var(--sub);font-size:13px">Nothing fixed yet. Run Fix tags and watch it work.</div>';
     }
     const btn = document.getElementById('fix-run-btn');
     if (btn) {
@@ -4084,7 +4084,7 @@ const App = (() => {
       '<input id="tagedit-' + fid + '" value="' + esc(val || '') + '" autocomplete="off" autocapitalize="off" spellcheck="false" ' +
       'style="width:100%;box-sizing:border-box;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;color:var(--txt);font-size:15px" /></label>';
     openSheet('<div style="padding:6px 4px 20px"><h3 style="margin:4px 0 2px;font-size:17px">' + esc(t.title) + '</h3>' +
-      '<div style="color:var(--sub);font-size:13px;margin-bottom:6px">' + esc(t.artist) + ' — edit tags</div>' +
+      '<div style="color:var(--sub);font-size:13px;margin-bottom:6px">' + esc(t.artist) + ' - edit tags</div>' +
       '<div style="display:flex;gap:14px;align-items:center;margin:10px 0 4px">' +
       '<div id="tagedit-artprev" style="width:96px;height:96px;border-radius:12px;overflow:hidden;background:var(--card);flex:none;display:flex;align-items:center;justify-content:center"></div>' +
       '<div style="flex:1"><button class="bigbtn" data-act="tag-art-upload" style="width:100%">Upload artwork</button>' +
@@ -4139,10 +4139,10 @@ const App = (() => {
       paintTagArtPreview(t);
     } catch (e) { toast('Could not read that image'); }
   }
-  // UTAG pass (v9.0): songs are checked against the UTAG database. The old
+  // UTAG pass: songs are checked against the UTAG database. The old
   // built-in catalog engine (Apple/Deezer/MusicBrainz/fingerprint) is gone;
   // UTAG is the one metadata brain and Splotify only calls it.
-  // v8.5: UTAG check at artist scope — runs the same pass on the artist's
+  // UTAG check at artist scope - runs the same pass on the artist's
   // songs (albums, singles, features), scoped into the UTAG screen.
   async function fixArtistByKey(name) {
     const a = artistByName(name);
@@ -4152,13 +4152,13 @@ const App = (() => {
     nav('tagFixer');
     await fixAllSongs({ tracks: a.tracks, title: a.name });
   }
-  // v8.5: opts.tracks + opts.title scope the run (artist pages). Default
+  // opts.tracks + opts.title scope the run (artist pages). Default
   // is the whole library, as before.
   async function fixAllSongs(opts) {
     opts = opts || {};
     if (S.fixing) return;
-    // v8.1 stale-run guard: a previous run that died without resetting must
-    // never wedge the button — restart it if nothing painted for 2 minutes.
+    // Stale-run guard: a previous run that died without resetting must
+    // never wedge the button - restart it if nothing painted for 2 minutes.
     if (fixUI.running) {
       if (Date.now() - (fixUI.lastProgressAt || 0) < 120000) return;
       try { console.warn('fixAllSongs: resetting stale run'); } catch (e) {}
@@ -4172,12 +4172,12 @@ const App = (() => {
     const markProgress = () => { fixUI.lastProgressAt = Date.now(); };
     buildFixList(list);
     paintFixUI();
-    // Run logging used to go to the utag fixer's Activity tab; since
-    // Phase 5 fixerLog is a no-op and these calls return at once.
+    // Run logging used to go to the utag fixer's Activity tab; now
+    // fixerLog is a no-op and these calls return at once.
     let fixJobId = null;
     try {
       const jr = await UTAG.fixerLog('start', {
-        title: 'Fix tags (Splotify)' + (scopeTitle ? ' — ' + scopeTitle : ''),
+        title: 'Fix tags (Splotify)' + (scopeTitle ? ': ' + scopeTitle : ''),
         file_name: list.length + ' songs',
       });
       fixJobId = jr && jr.job_id ? jr.job_id : null;
@@ -4194,7 +4194,7 @@ const App = (() => {
       fixUI.log.unshift({ id: t.id, title: t.title, artist: t.artist, changes: note });
       if (fixUI.log.length > 60) fixUI.log.pop();
     };
-    // UTAG pass (v9.0): every queued song is checked against the UTAG
+    // UTAG pass: every queued song is checked against the UTAG
     // database, three at a time. Verified records apply on their own;
     // records UTAG is still verifying queue for review; every song the
     // database has never seen is auto-fixed by the utag fixer engine and
@@ -4223,7 +4223,7 @@ const App = (() => {
       }
     };
     await Promise.all([worker(), worker(), worker()]);
-    // v7.8 review triage: highest confidence first, in the queue and on screen.
+    // Review triage: highest confidence first, in the queue and on screen.
     S.tagReview.sort((a, b) => ((b.proposal || {}).confidence || 0) - ((a.proposal || {}).confidence || 0));
     try {
       localStorage.setItem('splotify-tagfix-last', JSON.stringify({
@@ -4247,7 +4247,7 @@ const App = (() => {
       ? `Fix tags: fixed ${fixUI.fixed} fields on ${fixUI.matched} songs` + (nq ? `, ${nq} to review` : '') + (fixUI.sent ? `, ${fixUI.sent} submitted` : '')
       : 'Fix tags: tags already look good');
     } finally {
-      // v8.1: the run can never wedge the button on "Fixing…" again.
+      // The run can never wedge the button on "Fixing…" again.
       fixUI.running = false; fixUI.album = ''; fixUI.skipNow = null; fixUI.scopeTitle = '';
       try { paintFixUI(); } catch (e) {}
     }
@@ -4281,13 +4281,13 @@ const App = (() => {
   }
   // All-songs list for the fixer menu: every song with artwork, filterable,
   // each row painted live as the fixer works through it.
-  // v8.2: the auto fixer only queues songs with incomplete metadata —
+  // The auto fixer only queues songs with incomplete metadata -
   // complete tags are skipped (correct those by hand in "Edit by hand").
   function trackNeedsFix(t) {
     try { if (window.Importer && Importer.needsFix) return Importer.needsFix(t); } catch (e) {}
     return true;
   }
-  // v8.4 manual skip: songs the user never wants the auto fixer to touch.
+  // Manual skip: songs the user never wants the auto fixer to touch.
   // Persisted on the tagMemory record; S.skipIds mirrors it in memory.
   async function ensureSkipIds() {
     if (S.skipIds) return S.skipIds;
@@ -4356,16 +4356,16 @@ const App = (() => {
   function ctxOf() { return S.viewCtx || { kicker: 'PLAYING FROM SONGS', name: '', kind: 'songs', id: 'songs' }; }
   async function handleAct(el) {
     const act = el.dataset.act, id = el.dataset.id;
-    // v10.13: opening an entity from search records it as a recent
+    // Opening an entity from search records it as a recent
     // search before the navigation/play action runs (the catalog
     // pools it resolves from still belong to the current query).
     recordSearchRecentForAct(act, id);
     switch (act) {
       case 'tab': if (el.dataset.tab === 'create') { openCreateSheet(); break; } nav(el.dataset.tab); break;
-      /* v7.0 library chrome */
+      /* Library chrome */
       case 'search-clear': S.query = ''; S.searchAll = false; S.searchFilter = 'all'; render(); { const nq = document.getElementById('q'); if (nq) nq.focus(); } break;
       case 'search-cancel': S.query = ''; S.searchAll = false; S.searchFilter = 'all'; render(); break;
-      // v10.13: tapping suggestion text RUNS the search (filtered
+      // Tapping suggestion text RUNS the search (filtered
       // view, query recorded); the arrow only FILLS the bar.
       case 'search-suggest': executeSearch(id); break;
       case 'search-suggest-fill': S.query = id; S.searchAll = false; S.searchFilter = 'all'; render(); { const nq = document.getElementById('q'); if (nq) { nq.focus(); nq.setSelectionRange(nq.value.length, nq.value.length); } } break;
@@ -4380,7 +4380,7 @@ const App = (() => {
       }
       case 'search-view-all': S.searchAll = true; S.searchFilter = 'all'; render(); break;
       case 'search-filter': S.searchFilter = id; render(); break;
-      /* v10.14 manual catalog creates (UTAG create forms, ported). */
+      /* Manual catalog creates (UTAG create forms, ported). */
       case 'cat-close': closeSheet(); break;
       case 'cat-create-chooser': openCatCreateChooser(); break;
       case 'cat-create-artist': openCatArtistForm(); break;
@@ -4496,11 +4496,11 @@ const App = (() => {
       case 'db-pause': exportUserPaused = true; exportCancel = true; { const el = document.getElementById('db-note'); if (el) el.textContent = 'Finishing this part, then pausing…'; } break;
       case 'db-done': nav('settings'); break;
       case 'open-plimport': nav('plimport'); break;
-      /* v7.0 Spotify transfer */
+      /* Spotify transfer */
       case 'open-spotify-import': nav('spotifyImport'); break;
       case 'open-fixer-keys': nav('fixerKeys'); break;
       case 'open-sdb': nav('sdb'); break;
-      /* v10.4 Activity + accounts (Settings). */
+      /* Activity + accounts (Settings). */
       case 'open-activity': nav('activity'); await loadActivity(); break;
       case 'open-account': nav('account'); await loadAccount(); break;
       case 'open-accounts': nav('accounts'); await loadAccounts(); break;
@@ -4588,7 +4588,7 @@ const App = (() => {
         await loadActivity();
         break;
       }
-      /* v10.3 Settings upload: files and ZIPs go through the normal SDB
+      /* Settings upload: files and ZIPs go through the normal SDB
          pipeline, then each newly imported song gets a fixer review
          sheet, one at a time. Other import paths are untouched. */
       case 'sdb-upload': {
@@ -4765,7 +4765,7 @@ const App = (() => {
       case 'open-history': nav('history'); break;
       case 'open-settings': nav('settings'); setTimeout(checkForUpdate, 40); break;
       case 'open-genre': nav('genre', id); break;
-      /* v10.47: Settings > Customize — accent color + border mode. */
+      /* Settings > Customize - accent color + border mode. */
       case 'theme-accent': { const c = el.dataset.color; if (c) { const th = readTheme(); saveTheme({ ...th, color: c }); render(); } break; }
       case 'theme-border': { const m = el.dataset.mode; if (m) { const th = readTheme(); saveTheme({ ...th, border: m }); render(); } break; }
       case 'theme-reset': { try { localStorage.removeItem(THEME_KEY); } catch (e) {} applyTheme(); render(); toast('Back to pink and rainbow'); break; }
@@ -4916,7 +4916,7 @@ const App = (() => {
         break;
       }
       case 'sheet-fixtags': {
-        // utag fixer: retag just this track — database first, then the
+        // utag fixer: retag just this track - database first, then the
         // engine automatically on a miss. Logged as its own Activity job.
         const t = S.byId.get(Number(id));
         closeSheet();
@@ -4926,7 +4926,7 @@ const App = (() => {
         S.fixing = 'track-' + t.id; render();
         let res = null, oneJobId = null;
         try {
-          const jr = await UTAG.fixerLog('start', { title: 'Fix tags (Splotify) — 1 song', file_name: t.fileName || t.title || '' });
+          const jr = await UTAG.fixerLog('start', { title: 'Fix tags (Splotify): 1 song', file_name: t.fileName || t.title || '' });
           oneJobId = jr && jr.job_id ? jr.job_id : null;
         } catch (e) {}
         try { res = await UTAG.fixTrack(t, { jobId: oneJobId }); } catch (e) { console.warn('utag fixer failed', e); }
@@ -4949,7 +4949,7 @@ const App = (() => {
         } catch (e) { console.warn('fix-track render failed', e); }
         break;
       }
-      /* v10.2 catalog: artist songs view, get-audio sheet, account sheet. */
+      /* Catalog: artist songs view, get-audio sheet, account sheet. */
       case 'open-cat-artist': {
         const a = (S.catArtists || []).find(x => String(x.id) === String(id));
         S.catArtist = { id, name: a ? a.name : '', songs: [], loading: true, done: false };
@@ -5012,7 +5012,7 @@ const App = (() => {
       }
       case 'play-track': {
         const ctx = ctxOf();
-        // v7.0: the SDB is never a play context. Tapping a song while
+        // The SDB is never a play context. Tapping a song while
         // browsing the SDB plays just that song; library contexts
         // (playlist/album/artist/liked) keep full-list queues.
         const sdbBrowse = ['songs', 'search', 'genre'].includes(ctx.kind);
@@ -5055,7 +5055,7 @@ const App = (() => {
       }
       case 'sheet-delete': {
         const tid = Number(id); closeSheet();
-        // v7.0: in a playlist, delete removes the song from the playlist.
+        // In a playlist, delete removes the song from the playlist.
         // Elsewhere it permanently deletes the song file from the SDB.
         const ctx = S.viewCtx;
         if (ctx && ctx.kind === 'playlist') {
@@ -5092,7 +5092,7 @@ const App = (() => {
     }
   }
 
-  /* ADF — Anti-Duplicate Fixer (Settings > Music).
+  /* ADF - Anti-Duplicate Fixer (Settings > Music).
      Two passes over the SDB: first exact files (fileName + fileSize, the
      import dedup key), then normalized title + artist among the survivors.
      Keeps one per group (library copy first, then a playlist copy, then
@@ -5162,7 +5162,7 @@ const App = (() => {
   }
 
   /* ================= boot ================= */
-  /* v7.0 one-time migration: SDB/library split.
+  /* One-time migration: SDB/library split.
      - Every existing track becomes SDB-only (tracks stay untouched).
      - Library, liked songs, and playlists start EMPTY (clean state).
      - The artist roster table is seeded from the bundled placeholder list.
@@ -5207,7 +5207,7 @@ const App = (() => {
       try { localStorage.setItem('splotify-v7-migrated', '1'); } catch (e) {}
     } catch (e) { /* never break boot */ }
   }
-  /* One-time library dedupe (v6.9): the retired Drive import could double-add
+  /* One-time library dedupe: the retired Drive import could double-add
      songs already pulled from the ZIP. Exact match on file name + byte size
      (identical bytes from the same source files); keeps the earliest-added
      copy and remaps playlist/liked references onto it. */
@@ -5264,19 +5264,19 @@ const App = (() => {
     S.tracks = await DB.allTracks();
     S.byId = new Map(S.tracks.map(t => [t.id, t]));
     S._pls = await DB.allPlaylists();
-    // v7.0: roster table + library membership ride along with the SDB cache.
+    // Roster table + library membership ride along with the SDB cache.
     try { S.artists = new Map((await DB.allArtists()).map(a => [a.id, a])); } catch (e) { S.artists = new Map(); }
     try {
       const lib = await DB.kvGet('library', []);
       S.library = (Array.isArray(lib) ? lib : []).map(Number).filter(id => S.byId.has(id));
     } catch (e) { S.library = []; }
   }
-  // v7.0: keep the in-memory playlist list in sync after external writes.
+  // Keep the in-memory playlist list in sync after external writes.
   function notePlaylist(pl) {
     const i = S._pls.findIndex(x => x.id === pl.id);
     if (i >= 0) S._pls[i] = pl; else S._pls.push(pl);
   }
-  /* v10.11: UI bindings live here, NOT at the end of boot(). boot()
+  /* UI bindings live here, NOT at the end of boot(). boot()
      used to return early on the login gate (no session), so on a fresh
      device the document click listener was never bound and the Sign in
      button did literally nothing. bindUI runs on every boot, gated or
@@ -5286,7 +5286,7 @@ const App = (() => {
     Player.on('track', () => { paintMini(); paintNowPlaying(); render(); });
     Player.on('state', () => { paintMini(); paintNowPlaying(); paintDbBgMode(); });
     Player.on('track-error', () => { toast('Could not play this song. Try again.'); });
-    /* v10.20: the player resolves streamed tracks through this. A ref of
+    /* The player resolves streamed tracks through this. A ref of
        'cat:<catalog-uuid>' becomes a metadata shell at once plus a byte
        loader the player calls when it is time to play. */
     if (Player.setRemoteResolver) Player.setRemoteResolver(async (ref) => {
@@ -5317,7 +5317,7 @@ const App = (() => {
       };
       return { shell, loadBytes: () => UTAG.audioBlob(audioId) };
     });
-    /* Unfinished Drive backup? Pick it back up on its own — unless the user
+    /* Unfinished Drive backup? Pick it back up on its own - unless the user
        deliberately paused it. Also re-check when the app comes back to the
        foreground, covering background kills without a full relaunch. */
     document.addEventListener('visibilitychange', () => {
@@ -5347,7 +5347,7 @@ const App = (() => {
       if (e.target.closest('#mp-devices')) { toast('Playing on this iPhone'); return; }
       openNP();
     });
-    // v10.24: swipe the mini player left/right to skip, with a proper
+    // Swipe the mini player left/right to skip, with a proper
     // fling animation. The card follows the finger, flies off on a real
     // skip, and springs back when the swipe falls short. A swipe must not
     // also open the player, so the click right after one is swallowed.
@@ -5416,7 +5416,7 @@ const App = (() => {
     document.getElementById('np-shuffle').addEventListener('click', () => { tap(); Player.toggleShuffle(); });
     document.getElementById('np-repeat').addEventListener('click', () => { tap(); Player.toggleRepeat(); });
     document.getElementById('np-like').addEventListener('click', () => { tap(); const t = Player.current; if (t) Player.toggleLike(t.id); });
-    // v10.33: tapping the song's name/artist on Now Playing opens the
+    // Tapping the song's name/artist on Now Playing opens the
     // preview sheet. (The like button beside it keeps its own action.)
     document.getElementById('np-titlemeta').addEventListener('click', () => { const t = Player.current; if (t) openSongPreview(t.id); });
     document.getElementById('np-devices').addEventListener('click', () => toast('Playing on this iPhone'));
@@ -5555,7 +5555,7 @@ const App = (() => {
       np.addEventListener('touchcancel', endDrag, { passive: true });
     })();
 
-    // v10.26: site-wide swipe-right to go back. On any pushed view the
+    // Site-wide swipe-right to go back. On any pushed view the
     // page follows the finger right, flies off on a real swipe, and springs
     // back when short. Vertical scrolling, horizontal rails, text fields,
     // and the Now Playing / sheet overlays are all left alone (those sit
@@ -5619,7 +5619,7 @@ const App = (() => {
         const dt = Math.max(1, performance.now() - startT);
         if (bailed) { swiping = bailed = false; return; }
         if (!swiping) {
-          // v10.28: no tracked moves — a very fast flick, or the browser
+          // No tracked moves - a very fast flick, or the browser
           // cut the gesture short. Judge it on where the finger ended up
           // instead of dropping it.
           swiping = bailed = false;
@@ -5642,7 +5642,7 @@ const App = (() => {
       }, true);
     })();
 
-    // v10.30: drag across the tab bar like the Liquid Glass reference.
+    // Drag across the tab bar like the Liquid Glass reference.
     // The orb stretches from where it was toward the finger and snaps to
     // the nearest tab on release, switching to it. A tap still works as
     // before (the click handles it, and render() springs the orb over).
@@ -5709,7 +5709,7 @@ const App = (() => {
         if (Date.now() - swipedAt < 400) { e.stopPropagation(); e.preventDefault(); }
       }, true);
     })();
-    // v10.34: Apple tab-bar behaviors — the bar deepens while content
+    // Apple tab-bar behaviors - the bar deepens while content
     // scrolls beneath it (scroll-edge legibility) and recedes on
     // scroll-down, returning on scroll-up.
     let lastScrollY = 0;
@@ -5727,7 +5727,7 @@ const App = (() => {
 
     document.addEventListener('keydown', e => { if (e.key === 'Escape') { if (lyricsOpen) { closeLyrics(); return; } closeSheet(); closeNP(); } });
   }
-  /* v10.47: Settings > Customize — accent color + border mode.
+  /* Settings > Customize - accent color + border mode.
      Stored on this phone only (localStorage 'splotify-theme'). Applied
      at once, before first paint, so there is no flash of the default pink.
      Presets carry a curated deep shade; a custom color darkens toward black. */
@@ -5796,7 +5796,7 @@ const App = (() => {
     await migrateV7();
     await refreshTracks();
     try {
-      // v7.0: follow state lives in the roster table; rebuild the in-memory set.
+      // Follow state lives in the roster table; rebuild the in-memory set.
       S.followedArtists = new Set();
       S.artists.forEach(a => { if (a.followed) S.followedArtists.add(artistKey(a.name)); });
     } catch (e) {}
@@ -5820,7 +5820,7 @@ const App = (() => {
       }).catch(() => {});
     }, 1500);
     await Player.init();
-    // Phase 6: one-time migration offer for a newly signed-in admin.
+    // One-time migration offer for a newly signed-in admin.
     // Fire-and-forget: it never blocks boot or playback.
     maybeOfferMigration();
 
@@ -5831,7 +5831,7 @@ const App = (() => {
     paintMini();
     // Resume any unfinished Spotify playlist import.
     try { if (typeof PlImport !== 'undefined') PlImport.resume(); } catch (e) {}
-    // v7.0: complete the Spotify OAuth round-trip after redirect.
+    // Complete the Spotify OAuth round-trip after redirect.
     try {
       const cb = await SpImport.handleCallback();
       if (cb === 'ok') {

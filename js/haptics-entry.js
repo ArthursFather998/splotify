@@ -1,4 +1,4 @@
-/* Splotify haptics bridge (v10.23).
+/* Splotify haptics bridge.
  * Bundled with esbuild into js/vendor/haptics-bridge.js (committed).
  * Rebuild: npm run build:haptics
  * In the Capacitor iOS shell this drives the native Taptic Engine via

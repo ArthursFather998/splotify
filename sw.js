@@ -1,5 +1,5 @@
-/* Splotify service worker — offline app shell. Audio stays in IndexedDB, never in the cache. */
-const CACHE = 'splotify-v10.47-liquid-glass';
+/* Splotify service worker - offline app shell. Audio stays in IndexedDB, never in the cache. */
+const CACHE = 'splotify-v10.48-liquid-glass';
 const SHELL = [
   './', './index.html', './manifest.json',
   './css/app.css', './css/liquid-glass.css',
@@ -36,7 +36,7 @@ self.addEventListener('fetch', e => {
     caches.match(e.request, { ignoreSearch: true }).then(hit => {
       if (hit) return hit;
       return fetch(e.request).then(res => {
-        // cache new same-origin gets opportunistically (never audio blobs — those live in IndexedDB)
+        // cache new same-origin gets opportunistically (never audio blobs - those live in IndexedDB)
         if (res.ok && !url.pathname.endsWith('.mp3') && !url.pathname.endsWith('.m4a') && !url.pathname.endsWith('.wav')) {
           const copy = res.clone();
           caches.open(CACHE).then(c => c.put(e.request, copy)).catch(() => {});

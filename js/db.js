@@ -1,4 +1,4 @@
-/* Splotify local database — IndexedDB. The SDB (tracks) + library live on-device only. */
+/* Splotify local database - IndexedDB. The SDB (tracks) + library live on-device only. */
 const DB = (() => {
   const NAME = 'splotify', VER = 4;
   let db = null;
@@ -17,13 +17,13 @@ const DB = (() => {
         }
         if (!d.objectStoreNames.contains('playlists')) d.createObjectStore('playlists', { keyPath: 'id' });
         if (!d.objectStoreNames.contains('kv')) d.createObjectStore('kv', { keyPath: 'k' });
-        // v7.0: artist roster table (placeholder artists + follow state).
+        // Artist roster table (placeholder artists + follow state).
         // The SDB is the tracks store; the library is a membership list in kv.
         if (!d.objectStoreNames.contains('artists')) d.createObjectStore('artists', { keyPath: 'id' });
-        // v7.6: tag memory — corrections the fixer got right (auto-applied,
+        // Tag memory - corrections the fixer got right (auto-applied,
         // review-approved, hand-edited), keyed for instant recall next run.
         if (!d.objectStoreNames.contains('tagMemory')) d.createObjectStore('tagMemory', { keyPath: 'key' });
-        // v9.0: UTAG cache (verified records fetched from the UTAG database)
+        // UTAG cache (verified records fetched from the UTAG database)
         // + submission outbox (unknowns/corrections waiting to drain).
         if (!d.objectStoreNames.contains('utagCache')) d.createObjectStore('utagCache', { keyPath: 'key' });
         if (!d.objectStoreNames.contains('utagOutbox')) d.createObjectStore('utagOutbox', { keyPath: 'id', autoIncrement: true });
@@ -39,7 +39,7 @@ const DB = (() => {
       const out = fn(s);
       t.oncomplete = () => resolve(out && out.result !== undefined ? out.result : out);
       t.onerror = () => reject(t.error);
-      // v8.3: an aborted transaction fires neither oncomplete nor onerror —
+      // An aborted transaction fires neither oncomplete nor onerror -
       // without this the promise never settles and the caller hangs forever.
       t.onabort = () => reject(t.error || new Error('IDB transaction aborted: ' + store));
     });

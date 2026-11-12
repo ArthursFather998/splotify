@@ -1,5 +1,5 @@
 // Focused smoke test: Player.on must accept any event name (this is what
-// killed boot in v10.20: 'track-error' had no listeners array).
+// killed boot once: 'track-error' had no listeners array).
 const fs = require('fs');
 global.window = {};
 global.navigator = {};

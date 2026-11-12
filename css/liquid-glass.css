@@ -1,4 +1,4 @@
-/* Splotify Liquid Glass redesign — visual layer only. Existing app behavior is unchanged. */
+/* Liquid Glass theme. Visual layer only, no behavior changes. */
 :root {
   --bg: #09090d;
   --card: rgba(255,255,255,.075);
@@ -266,7 +266,7 @@ body { background:#050609; }
   #app::before,#np-bg::before { filter:none; }
 }
 
-/* v10.47: border modes — Rainbow (default) / Solid accent / Off. */
+/* Border modes - Rainbow (default) / Solid accent / Off. */
 html[data-border="solid"] #tabbar::before,
 html[data-border="solid"] #tab-orb::before,
 html[data-border="solid"] #miniplayer::before,

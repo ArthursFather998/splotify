@@ -1,4 +1,4 @@
-/* Splotify import — Files app picker → metadata parse → IndexedDB. */
+/* Splotify import - Files app picker → metadata parse → IndexedDB. */
 const Importer = (() => {
   const picker = () => document.getElementById('filepicker');
   const zippicker = () => document.getElementById('zippicker');
@@ -10,9 +10,9 @@ const Importer = (() => {
     const to = new Promise((_, rej) => { t = setTimeout(() => rej(new Error('timeout: ' + (label || 'op'))), ms); });
     return Promise.race([Promise.resolve(p).finally(() => clearTimeout(t)), to]);
   }
-  // v8.3: IndexedDB can stall indefinitely on iOS (a wedged transaction
+  // IndexedDB can stall indefinitely on iOS (a wedged transaction
   // blocks every later op on its store). The fixer must never hang on the
-  // database — bound every DB op in its path; all callers already treat a
+  // database - bound every DB op in its path; all callers already treat a
   // DB failure as "skip and continue".
   const dbOp = (p, ms, label) => withTimeout(p, ms || 10000, 'db:' + (label || 'op'));
 
@@ -25,18 +25,18 @@ const Importer = (() => {
     const b = baseTitle(name || '').trim();
     return { artist: 'Unknown Artist', title: b || 'Unknown Title' };
   }
-  // v7.8 filename parser rewrite: real-world file names are feral, so the
+  // Filename parser rewrite: real-world file names are feral, so the
   // old single "Artist - Title" regex misread most of them. This builds
   // scored parse candidates instead of one guess:
   //   "01. Artist - Title", "Artist_-_Title", "[SPOTIFY-DOWNLOADER] A - T",
-  //   "Title - Artist" (reversed — wins only when tag hints agree),
+  //   "Title - Artist" (reversed - wins only when tag hints agree),
   //   folder paths (".../Withered Deluxe/02 - Title.flac" → album),
   //   leading track numbers, feat. artists.
   // Audio qualifiers ("(Sped Up)", "(Remix)", "(Live)") are PRESERVED in
-  // titles — only downloader/video junk is stripped, so a stripped query
-  // can never propose dropping a qualifier the v7.2 gates protect.
+  // titles - only downloader/video junk is stripped, so a stripped query
+  // can never propose dropping a qualifier the safety gates protect.
   // A candidate seeds an audit query only when it carries BOTH artist and
-  // title (v7.2 safety rule): an artist-less file name ("Track 01.mp3")
+  // title (safety rule): an artist-less file name ("Track 01.mp3")
   // must never seed a query.
   const FOLDER_JUNK = /^(downloads?|music|audio|mp3s?|flacs?|m4as?|songs?|tracks?|new folder|untitled|various( artists)?|my music|itunes|library)$/i;
   function stripFileJunk(s) {
@@ -81,7 +81,7 @@ const Importer = (() => {
     const m = b.match(/^\s*(.+?)\s*[-–—]\s*(.+?)\s*$/);
     if (m) {
       push(m[1], m[2], 1.0);  // forward
-      push(m[2], m[1], 0.55); // reversed — wins only when tag hints agree
+      push(m[2], m[1], 0.55); // reversed - wins only when tag hints agree
     }
     out.list.sort((x, y) => y.score - x.score);
     return out;
@@ -93,17 +93,17 @@ const Importer = (() => {
   }
 
   function norm(s) { return (s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim(); }
-  // v9.0: curated fixes live in the UTAG database now (UTAG.lookup / enrich).
+  // Curated fixes live in the UTAG database now (UTAG.lookup / enrich).
   async function fetchJSON(url, ms) {
     const c = new AbortController(); const t = setTimeout(() => c.abort(), ms || 12000);
     try { const r = await fetch(url, { signal: c.signal }); if (!r.ok) return null; return await r.json(); }
     catch (e) { return null; } finally { clearTimeout(t); }
   }
-  // v9.0: a track needs a UTAG check when any core field is missing.
+  // A track needs a UTAG check when any core field is missing.
   function needsFix(tr) {
     return tr.album === 'Unknown Album' || !tr.art || tr.artist === 'Unknown Artist' || !tr.title || tr.title === 'Unknown Title';
   }
-  // Fill in missing tags from Apple's music catalog (song/artist name only —
+  // Fill in missing tags from Apple's music catalog (song/artist name only -
   // audio never leaves the device). Strictly fill-only: fields that already
   // have values are never overwritten here; corrections go through the
   // scored audit proposals instead. Tries the tag query first, then the
@@ -142,7 +142,7 @@ const Importer = (() => {
     }
     const artist0 = (common.artist || common.albumartist || (fb.artist !== 'Unknown Artist' ? fb.artist : '') || folderArtist || 'Unknown Artist').toString();
     const title0 = (common.title || fb.title || 'Unknown Title').toString();
-    // v9.0: no curated fixes on-device anymore. The UTAG database holds
+    // No curated fixes on-device anymore. The UTAG database holds
     // every ruling; imports ask UTAG instead (see UTAG.enrich in run()).
     let artist = artist0, title = title0, tagsVia = null;
     const tagged = !!(common.title || common.artist || common.albumartist || common.album || pic);
@@ -252,10 +252,10 @@ const Importer = (() => {
     if (refreshed) parts.push(`refreshed ${refreshed}`);
     if (fixed) parts.push(`fixed tags for ${fixed}`);
     if (skipped) parts.push(`${skipped} skipped`);
-    if (saveError) parts.push(isQuota(saveError) ? 'Splotify storage is full — free up space or import smaller zips' : 'some songs could not be saved');
+    if (saveError) parts.push(isQuota(saveError) ? 'Splotify storage is full, free up space or import smaller zips' : 'some songs could not be saved');
     let msg = parts.length ? parts.join(', ') : 'Nothing new to add';
-    if (!parserOK) msg += ' — tag reader unavailable, used filenames';
-    else if ((added || refreshed) && !taggedCount && !fixed) msg += ' — no tags found, used filenames';
+    if (!parserOK) msg += '; tag reader unavailable, used filenames';
+    else if ((added || refreshed) && !taggedCount && !fixed) msg += '; no tags found, used filenames';
     App.toast(msg);
   }
 
@@ -450,8 +450,8 @@ const Importer = (() => {
   }
   let discoCache = null, discoOrderMap = null, discoArtMap = null, discoData = null;
   async function loadDiscography() {
-    // v8.4: the bare fetch could stall forever (and the cache would wedge
-    // every later caller) — bound it; a timeout retries fresh next call.
+    // The bare fetch could stall forever (and the cache would wedge
+    // every later caller) - bound it; a timeout retries fresh next call.
     if (!discoCache) discoCache = withTimeout(
       fetch('js/discography.json')
         .then(r => (r.ok ? r.json() : null))
@@ -476,8 +476,8 @@ const Importer = (() => {
   function singleArt(name) {
     return (discoArtMap && discoArtMap[name]) || null;
   }
-  // Sync lookup of his bundled single art by song title (for the artwork
-  // fallback and his-song repair). Null until the discography has loaded.
+  // Sync lookup of my bundled single art by song title (for the artwork
+  // fallback and own-song repair). Null until the discography has loaded.
   function mySingleArt(title) {
     if (!discoData || !title) return null;
     for (const s of (discoData.singles || [])) {
@@ -487,7 +487,7 @@ const Importer = (() => {
     }
     return null;
   }
-  // Best discography single/track for one of his songs (ordinal hint from
+  // Best discography single/track for one of my songs (ordinal hint from
   // the file name, duration tiebreak). Null when nothing matches.
   function singleOrder(name) {
     return (discoOrderMap && discoOrderMap[name] != null) ? discoOrderMap[name] : 1e9;
@@ -519,7 +519,7 @@ const Importer = (() => {
     try { return await DB.memCount(); } catch (e) { return 0; }
   }
   // Apply a remembered fix. Never overwrites hand-set artwork with a
-  // remembered one — a newer hand-set always wins. Returns true on change.
+  // remembered one - a newer hand-set always wins. Returns true on change.
   async function looksLikeHis(t) {
     try {
       const a = norm(t.artist || '');
@@ -529,8 +529,8 @@ const Importer = (() => {
     } catch (e) {}
     return false;
   }
-  // Register his singles from the bundled discography at launch.
-  // Best discography single/track for one of his songs (ordinal hint from
+  // Register my singles from the bundled discography at launch.
+  // Best discography single/track for one of my songs (ordinal hint from
   // the file name, duration tiebreak). Null when nothing matches.
   function matchMySingle(t, disco) {
     if (!disco || !disco.singles) return null;
@@ -579,9 +579,9 @@ const Importer = (() => {
     if (!disco) return 0;
     let changed = 0;
     for (const t of (tracks || [])) {
-      // Only his own tracks can be his singles. Imported songs from other
+      // Only my own tracks can be my singles. Imported songs from other
       // artists (e.g. Spotify playlist downloads) must never be tagged as
-      // one of his single releases, even when a title matches.
+      // one of my single releases, even when a title matches.
       const mine = norm(t.artist || '').indexOf('skyler green') !== -1;
       const hits = mine ? singleHitsFor(t, disco) : [];
       const cur = Array.isArray(t.singleReleases) ? t.singleReleases : [];

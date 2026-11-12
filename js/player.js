@@ -1,4 +1,4 @@
-/* Splotify player engine — queue, shuffle/repeat, audio output, MediaSession.
+/* Splotify player engine - queue, shuffle/repeat, audio output, MediaSession.
  * Audio output is a seam: on the web it's the <audio> element; inside the
  * native iOS shell it's window.SplotifyNativeOut() (js/native-audio.js),
  * which drives the native AVPlayer plugin with real lock-screen controls. */
@@ -61,7 +61,7 @@ const Player = (() => {
   const curId = () => (S.order ? S.list[S.order[S.pos]] : S.list[S.pos]);
   let lastCountedId = null; // play-count dedupe: one count per track start
 
-  /* v10.20 streamed tracks: a queue id of the form 'cat:<catalog-uuid>'
+  /* Streamed tracks: a queue id of the form 'cat:<catalog-uuid>'
      is not in the local database. The app registers a resolver that
      turns the ref into a metadata shell plus a byte loader; the player
      shows the shell at once and starts playback when the bytes land.
@@ -233,9 +233,9 @@ const Player = (() => {
     DB.kvSet('now', rec).catch(() => {});
   }
 
-  /* MediaSession: every action gets its own guarded registration — one rejected
+  /* MediaSession: every action gets its own guarded registration - one rejected
      action must never silently block the rest (e.g. previous/next track).
-     v8.9: no 'seekto' registration — it is the only seek-flavored action we set
+     no 'seekto' registration - it is the only seek-flavored action we set
      and iOS keys the +/-10s lock-screen buttons off it, displacing prev/next.
      (In-app seek bar is unaffected; it calls api.seek() directly.) */
   const msFailed = [];
@@ -271,7 +271,7 @@ const Player = (() => {
       S.muted = !!(await DB.kvGet('pmuted', false));
       S.preMute = S.volume > 0 ? S.volume : 0.8;
       /* Mute goes through the output: on the web iOS honors audio.muted (it
-         ignores audio.volume). No Web Audio routing — iOS suspends
+         ignores audio.volume). No Web Audio routing - iOS suspends
          AudioContext in the background, which would kill keep-alive
          playback. In the native shell mute maps to the AVPlayer volume. */
       out.muted = S.muted;
@@ -290,7 +290,7 @@ const Player = (() => {
     },
     async playContext(ctx, trackIds, startId) {
       // Login gate, single check at the play entry point: no session, no
-      // audio — show the auth view instead of starting playback.
+      // audio - show the auth view instead of starting playback.
       if (typeof UTAG !== 'undefined' && UTAG.getSession && !UTAG.getSession()) {
         try { App.showAuthGate(); } catch (e) {}
         return;
@@ -335,7 +335,7 @@ const Player = (() => {
       }
       // While a streamed track is still fetching, the button waits: the
       // fetch decides what plays. A streamed track that never loaded is
-      // a shell with no audio — the button retries the load instead of
+      // a shell with no audio - the button retries the load instead of
       // resuming whatever played before, which would sound like the
       // wrong song under this title.
       if (S.loading) return;
