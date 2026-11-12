@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v10.40';
+  const APP_VERSION = 'v10.41';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -963,7 +963,7 @@ const App = (() => {
     const q = S.query;
     // Cancel is always visible while in the search view, as in the
     // video, not only once text has been typed.
-    return `<div class="sp-searchbar">${icon('search')}<input id="q" placeholder="What do you want to listen to?" value="${esc(q)}" autocomplete="off">${q ? `<button class="sp-x" data-act="search-clear" aria-label="Clear search">${icon('x')}</button>` : ''}<button class="sp-cancel" data-act="search-cancel">Cancel</button></div>`;
+    return `<div class="sp-searchrow"><div class="sp-searchbar">${icon('search')}<input id="q" placeholder="What do you want to listen to?" value="${esc(q)}" autocomplete="off">${q ? `<button class="sp-x" data-act="search-clear" aria-label="Clear search">${icon('x')}</button>` : ''}</div><button class="sp-cancel" data-act="search-cancel">Cancel</button></div>`;
   }
   function suggLabelHTML(text, q) {
     const t = String(text || '');
@@ -1164,7 +1164,7 @@ const App = (() => {
     const bar = document.querySelector('.sp-searchbar');
     if (bar) {
       const x = bar.querySelector('.sp-x');
-      if (S.query && !x) { const c = bar.querySelector('.sp-cancel'); if (c) c.insertAdjacentHTML('beforebegin', `<button class="sp-x" data-act="search-clear" aria-label="Clear search">${icon('x')}</button>`); }
+      if (S.query && !x) { bar.insertAdjacentHTML('beforeend', `<button class="sp-x" data-act="search-clear" aria-label="Clear search">${icon('x')}</button>`); }
       else if (!S.query && x) x.remove();
     }
   }
@@ -1179,7 +1179,7 @@ const App = (() => {
     // the arrival repaint touches).
     const catSettled = !!(S.catQ && String(S.catQ).toLowerCase() === qRaw && S.catReady && !S.catFailed);
     if (!q) {
-      const colors = ['#8d67ab', '#e13300', '#1e3264', '#e8115b', '#148a08', '#b49bc8', '#dc148c', '#477d95', '#ba5d07', '#7d4b32', '#0d73ec', '#503750'];
+      const colors = ['#8d67ab', '#e13300', '#1e3264', '#e8115b', '#148a08', '#f59e0b', '#dc148c', '#477d95', '#1db954', '#7d4b32', '#0d73ec', '#503750'];
       const body = `<div class="browse-title">Browse all</div><div class="genre-grid">${GENRES.map((g, i) =>
         `<div class="genre" style="background:${colors[i % colors.length]}" data-act="open-genre" data-id="${esc(g)}"><span>${esc(g)}</span>${icon('note')}</div>`).join('')}</div>`
         + (S.tracks.length ? '' : `<div class="empty"><h3>Search your music</h3><p>Import songs first, then find them here.</p><button class="bigbtn" data-act="import">Add music</button></div>`);

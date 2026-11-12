@@ -533,13 +533,14 @@ input{font:inherit}
 body.auth-gate #tabbar, body.auth-gate #miniplayer, body.auth-gate #nowplaying{display:none!important}
 
 /* ---------- v10.7 search (video layout, pink replaces green) ---------- */
-.sp-searchbar{margin:calc(var(--sat) + 12px) 16px 8px;display:flex;align-items:center;gap:8px;background:#242424;border-radius:12px;height:48px;padding:0 12px;color:#fff}
+.sp-searchrow{display:flex;align-items:center;gap:10px;margin:calc(var(--sat) + 12px) 16px 8px}
+.sp-searchbar{flex:1;display:flex;align-items:center;gap:8px;background:#242424;border-radius:12px;height:48px;padding:0 12px;color:#fff;min-width:0}
 .sp-searchbar>svg{width:24px;height:24px;flex:none;color:#fff}
 .sp-searchbar input{flex:1;border:0;outline:0;background:none;font-size:15px;font-weight:600;color:#fff;min-width:0}
 .sp-searchbar input::placeholder{color:#a7a7a7;font-weight:500}
 .sp-searchbar .sp-x{display:flex;color:#fff;flex:none}
 .sp-searchbar .sp-x svg{width:20px;height:20px}
-.sp-searchbar .sp-cancel{flex:none;color:#fff;font-size:15px;font-weight:600;padding:4px 2px}
+.sp-cancel{flex:none;color:#fff;font-size:15px;font-weight:600;padding:4px 2px}
 .sp-sugg{cursor:pointer}
 .sp-sugg-arrow{display:flex;flex:none;color:var(--sub);padding:4px 2px}
 .sp-sugg-arrow svg{width:22px;height:22px}
