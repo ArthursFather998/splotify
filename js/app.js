@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v10.24';
+  const APP_VERSION = 'v10.25';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -747,13 +747,44 @@ const App = (() => {
 
   /* v8.0 Spotify-style search ranking (pure — unit-tested in node).
      Tier: 0 exact, 1 starts-with, 2 word-starts, 3 contains, 4 no match. */
+  /* v10.23 search folding: ONE normalizer for the query and every candidate.
+     Accents drop (Beyonce finds Beyonce with the accent), $ reads as s
+     (A$AP = asap, $uicideboy$ = suicideboys), apostrophes vanish, every
+     other symbol becomes a space, and non-Latin letters are KEPT. The old
+     [^a-z0-9] rule deleted them, so every Japanese/Korean/Hindi/Cyrillic
+     string normalised to '' and looked identical to every other one. */
+  const _foldCache = new Map();
+  function foldSearch(s) {
+    const raw = String(s == null ? '' : s);
+    let v = _foldCache.get(raw);
+    if (v !== undefined) return v;
+    v = raw.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').normalize('NFC').toLowerCase()
+      .replace(/&/g, ' and ').replace(/\$/g, 's').replace(/['\u2019`]/g, '')
+      .replace(/[^\p{L}\p{N}\p{M}]+/gu, ' ').trim();
+    if (_foldCache.size > 30000) _foldCache.clear();
+    _foldCache.set(raw, v);
+    return v;
+  }
+  const searchKey = s => foldSearch(s).replace(/ /g, '');
+  const queryTokens = q => String(q || '').split(' ').filter(Boolean);
+  const matchesAllTokens = (hay, toks) => toks.length > 0 && toks.every(t => hay.includes(t));
+  /* Tier: 0 exact, 1 starts-with, 2 word-starts, 3 contains, 4 no match.
+     q must already be foldSearch()ed. Spaces are also ignored as a last
+     resort so "acdc" finds AC/DC and "asap rocky" finds A$AP Rocky. */
   function searchTier(name, q) {
-    const n = String(name || '').toLowerCase().trim();
+    const n = foldSearch(name);
     if (!n || !q) return 4;
     if (n === q) return 0;
     if (n.startsWith(q)) return 1;
-    if (n.split(/[^a-z0-9]+/).some(w => w.startsWith(q))) return 2;
+    if ((' ' + n).includes(' ' + q)) return 2;
     if (n.includes(q)) return 3;
+    const qk = q.replace(/ /g, '');
+    if (qk.length >= 3) {
+      const nk = n.replace(/ /g, '');
+      if (nk === qk) return 0;
+      if (nk.startsWith(qk)) return 1;
+      if (nk.includes(qk)) return 3;
+    }
     return 4;
   }
   // list: [{name, key, followed, plays, placeholder}]. Sorted best-first.
@@ -766,6 +797,7 @@ const App = (() => {
   // list: [{t:{id,title,artist,album}, plays}]. Title match outranks
   // artist/album match; your play counts break ties.
   function rankSongHits(q, list) {
+    const toks = queryTokens(q);
     return [...list]
       .map(e => {
         const tt = searchTier(e.t.title, q), at = searchTier(e.t.artist, q), alt = searchTier(e.t.album, q);
@@ -773,9 +805,12 @@ const App = (() => {
         if (tt <= 3) tier = tt;
         else if (at <= 3) tier = 4 + at;
         else if (alt <= 3) tier = 8 + alt;
+        // v10.23: "artist title" typed together matches no single field,
+        // so every word must appear somewhere across title+artist+album.
+        else if (toks.length > 1 && matchesAllTokens(foldSearch([e.t.title, e.t.artist, e.t.album].filter(Boolean).join(' ')), toks)) tier = 12;
         return { ...e, tier };
       })
-      .filter(e => e.tier <= 11)
+      .filter(e => e.tier <= 12)
       .sort((x, y) => x.tier - y.tier || y.plays - x.plays || String(x.t.title).localeCompare(String(y.t.title)));
   }
   // Top result: the artist wins when the query names them (exact or
@@ -818,8 +853,9 @@ const App = (() => {
     } catch (e) {}
     const aHits = rankArtistHits(q, aList).slice(0, 8);
     const sHits = rankSongHits(q, S.tracks.map(t => ({ t, plays: plays(t.id) }))).slice(0, 20);
-    const als = albums().filter(a => (a.name + ' ' + a.artist).toLowerCase().includes(q)).slice(0, 8);
-    const ps = S._pls.filter(pp => pp.name.toLowerCase().includes(q));
+    const toks = queryTokens(q);
+    const als = albums().filter(a => matchesAllTokens(foldSearch(a.name + ' ' + a.artist), toks)).slice(0, 8);
+    const ps = S._pls.filter(pp => matchesAllTokens(foldSearch(pp.name), toks));
     const top = pickTopResult(aHits, sHits);
     return { aHits, sHits, als, ps, top };
   }
@@ -891,8 +927,9 @@ const App = (() => {
   }
   function suggLabelHTML(text, q) {
     const t = String(text || '');
-    if (q && t.toLowerCase().startsWith(q)) {
-      return `<span style="color:var(--sub)">${esc(t.slice(0, q.length))}</span>${esc(t.slice(q.length))}`;
+    const raw = String(S.query || '').trim().toLowerCase();
+    if (raw && t.toLowerCase().startsWith(raw)) {
+      return `<span style="color:var(--sub)">${esc(t.slice(0, raw.length))}</span>${esc(t.slice(raw.length))}`;
     }
     return esc(t);
   }
@@ -900,16 +937,26 @@ const App = (() => {
     const seen = new Set(); const out = [];
     const add = (v, history) => {
       const t = String(v || '').trim();
-      if (!t || normKey(t) === normKey(q) || seen.has(normKey(t)) || out.length >= 5) return;
-      seen.add(normKey(t)); out.push({ text: t, history: !!history });
+      if (!t || searchKey(t) === searchKey(q) || seen.has(searchKey(t)) || out.length >= 5) return;
+      seen.add(searchKey(t)); out.push({ text: t, history: !!history });
     };
-    // Past queries first (clock), then completions (magnifier).
-    (S.searchQueries || []).forEach(v => { if (String(v).toLowerCase().startsWith(q)) add(v, true); });
-    artists().forEach(a => { if (a.name.toLowerCase().includes(q)) add(a.name, false); });
-    S.tracks.forEach(t => { if (t.title.toLowerCase().includes(q)) add(t.title, false); if (t.album && t.album.toLowerCase().includes(q)) add(t.album, false); });
-    (S.catArtists || []).forEach(a => { if (String(a.name || '').toLowerCase().includes(q)) add(a.name, false); });
-    (S.catSongs || []).forEach(x => { if (String(x.title || '').toLowerCase().includes(q)) add(x.title, false); if (x.album && String(x.album).toLowerCase().includes(q)) add(x.album, false); });
-    (S.catAlbums || []).forEach(a => { if (String(a.title || '').toLowerCase().includes(q)) add(a.title, false); });
+    // Past queries first (clock), then completions (magnifier), best
+    // match first: exact/starts-with beat contains, local beats catalog.
+    (S.searchQueries || []).forEach(v => { if (foldSearch(v).startsWith(q)) add(v, true); });
+    const cands = [];
+    const consider = (v, kind) => {
+      const t = String(v || '').trim();
+      if (!t) return;
+      const tier = searchTier(t, q);
+      if (tier <= 3) cands.push({ t, tier, kind });
+    };
+    artists().forEach(a => consider(a.name, 0));
+    S.tracks.forEach(t => { consider(t.title, 1); consider(t.album, 1); });
+    (S.catArtists || []).forEach(a => consider(a.name, 2));
+    (S.catSongs || []).forEach(x => { consider(x.title, 3); consider(x.album, 3); });
+    (S.catAlbums || []).forEach(a => consider(a.title, 3));
+    cands.sort((a, b) => a.tier - b.tier || a.kind - b.kind || a.t.length - b.t.length);
+    cands.forEach(c => add(c.t, false));
     // The row itself runs the search; only the arrow button fills.
     // document click delegation picks the nearest [data-act], so the
     // arrow button wins over the row when it is tapped.
@@ -1047,7 +1094,7 @@ const App = (() => {
   function paintSearchSections() {
     const cur = S.stack[S.stack.length - 1] || {};
     if (cur.v !== 'search' || !S.query.trim()) return;
-    const q = S.query.trim().toLowerCase();
+    const q = foldSearch(S.query) || S.query.trim().toLowerCase();
     const d = searchData(q);
     const set = (id, html) => { const el = document.getElementById(id); if (el) el.innerHTML = html; };
     if (!S.searchAll) {
@@ -1063,21 +1110,40 @@ const App = (() => {
     set('search-sec-albums', searchAlbumsSection(d));
     set('search-sec-playlists', searchPlaylistsSection(d));
   }
+  /* v10.23: the search bar is rendered once; only #search-body is rebuilt while
+     typing. Recreating the <input> on every keystroke made iOS flicker the
+     keyboard and broke autocorrect / dictation / CJK composition. */
   function vSearch() {
-    const q = S.query.trim().toLowerCase();
+    return searchBarHTML() + '<div id="search-body">' + vSearchInner() + '</div>';
+  }
+  function paintSearchLive() {
+    const cur = S.stack[S.stack.length - 1] || {};
+    const body = document.getElementById('search-body');
+    if (cur.v !== 'search' || !body) { render(); return; }
+    body.innerHTML = vSearchInner();
+    const bar = document.querySelector('.sp-searchbar');
+    if (bar) {
+      const x = bar.querySelector('.sp-x');
+      if (S.query && !x) { const c = bar.querySelector('.sp-cancel'); if (c) c.insertAdjacentHTML('beforebegin', `<button class="sp-x" data-act="search-clear" aria-label="Clear search">${icon('x')}</button>`); }
+      else if (!S.query && x) x.remove();
+    }
+  }
+  function vSearchInner() {
+    const qRaw = S.query.trim().toLowerCase();
+    const q = foldSearch(S.query) || qRaw;
     S.viewCtx = { kicker: 'PLAYING FROM SEARCH', name: 'Search', kind: 'search', id: 'search' };
     // The catalog search is async: while it is still running for this
     // query, no result list is final, so the empty state stays hidden
     // instead of flashing "No results" and then lingering under the
     // rows when they arrive (the empty state is not inside a section
     // the arrival repaint touches).
-    const catSettled = !!(S.catQ && String(S.catQ).toLowerCase() === q && S.catReady);
+    const catSettled = !!(S.catQ && String(S.catQ).toLowerCase() === qRaw && S.catReady && !S.catFailed);
     if (!q) {
       const colors = ['#8d67ab', '#e13300', '#1e3264', '#e8115b', '#148a08', '#b49bc8', '#dc148c', '#477d95', '#ba5d07', '#7d4b32', '#0d73ec', '#503750'];
       const body = `<div class="browse-title">Browse all</div><div class="genre-grid">${GENRES.map((g, i) =>
         `<div class="genre" style="background:${colors[i % colors.length]}" data-act="open-genre" data-id="${esc(g)}"><span>${esc(g)}</span>${icon('note')}</div>`).join('')}</div>`
         + (S.tracks.length ? '' : `<div class="empty"><h3>Search your music</h3><p>Import songs first, then find them here.</p><button class="bigbtn" data-act="import">Add music</button></div>`);
-      return searchBarHTML() + searchRecentHTML() + body;
+      return searchRecentHTML() + body;
     }
     const d = searchData(q);
     const anyLocal = d.aHits.length || d.sHits.length || d.als.length || d.ps.length;
@@ -1088,24 +1154,24 @@ const App = (() => {
       // Enter runs the search (filtered view); there is no View all
       // button in this state.
       const flat = searchFlatHTML(d);
-      return searchBarHTML()
-        + searchSuggestionsHTML(q)
+      return searchSuggestionsHTML(q)
         + `<div id="search-sec-flat">${flat}</div>`
-        + ((!flat && !anyLocal && !anyCat && catSettled) ? `<div class="empty"><h3>No results for "${esc(S.query)}"</h3><p>Check the spelling, or try an artist or song title.</p></div>` : '');
+        + ((!flat && !anyLocal && !anyCat && catSettled) ? `<div class="empty"><h3>No results for "${esc(S.query)}"</h3><p>Check the spelling, or try an artist or song title.</p></div>` : '')
+        + catOfflineNote(!flat && !anyLocal && !anyCat, qRaw);
     }
     // Filtered view, as in the video.
     const pills = [['all', 'All'], ['songs', 'Songs'], ['playlists', 'Playlists'], ['artists', 'Artists'], ['albums', 'Albums']];
     const f = S.searchFilter || 'all';
     const show = sec => f === 'all' || f === sec;
-    return searchBarHTML()
-      + `<div class="sp-pills">${pills.map(([id, label]) => `<button class="sp-pill${f === id ? ' on' : ''}" data-act="search-filter" data-id="${id}">${label}</button>`).join('')}</div>`
+    return `<div class="sp-pills">${pills.map(([id, label]) => `<button class="sp-pill${f === id ? ' on' : ''}" data-act="search-filter" data-id="${id}">${label}</button>`).join('')}</div>`
       + (show('artists') ? searchTopArtistHTML(d) : '')
       + (f === 'all' ? searchFeaturingHTML(d) : '')
       + (show('songs') ? `<div id="search-sec-songs">${searchSongsSection(d)}</div>` : '')
       + (show('artists') ? `<div id="search-sec-artists">${searchArtistsSection(d)}</div>` : '')
       + (show('albums') ? `<div id="search-sec-albums">${searchAlbumsSection(d)}</div>` : '')
       + (show('playlists') ? `<div id="search-sec-playlists">${searchPlaylistsSection(d)}</div>` : '')
-      + ((!anyLocal && !anyCat && catSettled) ? `<div class="empty"><h3>No results for "${esc(S.query)}"</h3><p>Check the spelling, or try an artist or song title.</p></div>` : '');
+      + ((!anyLocal && !anyCat && catSettled) ? `<div class="empty"><h3>No results for "${esc(S.query)}"</h3><p>Check the spelling, or try an artist or song title.</p></div>` : '')
+      + catOfflineNote(!anyLocal && !anyCat, qRaw);
   }
 
   /* ---------- v10.2 catalog search (shared UTAG metadata) ----------
@@ -1115,6 +1181,11 @@ const App = (() => {
      (fail soft — local results are never broken by a catalog error).
      Rows are patched in place when a fetch settles, never by a full
      re-render, so typing is never interrupted. */
+  // A failed catalog fetch used to look exactly like "No results". Say what happened.
+  function catOfflineNote(nothingElse, qRaw) {
+    if (!nothingElse || !S.catFailed || !S.catReady || String(S.catQ || '').toLowerCase() !== qRaw) return '';
+    return `<div class="empty"><h3>Can't reach the catalog</h3><p>No matches in your library. We'll try the catalog again in a moment.</p></div>`;
+  }
   function catBlock() {
     // Only the search view with a query gets catalog sections.
     if (!S.query.trim()) return '';
@@ -1176,7 +1247,7 @@ const App = (() => {
     return `<div class="trow cat-row" data-act="cat-song" data-id="${esc(song.id)}">${catArtImg(song)}<div class="tmeta"><div class="ttitle">${esc(song.title)}</div><div class="tsub">${esc(sub)}</div></div><button class="dotsbtn" data-act="cat-menu" data-id="${esc(song.id)}" aria-label="More options">${icon('dots')}</button></div>`;
   }
   // v10.7 catalog-everywhere helpers
-  const normKey = v => String(v || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+  const normKey = v => searchKey(v);
   // v10.9: catalog rows are laid out exactly like normal rows (art,
   // title, artist, dots) and only greyed slightly — no track-number
   // column, no "Not downloaded" label pushing the layout out of line.
@@ -1390,7 +1461,7 @@ const App = (() => {
     S._catTimer = setTimeout(async () => {
       const qq = (S.query || '').trim();
       if (!qq || qq !== q) return;
-      S.catReady = false;
+      S.catReady = false; S.catFailed = false;
       const seq = ++S.catSeq;
       paintCatalogSections();
       let res = null;
@@ -1398,7 +1469,7 @@ const App = (() => {
       if (seq !== S.catSeq) return; // a newer query took over
       if (!res) {
         S.catSongs = []; S.catArtists = []; S.catAlbums = [];
-        S.catQ = qq;
+        S.catQ = qq; S.catFailed = true;
         // One automatic retry: a failed fetch looks identical to "no
         // results", so give the network one more chance before leaving
         // it. The flag keeps it to a single retry per query.
@@ -1410,7 +1481,7 @@ const App = (() => {
           }, 8000);
         }
       }
-      else { S.catSongs = res.songs || []; S.catArtists = res.artists || []; S.catAlbums = res.albums || []; S.catQ = qq; S._catRetried = null; }
+      else { S.catSongs = res.songs || []; S.catArtists = res.artists || []; S.catAlbums = res.albums || []; S.catQ = qq; S.catFailed = false; S._catRetried = null; }
       cacheCatSongs(S.catSongs);
       // Render the rows at once (as not-yet-playable), then fill in audio
       // availability: the lookup can take seconds on a slow network, and
@@ -3263,7 +3334,11 @@ const App = (() => {
     });
     const q = document.getElementById('q');
     if (q) {
-      q.addEventListener('input', () => { S.query = q.value; S.searchAll = false; S.searchFilter = 'all'; const pos = q.selectionStart; render(); const nq = document.getElementById('q'); nq.focus(); nq.setSelectionRange(pos, pos); });
+      q.addEventListener('input', () => {
+        S.query = q.value; S.searchAll = false; S.searchFilter = 'all';
+        if (S._searchPaint) clearTimeout(S._searchPaint);
+        S._searchPaint = setTimeout(() => { S._searchPaint = null; paintSearchLive(); kickCatalog(); }, 90);
+      });
       // v10.13: Enter / the keyboard search key RUNS the search, like
       // tapping a suggestion's text, then dismisses the keyboard.
       q.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); executeSearch(q.value); const nq = document.getElementById('q'); if (nq) nq.blur(); } });

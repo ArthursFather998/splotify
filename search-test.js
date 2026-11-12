@@ -1,0 +1,51 @@
+const fs = require('fs');
+const src = fs.readFileSync('js/app.js', 'utf8');
+const a = src.indexOf('const _foldCache');
+const b = src.indexOf('function pickTopResult');
+const c = src.indexOf('}\n', src.indexOf('return null;', b)) + 2;
+const code = src.slice(a, c);
+const mod = new Function(code + '\nreturn { foldSearch, searchKey, searchTier, rankSongHits, rankArtistHits, pickTopResult, matchesAllTokens, queryTokens };')();
+const { foldSearch: f, searchKey, searchTier: tier, rankSongHits, rankArtistHits, pickTopResult } = mod;
+let fail = 0;
+const eq = (label, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fail++; console.log((ok ? 'PASS ' : 'FAIL ') + label + (ok ? '' : '  got=' + JSON.stringify(got) + ' want=' + JSON.stringify(want))); };
+// folding
+eq('accent', f('Beyoncé'), 'beyonce');
+eq('A$AP', f('A$AP Rocky'), 'asap rocky');
+eq('$uicideboy$', f('$uicideboy$'), 'suicideboys');
+eq('AC/DC', f('AC/DC'), 'ac dc');
+eq('ampersand', f('Simon & Garfunkel'), 'simon and garfunkel');
+eq('apostrophe', f("Don't Stop"), 'dont stop');
+eq('curly apostrophe', f('Don\u2019t Stop'), 'dont stop');
+eq('kana keeps voiced marks', f('がぎぐ'), 'がぎぐ');
+eq('hangul survives', f('한국어'), '한국어');
+eq('hindi marks survive', f('अदिति'), 'अदिति');
+eq('non-latin keys differ (old normKey made both "")', searchKey('あ') !== searchKey('い'), true);
+eq('old normKey bug reproduced', '日本語'.toLowerCase().replace(/[^a-z0-9]+/g, ''), '');
+// tiers
+eq('accent-insensitive exact', tier('Beyoncé', f('beyonce')), 0);
+eq('acdc finds AC/DC (exact)', tier('AC/DC', f('acdc')), 0);
+eq('asap prefix', tier('A$AP Rocky', f('asap')), 1);
+eq('word start', tier('The Dark Side of the Moon', f('dark')), 2);
+eq('contains', tier('Everlong', f('long')), 3);
+eq('no match', tier('Everlong', f('zzz')), 4);
+eq('multi-word phrase at word boundary', tier('The Dark Side of the Moon', f('dark side')), 2);
+eq('non-latin prefix', tier('アドベンチャー', f('アド')), 1);
+// songs
+const T = (title, artist, album) => ({ t: { title, artist, album }, plays: 0 });
+const list = [T('Hotline Bling', 'Drake', 'Views'), T('Hotline', 'Someone Else', 'X'), T('Passionfruit', 'Drake', 'More Life'), T('Sandstorm', 'Darude', 'Before the Storm')];
+const r1 = rankSongHits(f('drake hotline'), list);
+eq('artist+title together now matches', r1.map(e => e.t.title), ['Hotline Bling']);
+const r2 = rankSongHits(f('hotline'), list);
+eq('title match still wins, ordered', r2.map(e => e.t.title), ['Hotline', 'Hotline Bling']);
+const r3 = rankSongHits(f('drake'), list);
+eq('artist-only query', r3.map(e => e.t.title).sort(), ['Hotline Bling', 'Passionfruit']);
+eq('album + artist words', rankSongHits(f('views drake'), list).map(e => e.t.title), ['Hotline Bling']);
+eq('no false positive', rankSongHits(f('drake sandstorm'), list).length, 0);
+// artists + top result
+const al = [{ name: 'A$AP Rocky', key: 'asaprocky', followed: false, plays: 0 }, { name: 'Beyoncé', key: 'beyonce', followed: false, plays: 0 }, { name: 'AC/DC', key: 'acdc', followed: false, plays: 0 }];
+eq('asap rocky', rankArtistHits(f('asap rocky'), al).map(h => h.name), ['A$AP Rocky']);
+eq('beyonce', rankArtistHits(f('beyonce'), al).map(h => h.name), ['Beyoncé']);
+const top = pickTopResult(rankArtistHits(f('acdc'), al), []);
+eq('acdc top result is the artist', top && top.kind + ':' + top.a.name, 'artist:AC/DC');
+console.log(fail ? '\n' + fail + ' FAILED' : '\nALL PASSED');
+process.exit(fail ? 1 : 0);

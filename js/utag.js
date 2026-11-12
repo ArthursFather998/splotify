@@ -879,6 +879,9 @@ const UTAG = (() => {
       fetchJSON(BASE + '/splotify_tracks?select=' + encodeURIComponent(CATALOG_TRACK_SELECT) + '&title=ilike.' + encodeURIComponent(pattern) + '&limit=50', 9000),
       fetchJSON(BASE + '/splotify_releases?select=id,title,release_type,release_year,release_status,artists:splotify_artists(canonical_name),artwork:splotify_artwork(source_url,stored_path,role)&title=ilike.' + encodeURIComponent(pattern) + '&order=title&limit=20', 9000),
     ]);
+    // All three failed = the network/catalog is down, not "no matches". Return
+    // null so the caller can say so (and retry) instead of showing No results.
+    if (aRes.status === 'rejected' && tRes.status === 'rejected' && rRes.status === 'rejected') return null;
     const artistRows = aRes.status === 'fulfilled' ? aRes.value : [];
     const trackRows = tRes.status === 'fulfilled' ? tRes.value : [];
     const relRows = rRes.status === 'fulfilled' ? rRes.value : [];
@@ -1120,7 +1123,7 @@ const UTAG = (() => {
     const catalog = { exists: false, trackId: null, artistId: null, releaseId: null, artistExists: false, releaseExists: false };
     try {
       if (after.artist && after.artist !== 'Unknown Artist') {
-        const res = await catalogSearch(after.artist);
+        const res = (await catalogSearch(after.artist)) || { artists: [] };
         const artistRow = (res.artists || []).find(a => norm(a.name) === norm(after.artist));
         if (artistRow) {
           catalog.artistExists = true; catalog.artistId = artistRow.id;
