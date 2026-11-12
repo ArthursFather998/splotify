@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v10.25';
+  const APP_VERSION = 'v10.26';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -3276,6 +3276,10 @@ const App = (() => {
     const st = view().scrollTop;
     const sameView = S._lastViewKey === cur.v + '|' + (cur.id || '');
     const qHadFocus = document.activeElement && document.activeElement.id === 'q';
+    // v10.26: clear any swipe-back exit transform before swapping content.
+    view().style.transition = 'none';
+    view().style.transform = '';
+    view().style.opacity = '';
     view().innerHTML = VIEWS[cur.v](cur.id);
     view().scrollTop = sameView ? st : 0;
     view().onscroll = null;
@@ -5453,6 +5457,81 @@ const App = (() => {
       };
       np.addEventListener('touchend', endDrag, { passive: true });
       np.addEventListener('touchcancel', endDrag, { passive: true });
+    })();
+
+    // v10.26: site-wide swipe-left to go back. On any pushed view the
+    // page follows the finger left, flies off on a real swipe, and springs
+    // back when short. Vertical scrolling, horizontal rails, text fields,
+    // and the Now Playing / sheet overlays are all left alone (those sit
+    // above #view, so their touches never reach here).
+    (() => {
+      const viewEl = view();
+      let startX = 0, startY = 0, startT = 0, swiping = false, bailed = false, swipedAt = 0;
+      const canGoBack = () => S.stack.length > 1;
+      const inHScroller = el => {
+        let n = el;
+        while (n && n !== viewEl) {
+          if (n.scrollWidth > n.clientWidth + 4) {
+            const ox = getComputedStyle(n).overflowX;
+            if (ox === 'auto' || ox === 'scroll') return true;
+          }
+          n = n.parentElement;
+        }
+        return false;
+      };
+      const springBack = () => {
+        viewEl.style.transition = 'transform .3s cubic-bezier(.32,.72,.35,1), opacity .3s ease';
+        viewEl.style.transform = '';
+        viewEl.style.opacity = '';
+      };
+      viewEl.addEventListener('touchstart', e => {
+        swiping = bailed = false;
+        if (!canGoBack()) { bailed = true; return; }
+        const t = e.touches[0];
+        if (t.target.closest && (t.target.closest('input, textarea, select') || t.target.closest('[contenteditable]'))) { bailed = true; return; }
+        if (inHScroller(t.target)) { bailed = true; return; }
+        startX = t.clientX; startY = t.clientY; startT = performance.now();
+      }, { passive: true });
+      viewEl.addEventListener('touchmove', e => {
+        if (bailed) return;
+        const t = e.touches[0];
+        const dx = t.clientX - startX, dy = t.clientY - startY;
+        if (!swiping) {
+          if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 10) {
+            if (dx < 0) { swiping = true; viewEl.style.transition = 'none'; }
+            else { bailed = true; return; }
+          } else if (Math.abs(dy) > 10) { bailed = true; return; }
+          else return;
+        }
+        if (e.cancelable) e.preventDefault();
+        viewEl.style.transform = 'translateX(' + Math.min(0, dx) + 'px)';
+        viewEl.style.opacity = String(1 - Math.min(Math.abs(dx) / 1800, .15));
+      }, { passive: false });
+      const endSwipe = e => {
+        if (!swiping) { swiping = bailed = false; return; }
+        swiping = false;
+        swipedAt = Date.now();
+        const t = e.changedTouches[0];
+        const dx = t.clientX - startX;
+        const dt = Math.max(1, performance.now() - startT);
+        const fling = dx < -100 || (dx < -40 && Math.abs(dx) / dt > 0.5);
+        if (fling) {
+          tap();
+          viewEl.style.transition = 'transform .25s ease-out, opacity .25s ease-out';
+          viewEl.style.transform = 'translateX(-100%)';
+          viewEl.style.opacity = '.8';
+          const depth = S.stack.length;
+          setTimeout(() => { if (S.stack.length === depth) back(); }, 250);
+        } else springBack();
+        bailed = false;
+      };
+      viewEl.addEventListener('touchend', endSwipe, { passive: true });
+      viewEl.addEventListener('touchcancel', endSwipe, { passive: true });
+      // A swipe is a drag, not a tap: swallow the click that would
+      // otherwise also fire on the row under the finger.
+      viewEl.addEventListener('click', e => {
+        if (Date.now() - swipedAt < 400) { e.stopPropagation(); e.preventDefault(); }
+      }, true);
     })();
 
     document.addEventListener('keydown', e => { if (e.key === 'Escape') { if (lyricsOpen) { closeLyrics(); return; } closeSheet(); closeNP(); } });
