@@ -52,7 +52,7 @@ input{font:inherit}
 .sectionhead button{font-size:12px;font-weight:600;letter-spacing:1.2px;color:var(--sub)}
 
 /* ---------- tab bar ---------- */
-#tabbar{display:flex;position:absolute;left:12px;right:12px;bottom:calc(var(--sab) + 10px);z-index:40;background:linear-gradient(180deg,rgba(255,255,255,.16),rgba(255,255,255,.05));backdrop-filter:blur(24px) saturate(1.7);-webkit-backdrop-filter:blur(24px) saturate(1.7);border:1px solid rgba(255,255,255,.16);border-radius:32px;box-shadow:0 12px 32px rgba(0,0,0,.45),inset 0 1px 0 rgba(255,255,255,.28)}
+#tabbar{display:flex;position:absolute;left:12px;right:12px;bottom:calc(var(--sab) + 10px);z-index:40;background:linear-gradient(180deg,rgba(38,38,38,.78),rgba(22,22,22,.78));backdrop-filter:blur(24px) saturate(1.7);-webkit-backdrop-filter:blur(24px) saturate(1.7);border:1px solid rgba(255,255,255,.16);border-radius:32px;box-shadow:0 12px 32px rgba(0,0,0,.45),inset 0 1px 0 rgba(255,255,255,.28)}
 .tab{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;height:var(--tabbar-h);color:var(--sub);position:relative;z-index:1}
 .tab .tabicon{display:flex}
 .tab .tabicon svg{width:27px;height:27px}
