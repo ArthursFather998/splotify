@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v10.33';
+  const APP_VERSION = 'v10.34';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -650,6 +650,7 @@ const App = (() => {
     document.getElementById('sheet-body').innerHTML = html;
     document.getElementById('sheet').classList.remove('hidden');
     document.getElementById('sheet-scrim').classList.remove('hidden');
+    refreshLiquidGlass();
   }
   function closeSheet() {
     document.getElementById('sheet').classList.add('hidden');
@@ -3364,6 +3365,7 @@ const App = (() => {
       b.querySelector('.tabicon').innerHTML = icon(nm, b.dataset.tab === 'search' ? 'width:27px;height:27px' : '');
     });
     paintTabOrb();
+    refreshLiquidGlass();
     // Enter submits on sign-in inputs (no <form> wraps them, so without
     // this a laptop Enter keypress does nothing at all).
     [['auth-email', 'auth-signin'], ['auth-pass', 'auth-signin'],
@@ -3435,7 +3437,113 @@ const App = (() => {
     orb.style.width = active.offsetWidth + 'px';
   }
 
+  // v10.34: true Liquid Glass refraction, per Apple's Adopting Liquid
+  // Glass guidance (the material bends the backdrop at its edges). The web
+  // way to do that is an SVG displacement map: a canvas-drawn rounded-rect
+  // distance field (neutral center, refracting band at the rim) fed into
+  // feDisplacementMap and applied via backdrop-filter: url(#...). Only
+  // Chromium renders url() in backdrop-filter; Safari keeps the blur
+  // fallback from CSS, and Reduce Transparency opts out entirely. The orb
+  // is deliberately NOT lensed: it moves and stretches every frame, and a
+  // displacement map cannot follow it without a per-frame rebuild.
+  function liquidGlassMap(w, h, r, edge) {
+    const cw = Math.max(8, Math.min(256, Math.round(w)));
+    const ch = Math.max(8, Math.round(cw * h / w));
+    const cv = document.createElement('canvas');
+    cv.width = cw; cv.height = ch;
+    const ctx = cv.getContext('2d');
+    const img = ctx.createImageData(cw, ch);
+    const d = img.data;
+    const sx = w / cw, sy = h / ch;
+    const rr = Math.min(r, Math.min(w, h) / 2);
+    const sd = (px, py) => {
+      const qx = Math.abs(px - w / 2) - (w / 2 - rr);
+      const qy = Math.abs(py - h / 2) - (h / 2 - rr);
+      const ax = Math.max(qx, 0), ay = Math.max(qy, 0);
+      return Math.hypot(ax, ay) + Math.min(Math.max(qx, qy), 0) - rr;
+    };
+    const e = 1.5;
+    for (let y = 0; y < ch; y++) {
+      for (let x = 0; x < cw; x++) {
+        const px = (x + .5) * sx, py = (y + .5) * sy;
+        const s0 = sd(px, py);
+        let t = 0;
+        if (s0 < 0 && s0 > -edge) t = Math.pow(1 + s0 / edge, 5);
+        // Outward surface normal from the SDF gradient (finite differences).
+        let gx = (sd(px + e, py) - sd(px - e, py)) / (2 * e);
+        let gy = (sd(px, py + e) - sd(px, py - e)) / (2 * e);
+        const len = Math.hypot(gx, gy) || 1;
+        gx /= len; gy /= len;
+        const o = (y * cw + x) * 4;
+        d[o] = 128 + gx * t * 127;
+        d[o + 1] = 128 + gy * t * 127;
+        d[o + 2] = 128;
+        d[o + 3] = 255;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    return cv.toDataURL('image/png');
+  }
+  function buildGlassFilter(id, w, h, r, scale) {
+    const svg = document.getElementById('lg-defs');
+    if (!svg) return;
+    const NS = 'http://www.w3.org/2000/svg';
+    let f = document.getElementById(id);
+    if (!f) {
+      f = document.createElementNS(NS, 'filter');
+      f.setAttribute('id', id);
+      f.setAttribute('x', '0%'); f.setAttribute('y', '0%');
+      f.setAttribute('width', '100%'); f.setAttribute('height', '100%');
+      f.setAttribute('color-interpolation-filters', 'sRGB');
+      const feImg = document.createElementNS(NS, 'feImage');
+      feImg.setAttribute('preserveAspectRatio', 'none');
+      feImg.setAttribute('result', 'map');
+      const feDisp = document.createElementNS(NS, 'feDisplacementMap');
+      feDisp.setAttribute('in', 'SourceGraphic');
+      feDisp.setAttribute('in2', 'map');
+      feDisp.setAttribute('xChannelSelector', 'R');
+      feDisp.setAttribute('yChannelSelector', 'G');
+      f.appendChild(feImg); f.appendChild(feDisp);
+      svg.appendChild(f);
+    }
+    const url = liquidGlassMap(w, h, r, 24);
+    const feImg = f.querySelector('feImage');
+    feImg.setAttribute('href', url);
+    feImg.setAttributeNS('http://www.w3.org/1999/xlink', 'xlink:href', url);
+    feImg.setAttribute('x', '0'); feImg.setAttribute('y', '0');
+    feImg.setAttribute('width', String(w)); feImg.setAttribute('height', String(h));
+    f.querySelector('feDisplacementMap').setAttribute('scale', String(scale));
+  }
+  // Last built sizes, so render() can call this freely without rebuilding.
+  const _lgSizes = {};
+  let _lgSupported = null;
+  function refreshLiquidGlass() {
+    if (_lgSupported === null) {
+      _lgSupported = !window.matchMedia('(prefers-reduced-transparency: reduce)').matches
+        && (CSS.supports('backdrop-filter', 'url(#x)') || CSS.supports('-webkit-backdrop-filter', 'url(#x)'));
+    }
+    if (!_lgSupported) return;
+    const jobs = [
+      ['lg-tabbar', 'tabbar', 32, -80, 'url(#lg-tabbar) blur(6px) saturate(1.6) brightness(1.06)'],
+      ['lg-miniplayer', 'miniplayer', 18, -80, 'url(#lg-miniplayer) blur(6px) saturate(1.6) brightness(1.06)'],
+      ['lg-sheet', 'sheet', 28, -100, 'url(#lg-sheet) blur(8px) saturate(1.6) brightness(1.05)'],
+    ];
+    for (const [fid, eid, r, scale, chain] of jobs) {
+      const el = document.getElementById(eid);
+      if (!el) continue;
+      const w = el.offsetWidth, h = el.offsetHeight;
+      if (w < 10 || h < 10) continue;
+      const key = fid + ':' + w + 'x' + h;
+      if (_lgSizes[fid] === key) continue;
+      _lgSizes[fid] = key;
+      buildGlassFilter(fid, w, h, r, scale);
+      el.style.backdropFilter = chain;
+      el.style.webkitBackdropFilter = chain;
+    }
+  }
+
   function nav(v, id) {
+    const _bar = document.getElementById('tabbar'); if (_bar) _bar.classList.remove('tabbar-min');
     if (typeof UTAG !== 'undefined' && UTAG.getSession && !UTAG.getSession()) { showAuthGate(); return; }
     if (['home', 'search', 'library'].includes(v)) { S.tab = v; S.stack = [{ v }]; }
     else S.stack.push({ v, id });
@@ -5545,6 +5653,7 @@ const App = (() => {
     // above #view, so their touches never reach here).
     (() => {
       const viewEl = view();
+      const REDUCED_MOTION = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
       let startX = 0, startY = 0, startT = 0, swiping = false, bailed = false, swipedAt = 0;
       const canGoBack = () => S.stack.length > 1;
       const inHScroller = el => {
@@ -5559,7 +5668,7 @@ const App = (() => {
         return false;
       };
       const springBack = () => {
-        viewEl.style.transition = 'transform .3s cubic-bezier(.32,.72,.35,1), opacity .3s ease';
+        viewEl.style.transition = REDUCED_MOTION ? 'none' : 'transform .3s cubic-bezier(.32,.72,.35,1), opacity .3s ease';
         viewEl.style.transform = '';
         viewEl.style.opacity = '';
       };
@@ -5572,6 +5681,7 @@ const App = (() => {
         startX = t.clientX; startY = t.clientY; startT = performance.now();
       }, { passive: true });
       const flyOff = () => {
+        if (REDUCED_MOTION) { back(); return; }
         tap();
         viewEl.style.transition = 'transform .25s ease-out, opacity .25s ease-out';
         viewEl.style.transform = 'translateX(100%)';
@@ -5649,6 +5759,7 @@ const App = (() => {
         const t = e.touches[0];
         startX = t.clientX; startY = t.clientY;
         startLeft = orb.offsetLeft; startW = orb.offsetWidth;
+        orb.classList.add('pressed');
       }, { passive: true });
       bar.addEventListener('touchmove', e => {
         if (bailed) return;
@@ -5671,6 +5782,7 @@ const App = (() => {
         }
       }, { passive: false });
       const endDrag = e => {
+        orb.classList.remove('pressed');
         if (!dragging) { dragging = bailed = false; return; }
         dragging = false;
         swipedAt = Date.now();
@@ -5688,8 +5800,23 @@ const App = (() => {
         if (Date.now() - swipedAt < 400) { e.stopPropagation(); e.preventDefault(); }
       }, true);
     })();
+    // v10.34: Apple tab-bar behaviors — the bar deepens while content
+    // scrolls beneath it (scroll-edge legibility) and recedes on
+    // scroll-down, returning on scroll-up.
+    let lastScrollY = 0;
+    document.getElementById('view').addEventListener('scroll', () => {
+      const v = document.getElementById('view');
+      const bar = document.getElementById('tabbar');
+      const y = v.scrollTop;
+      bar.classList.toggle('scrolled', y > 24);
+      if (y > lastScrollY && y > 120) bar.classList.add('tabbar-min');
+      else if (y < lastScrollY) bar.classList.remove('tabbar-min');
+      lastScrollY = y;
+    }, { passive: true });
     window.addEventListener('resize', paintTabOrb);
-    requestAnimationFrame(() => paintTabOrb());
+    let lgResizeT = null;
+    window.addEventListener('resize', () => { clearTimeout(lgResizeT); lgResizeT = setTimeout(refreshLiquidGlass, 150); });
+    requestAnimationFrame(() => { paintTabOrb(); refreshLiquidGlass(); });
 
     document.addEventListener('keydown', e => { if (e.key === 'Escape') { if (lyricsOpen) { closeLyrics(); return; } closeSheet(); closeNP(); } });
   }

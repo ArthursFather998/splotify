@@ -52,16 +52,21 @@ input{font:inherit}
 .sectionhead button{font-size:12px;font-weight:600;letter-spacing:1.2px;color:var(--sub)}
 
 /* ---------- tab bar ---------- */
-#tabbar{display:flex;position:absolute;left:12px;right:12px;bottom:calc(var(--sab) + 10px);z-index:40;background:linear-gradient(180deg,rgba(40,40,40,.95),rgba(24,24,24,.95));backdrop-filter:blur(24px) saturate(1.7);-webkit-backdrop-filter:blur(24px) saturate(1.7);border:1px solid rgba(255,255,255,.16);border-radius:32px;box-shadow:0 12px 32px rgba(0,0,0,.45),inset 0 1px 0 rgba(255,255,255,.28)}
+#tabbar{display:flex;position:absolute;left:12px;right:12px;bottom:calc(var(--sab) + 10px);z-index:40;background:linear-gradient(180deg,rgba(36,36,36,.62),rgba(20,20,20,.62));backdrop-filter:blur(14px) saturate(1.6) brightness(1.08) contrast(1.04);-webkit-backdrop-filter:blur(14px) saturate(1.6) brightness(1.08) contrast(1.04);border:1px solid rgba(255,255,255,.16);border-radius:32px;box-shadow:0 12px 32px rgba(0,0,0,.45),inset 0 1px 0 rgba(255,255,255,.28);transition:transform .32s cubic-bezier(.32,.72,.35,1),opacity .3s ease,background .25s ease}
+#tabbar.scrolled{background:linear-gradient(180deg,rgba(30,30,30,.84),rgba(18,18,18,.84))}
+#tabbar.tabbar-min{transform:translateY(calc(100% + var(--sab) + 24px));opacity:0;pointer-events:none}
 .tab{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;height:var(--tabbar-h);color:var(--sub);position:relative;z-index:1}
-.tab .tabicon{display:flex}
+.tab .tabicon{display:flex;transition:transform .15s ease}
+.tab:active{filter:brightness(1.25)}
+.tab:active .tabicon{transform:scale(.88)}
 .tab .tabicon svg{width:27px;height:27px}
 .tablabel{font-size:11px;font-weight:500}
 .tab.active{color:#fff}
 .tab.active .tablabel{font-weight:600}
 
 /* ---------- mini player ---------- */
-#miniplayer{position:absolute;left:8px;right:8px;bottom:calc(var(--tabbar-h) + var(--sab) + 18px);z-index:39;display:flex;align-items:center;height:64px;border-radius:18px;background:linear-gradient(180deg,rgba(70,70,70,.55),rgba(45,45,45,.55));backdrop-filter:blur(22px) saturate(1.6);-webkit-backdrop-filter:blur(22px) saturate(1.6);border:1px solid rgba(255,255,255,.14);overflow:hidden;box-shadow:0 10px 28px rgba(0,0,0,.45),inset 0 1px 0 rgba(255,255,255,.2);transition:transform .25s ease,opacity .25s ease}
+#miniplayer{position:absolute;left:8px;right:8px;bottom:calc(var(--tabbar-h) + var(--sab) + 18px);z-index:39;display:flex;align-items:center;height:64px;border-radius:18px;background:linear-gradient(180deg,rgba(70,70,70,.55),rgba(45,45,45,.55));backdrop-filter:blur(22px) saturate(1.6);-webkit-backdrop-filter:blur(22px) saturate(1.6);border:1px solid rgba(255,255,255,.14);overflow:hidden;box-shadow:0 10px 28px rgba(0,0,0,.45),inset 0 1px 0 rgba(255,255,255,.2);transition:transform .25s ease,opacity .25s ease,filter .15s ease}
+#miniplayer:active{transform:scale(.985);filter:brightness(1.18)}
 #miniplayer.hidden{transform:translateY(20px);opacity:0;pointer-events:none}
 #mp-art{width:44px;height:44px;border-radius:4px;margin-left:10px;object-fit:cover;background:#222;flex:none}
 #mp-ph{width:44px;height:44px;border-radius:4px;margin-left:10px;flex:none}
@@ -264,7 +269,7 @@ input{font:inherit}
 #sheet-scrim{position:absolute;inset:0;background:rgba(0,0,0,.6);z-index:60;opacity:1;visibility:hidden;transition:opacity .25s,visibility 0s linear .25s}
 #sheet-scrim.hidden{opacity:0;pointer-events:none}
 #sheet-scrim:not(.hidden){visibility:visible;transition:opacity .25s}
-#sheet{position:absolute;left:0;right:0;bottom:0;z-index:61;background:linear-gradient(180deg,rgba(48,48,48,.82),rgba(28,28,28,.82));backdrop-filter:blur(28px) saturate(1.6);-webkit-backdrop-filter:blur(28px) saturate(1.6);border:1px solid rgba(255,255,255,.14);border-bottom:none;border-radius:28px 28px 0 0;box-shadow:0 -12px 40px rgba(0,0,0,.5),inset 0 1px 0 rgba(255,255,255,.22);max-height:78%;display:flex;flex-direction:column;transform:translateY(0);transition:transform .3s cubic-bezier(.32,.72,.35,1),visibility 0s linear .3s;visibility:hidden;padding-bottom:var(--sab)}
+#sheet{position:absolute;left:10px;right:10px;bottom:calc(var(--sab) + 10px);z-index:61;background:linear-gradient(180deg,rgba(48,48,48,.82),rgba(28,28,28,.82));backdrop-filter:blur(28px) saturate(1.6);-webkit-backdrop-filter:blur(28px) saturate(1.6);border:1px solid rgba(255,255,255,.14);border-radius:28px;box-shadow:0 -12px 40px rgba(0,0,0,.5),inset 0 1px 0 rgba(255,255,255,.22);max-height:78%;display:flex;flex-direction:column;transform:translateY(0);transition:transform .3s cubic-bezier(.32,.72,.35,1),visibility 0s linear .3s;visibility:hidden;padding-bottom:var(--sab)}
 #sheet.hidden{transform:translateY(105%);pointer-events:none}
 #sheet:not(.hidden){visibility:visible;transition:transform .3s cubic-bezier(.32,.72,.35,1)}
 #sheet-handle{width:40px;height:5px;border-radius:3px;background:rgba(255,255,255,.35);margin:10px auto 4px;flex:none}
@@ -568,7 +573,8 @@ body.auth-gate #tabbar, body.auth-gate #miniplayer, body.auth-gate #nowplaying{d
 ::view-transition-old(root),::view-transition-new(root){animation-duration:.22s}
 
 /* ---------- v10.30 Liquid Glass: tab orb + song preview sheet ---------- */
-#tab-orb{position:absolute;top:8px;bottom:8px;left:0;width:0;border-radius:24px;background:linear-gradient(180deg,rgba(255,255,255,.24),rgba(255,255,255,.10));backdrop-filter:blur(10px) saturate(1.5);-webkit-backdrop-filter:blur(10px) saturate(1.5);border:1px solid rgba(255,255,255,.24);box-shadow:inset 0 1px 0 rgba(255,255,255,.38),inset 0 -1px 0 rgba(0,0,0,.12),0 4px 14px rgba(0,0,0,.28);z-index:0;pointer-events:none;transition:left .38s cubic-bezier(.32,.72,.35,1),width .38s cubic-bezier(.32,.72,.35,1)}
+#tab-orb{position:absolute;top:8px;bottom:8px;left:0;width:0;border-radius:24px;background:linear-gradient(180deg,rgba(255,255,255,.24),rgba(255,255,255,.10));backdrop-filter:blur(10px) saturate(1.5);-webkit-backdrop-filter:blur(10px) saturate(1.5);border:1px solid rgba(255,255,255,.24);box-shadow:inset 0 1px 0 rgba(255,255,255,.38),inset 0 -1px 0 rgba(0,0,0,.12),0 4px 14px rgba(0,0,0,.28);z-index:0;pointer-events:none;transition:left .38s cubic-bezier(.32,.72,.35,1),width .38s cubic-bezier(.32,.72,.35,1),filter .15s ease}
+#tab-orb.pressed{filter:brightness(1.35)}
 .pv-row{display:flex;align-items:center;gap:14px;padding:12px 20px;min-height:78px}
 .pv-row:active{background:rgba(255,255,255,.06)}
 .pv-avatar{width:56px;height:56px;border-radius:50%;object-fit:cover;flex:none;background:#333;display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:700;color:rgba(255,255,255,.75)}
@@ -581,3 +587,20 @@ body.auth-gate #tabbar, body.auth-gate #miniplayer, body.auth-gate #nowplaying{d
 .pv-add{flex:none;width:44px;height:44px;border-radius:50%;border:1.5px solid rgba(255,255,255,.55);display:flex;align-items:center;justify-content:center;color:#fff;background:transparent;padding:0}
 .pv-add svg{width:22px;height:22px}
 .pv-add.liked{border-color:#1ed760;color:#1ed760}
+
+/* ---------- v10.34 Liquid Glass per Apple: dispersion rim ---------- */
+#tabbar::before,#tab-orb::before,#miniplayer::before,#sheet::before{content:'';position:absolute;inset:0;border-radius:inherit;padding:1.5px;background:conic-gradient(from 210deg,rgba(255,80,120,.55),rgba(255,200,60,.45),rgba(80,255,170,.45),rgba(80,160,255,.55),rgba(190,90,255,.5),rgba(255,80,120,.55));-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);mask-composite:exclude;opacity:.32;filter:blur(.4px);pointer-events:none;mix-blend-mode:screen}
+
+/* ---------- v10.34: respect the phone's accessibility settings ---------- */
+@media (prefers-reduced-transparency: reduce){
+  #tabbar,#miniplayer,#sheet{background:#1b1b1b;backdrop-filter:none;-webkit-backdrop-filter:none}
+  #tab-orb{background:rgba(255,255,255,.3);backdrop-filter:none;-webkit-backdrop-filter:none}
+  #tabbar::before,#tab-orb::before,#miniplayer::before,#sheet::before{display:none}
+}
+@media (prefers-reduced-motion: reduce){
+  #tab-orb{transition:none!important}
+  #tabbar{transition:none!important}
+  #sheet{transition:none}
+  ::view-transition-old(root),::view-transition-new(root){animation-duration:0s}
+  #np-title{animation:none!important}
+}
