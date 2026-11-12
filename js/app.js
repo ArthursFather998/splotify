@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v10.38';
+  const APP_VERSION = 'v10.39';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -705,7 +705,7 @@ const App = (() => {
     return `<div class="skel-trow"><div class="skel" style="width:48px;height:48px"></div><div style="flex:1;min-width:0"><div class="skel skel-line" style="width:55%"></div><div class="skel skel-line" style="width:35%;margin-top:8px"></div></div></div>`;
   }
   function vSkeletonHome() {
-    const rc = `<div class="recent-card"><div class="skel" style="width:56px;height:56px;border-radius:0"></div><div style="flex:1;padding:0 10px"><div class="skel skel-line" style="width:65%"></div></div></div>`;
+    const rc = `<div class="recent-card"><div class="skel" style="width:72px;height:72px;border-radius:0"></div><div style="flex:1;padding:0 10px"><div class="skel skel-line" style="width:65%"></div></div></div>`;
     const rlc = `<div class="railcard"><div class="skel" style="width:152px;height:152px"></div><div class="skel skel-line" style="width:75%;margin-top:9px"></div><div class="skel skel-line" style="width:50%;margin-top:7px"></div></div>`;
     return `<div class="home-top"><h1>${greeting()}</h1><div class="home-icons"></div></div>
     <div class="pills"><span class="pill on">Music</span><span class="pill">Podcasts &amp; Shows</span><span class="pill">Audiobooks</span></div>
@@ -2443,7 +2443,7 @@ const App = (() => {
       : urls.length
         ? `<img class="mixsingle" src="${urls[0]}" alt="" loading="lazy" onerror="App.artErr(this)">`
         : `<div class="mixph">${icon('note', 'width:52px;height:52px')}</div>`;
-    return `${inner}<div class="mixbanner" style="background:${mix.banner}">${esc(mix.name)}</div><div class="mixlogo"><img src="icons/icon-192.png" alt=""></div>`;
+    return `${inner}<div class="mixbanner" style="background:${mix.banner}">${esc(mix.name)}</div><div class="mixlogo">${icon('spotify')}</div>`;
   }
   function mixCard(mix) {
     const { tracks, urls } = mixTracksArts(mix, 4);
@@ -2456,7 +2456,7 @@ const App = (() => {
     if (!mixes.length) return '';
     const cards = mixes.map(mixCard).filter(Boolean).join('');
     if (!cards) return '';
-    return `<div class="sectionhead"><h2>Made by Splotify</h2></div><div class="rail">${cards}</div>`;
+    return `<div class="sectionhead"><h2>Made by Splotify</h2><span class="sec-chev" aria-hidden="true">${icon('chevR')}</span></div><div class="rail">${cards}</div>`;
   }
   function vCurated(id) {
     const mix = curatedMixes().find(m => m.id === id);

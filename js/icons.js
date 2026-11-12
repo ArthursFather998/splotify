@@ -32,6 +32,7 @@ listV:'<path d="M9 6h11M9 12h11M9 18h11" fill="none" stroke="currentColor" strok
 sortArrows:'<path d="M7 4v12M4.5 13.5 7 16l2.5-2.5M17 20V8M14.5 10.5 17 8l2.5 2.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
 pin:'<path d="M9.5 3.5h5l-.8 6.2 2.8 2.8v1.5h-9v-1.5l2.8-2.8z"/><path d="M12 14v7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>',
 note:'<path d="M9 18.5V6l11-2.5V16" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><circle cx="6.5" cy="18.5" r="2.8" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="17.5" cy="16" r="2.8" fill="none" stroke="currentColor" stroke-width="2"/>',
+spotify:'<path d="M7 9.5c3.5-1.2 7-1 10.5.7M7.5 13c3-1 6-.8 9 .5M8 16.2c2.5-.7 5-.6 7.5.4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/>',
 disc:'<circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="2" fill="none" stroke="currentColor" stroke-width="2"/>',
 person:'<circle cx="12" cy="8" r="4" fill="none" stroke="currentColor" stroke-width="2"/><path d="M4.5 20a7.5 7.5 0 0 1 15 0" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>',
 sun:'<circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 2.5v2.5M12 19v2.5M2.5 12H5M19 12h2.5M5 5l1.8 1.8M17.2 17.2 19 19M19 5l-1.8 1.8M6.8 17.2 5 19" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>',
