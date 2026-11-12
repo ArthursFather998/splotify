@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v10.29';
+  const APP_VERSION = 'v10.30';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -533,7 +533,7 @@ const App = (() => {
     const sub = [t.album && t.album !== 'Unknown Album' ? t.album : '', t.year || ''].filter(Boolean).join(' • ') || (t.duration ? Importer.fmtDur(t.duration) : t.artist);
     return `<div class="trow ax-track${playing ? ' playing' : ''}" data-act="play-track" data-id="${t.id}">
       <span class="ax-rank">${i + 1}</span>${artImg(t, 'art')}
-      <div class="tmeta"><div class="ttitle">${esc(t.title)}</div><div class="tsub">${esc(sub)}</div></div>
+      <div class="tmeta" data-act="song-preview" data-id="${t.id}"><div class="ttitle">${esc(t.title)}</div><div class="tsub">${esc(sub)}</div></div>
       ${liked ? `<span class="ax-saved">${icon('check')}</span>` : ''}
       <button class="dotsbtn" data-act="track-menu" data-id="${t.id}" aria-label="More options">${icon('dots')}</button>
     </div>`;
@@ -659,6 +659,45 @@ const App = (() => {
     S._artRemoved = false;
   }
 
+  // v10.30: the Spotify-style preview sheet from the screenshot: artist row
+  // (round photo, Follow/Following pill) + release row (art, title, kind,
+  // add-to-Liked button). Opened by tapping a song's name anywhere.
+  function openSongPreview(id) {
+    const isCat = typeof id === 'string' && id.indexOf('cat:') === 0;
+    const song = isCat ? getCatSongAll(String(id).slice(4)) : S.byId.get(Number(id));
+    if (!song) return;
+    const artistName = (splitArtists(song.artist)[0] || 'Unknown Artist');
+    const a = artistViewModel(artistName);
+    const akey = artistKey(artistName);
+    const following = S.followedArtists.has(akey);
+    const aArt = a ? artistHeroSrc(a) : '';
+    const aImg = aArt
+      ? `<img class="pv-avatar" src="${esc(aArt)}" alt="" onerror="App.artErr(this)">`
+      : `<div class="pv-avatar art-ph">${esc(artistName.charAt(0).toUpperCase())}</div>`;
+    let kind = 'Single', albumKey = null, relArt = song.art || '';
+    if (!isCat) {
+      const al = albums().find(x => x.tracks && x.tracks.some(y => y.id === song.id));
+      if (al) { kind = releaseKind(al); albumKey = al.key; relArt = al.art || song.art || ''; }
+    } else {
+      const n = (S.catSongs || []).filter(x => x.releaseId && String(x.releaseId) === String(song.releaseId)).length;
+      kind = n <= 1 ? 'Single' : (n >= 7 ? 'Album' : 'EP');
+      const ra = (S.catAlbums || []).find(x => String(x.id) === String(song.releaseId));
+      relArt = song.art || (ra && ra.art) || '';
+      albumKey = song.releaseId || null;
+    }
+    const liked = isLikedFor({ id: isCat ? 'cat:' + song.id : song.id });
+    const relImg = relArt
+      ? `<img class="pv-art" src="${esc(relArt)}" alt="" onerror="App.artErr(this)">`
+      : `<div class="pv-art art-ph">${icon('note', 'width:28px;height:28px')}</div>`;
+    openSheet(`<div style="padding:4px 0 10px">`
+      + `<div class="pv-row" data-act="pv-artist" data-id="${esc(artistName)}">${aImg}<div class="pv-meta"><div class="pv-title">${esc(artistName)}</div><div class="pv-sub">Artist</div></div><button class="pv-follow${following ? ' on' : ''}" data-act="pv-follow" data-id="${esc(artistName)}">${following ? 'Following' : 'Follow'}</button></div>`
+      + (albumKey
+        ? `<div class="pv-row" data-act="pv-release" data-id="${esc(albumKey)}" data-cat="${isCat ? 1 : 0}">${relImg}<div class="pv-meta"><div class="pv-title">${esc(song.title)}</div><div class="pv-sub">${esc(kind)}</div></div><button class="pv-add${liked ? ' liked' : ''}" data-act="pv-like" data-id="${esc(isCat ? 'cat:' + song.id : song.id)}" aria-label="Add to Liked Songs">${icon(liked ? 'check' : 'plus')}</button></div>`
+        : `<div class="pv-row">${relImg}<div class="pv-meta"><div class="pv-title">${esc(song.title)}</div><div class="pv-sub">${esc(kind)}</div></div><button class="pv-add${liked ? ' liked' : ''}" data-act="pv-like" data-id="${esc(isCat ? 'cat:' + song.id : song.id)}" aria-label="Add to Liked Songs">${icon(liked ? 'check' : 'plus')}</button></div>`)
+      + `</div>`);
+  }
+
+
   /* ---------- track rows ---------- */
   /* ---------- loading skeletons (same shapes as the real views) ---------- */
   function skelTrow() {
@@ -677,7 +716,7 @@ const App = (() => {
     const playing = Player.current && Player.current.id === t.id;
     return `<div class="trow${playing ? ' playing' : ''}" data-act="play-track" data-id="${t.id}">
       ${artImg(t, 'art')}
-      <div class="tmeta"><div class="ttitle">${esc(t.title)}</div><div class="tsub">${esc(t.artist)}</div></div>
+      <div class="tmeta" data-act="song-preview" data-id="${t.id}"><div class="ttitle">${esc(t.title)}</div><div class="tsub">${esc(t.artist)}</div></div>
       <span class="eq" style="color:var(--pink);width:18px;height:18px">${icon('eq')}</span>
       <button class="dotsbtn" data-act="track-menu" data-id="${t.id}" aria-label="More options">${icon('dots')}</button>
     </div>`;
@@ -1236,15 +1275,15 @@ const App = (() => {
     const sub = [song.artist, song.album, song.year].filter(x => x !== '' && x !== null && x !== undefined).join(' \u2022 ');
     if (local) {
       const playing = Player.current && Player.current.id === local.id;
-      return `<div class="trow${playing ? ' playing' : ''}" data-act="play-track" data-id="${local.id}">${catArtImg(song)}<div class="tmeta"><div class="ttitle">${esc(song.title)}</div><div class="tsub">${esc(sub)}</div></div><button class="dotsbtn" data-act="track-menu" data-id="${local.id}" aria-label="More options">${icon('dots')}</button></div>`;
+      return `<div class="trow${playing ? ' playing' : ''}" data-act="play-track" data-id="${local.id}">${catArtImg(song)}<div class="tmeta" data-act="song-preview" data-id="cat:${esc(song.id)}"><div class="ttitle">${esc(song.title)}</div><div class="tsub">${esc(sub)}</div></div><button class="dotsbtn" data-act="track-menu" data-id="${local.id}" aria-label="More options">${icon('dots')}</button></div>`;
     }
     // A streamed shell has no audio yet: it is not "playing" until the
     // bytes land, or a failed row would keep the playing highlight.
     const playing = Player.current && Player.current.file && String(Player.current.id) === 'cat:' + song.id;
     if (hasAudio(song)) {
-      return `<div class="trow cat-row${playing ? ' playing' : ''}" data-act="play-track" data-id="cat:${esc(song.id)}">${catArtImg(song)}<div class="tmeta"><div class="ttitle">${esc(song.title)}</div><div class="tsub">${esc(sub)}</div></div><button class="dotsbtn" data-act="cat-menu" data-id="${esc(song.id)}" aria-label="More options">${icon('dots')}</button></div>`;
+      return `<div class="trow cat-row${playing ? ' playing' : ''}" data-act="play-track" data-id="cat:${esc(song.id)}">${catArtImg(song)}<div class="tmeta" data-act="song-preview" data-id="cat:${esc(song.id)}"><div class="ttitle">${esc(song.title)}</div><div class="tsub">${esc(sub)}</div></div><button class="dotsbtn" data-act="cat-menu" data-id="${esc(song.id)}" aria-label="More options">${icon('dots')}</button></div>`;
     }
-    return `<div class="trow cat-row" data-act="cat-song" data-id="${esc(song.id)}">${catArtImg(song)}<div class="tmeta"><div class="ttitle">${esc(song.title)}</div><div class="tsub">${esc(sub)}</div></div><button class="dotsbtn" data-act="cat-menu" data-id="${esc(song.id)}" aria-label="More options">${icon('dots')}</button></div>`;
+    return `<div class="trow cat-row" data-act="cat-song" data-id="${esc(song.id)}">${catArtImg(song)}<div class="tmeta" data-act="song-preview" data-id="cat:${esc(song.id)}"><div class="ttitle">${esc(song.title)}</div><div class="tsub">${esc(sub)}</div></div><button class="dotsbtn" data-act="cat-menu" data-id="${esc(song.id)}" aria-label="More options">${icon('dots')}</button></div>`;
   }
   // v10.7 catalog-everywhere helpers
   const normKey = v => searchKey(v);
@@ -3323,6 +3362,7 @@ const App = (() => {
       const nm = b.dataset.tab === 'home' ? (on ? 'home' : 'homeO') : b.dataset.tab === 'create' ? 'plus' : b.dataset.tab;
       b.querySelector('.tabicon').innerHTML = icon(nm, b.dataset.tab === 'search' ? 'width:27px;height:27px' : '');
     });
+    paintTabOrb();
     // Enter submits on sign-in inputs (no <form> wraps them, so without
     // this a laptop Enter keypress does nothing at all).
     [['auth-email', 'auth-signin'], ['auth-pass', 'auth-signin'],
@@ -3384,6 +3424,16 @@ const App = (() => {
     if (!el) return;
     try { const e = await DB.usage(); el.textContent = e.usage ? (e.usage / 1048576).toFixed(0) + ' MB stored on this iPhone' : 'Stored on this iPhone'; } catch (e) {}
   }
+  // v10.30: position the Liquid Glass orb behind the active tab.
+  function paintTabOrb() {
+    const bar = document.getElementById('tabbar');
+    const orb = document.getElementById('tab-orb');
+    const active = bar && bar.querySelector('.tab.active');
+    if (!bar || !orb || !active) return;
+    orb.style.left = active.offsetLeft + 'px';
+    orb.style.width = active.offsetWidth + 'px';
+  }
+
   function nav(v, id) {
     if (typeof UTAG !== 'undefined' && UTAG.getSession && !UTAG.getSession()) { showAuthGate(); return; }
     if (['home', 'search', 'library'].includes(v)) { S.tab = v; S.stack = [{ v }]; }
@@ -4896,6 +4946,32 @@ const App = (() => {
       }
       case 'cat-song': { const song = getCatSongAll(id); if (song) openCatSongSheet(song); break; }
       case 'cat-menu': { const song = getCatSongAll(id); if (song) openCatSongSheet(song); break; }
+      case 'song-preview': openSongPreview(id); break;
+      case 'pv-artist': closeSheet(); nav('artist', id); break;
+      case 'pv-release': {
+        closeSheet();
+        if (el.dataset.cat === '1') { S.catalogAlbum = { id, loading: true, tracks: [], release: null }; nav('catalogAlbum', id); }
+        else nav('album', id);
+        break;
+      }
+      case 'pv-follow': {
+        tap();
+        const following = await setArtistFollowed(id, !S.followedArtists.has(artistKey(id)));
+        el.classList.toggle('on', following);
+        el.textContent = following ? 'Following' : 'Follow';
+        toast((following ? 'Following ' : 'Unfollowed ') + id);
+        render();
+        break;
+      }
+      case 'pv-like': {
+        tap();
+        await Player.toggleLike(id);
+        const liked = id.indexOf('cat:') === 0 ? isLikedFor({ id }) : Player.isLiked(Number(id));
+        el.classList.toggle('liked', liked);
+        el.innerHTML = icon(liked ? 'check' : 'plus');
+        paintMini(); paintNowPlaying();
+        break;
+      }
       case 'upload-review-submit': await submitUploadReview(); break;
       case 'upload-review-skip': await skipUploadReview(); break;
       case 'cat-upload': { const song = getCatSongAll(id); if (song) await uploadCatSong(song); break; }
@@ -5543,6 +5619,74 @@ const App = (() => {
         if (Date.now() - swipedAt < 400) { e.stopPropagation(); e.preventDefault(); }
       }, true);
     })();
+
+    // v10.30: drag across the tab bar like the Liquid Glass reference.
+    // The orb stretches from where it was toward the finger and snaps to
+    // the nearest tab on release, switching to it. A tap still works as
+    // before (the click handles it, and render() springs the orb over).
+    (() => {
+      const bar = document.getElementById('tabbar');
+      const orb = document.getElementById('tab-orb');
+      if (!bar || !orb) return;
+      let startX = 0, startY = 0, dragging = false, bailed = false, startLeft = 0, startW = 0, swipedAt = 0;
+      const tabs = () => [...bar.querySelectorAll('.tab')];
+      const tabAt = x => {
+        const r = bar.getBoundingClientRect();
+        const list = tabs();
+        const w = r.width / list.length;
+        return list[Math.max(0, Math.min(list.length - 1, Math.floor((x - r.left) / w)))];
+      };
+      const switchTo = t => {
+        if (!t) return;
+        if (t.dataset.tab === 'create') { openCreateSheet(); return; }
+        nav(t.dataset.tab);
+      };
+      bar.addEventListener('touchstart', e => {
+        dragging = bailed = false;
+        const t = e.touches[0];
+        startX = t.clientX; startY = t.clientY;
+        startLeft = orb.offsetLeft; startW = orb.offsetWidth;
+      }, { passive: true });
+      bar.addEventListener('touchmove', e => {
+        if (bailed) return;
+        const t = e.touches[0];
+        const dx = t.clientX - startX, dy = t.clientY - startY;
+        if (!dragging) {
+          if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 8) { dragging = true; orb.style.transition = 'none'; }
+          else if (Math.abs(dy) > 8) { bailed = true; return; }
+          else return;
+        }
+        if (e.cancelable) e.preventDefault();
+        const bw = bar.getBoundingClientRect().width;
+        if (dx >= 0) {
+          orb.style.left = startLeft + 'px';
+          orb.style.width = Math.min(startW + dx, bw - startLeft) + 'px';
+        } else {
+          const nl = Math.max(0, startLeft + dx);
+          orb.style.left = nl + 'px';
+          orb.style.width = (startLeft + startW - nl) + 'px';
+        }
+      }, { passive: false });
+      const endDrag = e => {
+        if (!dragging) { dragging = bailed = false; return; }
+        dragging = false;
+        swipedAt = Date.now();
+        const t = e.changedTouches[0];
+        const target = tabAt(t.clientX);
+        orb.style.transition = '';
+        if (target && !target.classList.contains('active')) { tap(); switchTo(target); }
+        paintTabOrb();
+        bailed = false;
+      };
+      bar.addEventListener('touchend', endDrag, { passive: true });
+      bar.addEventListener('touchcancel', endDrag, { passive: true });
+      // A drag is not a tap: swallow the click the drag would otherwise fire.
+      bar.addEventListener('click', e => {
+        if (Date.now() - swipedAt < 400) { e.stopPropagation(); e.preventDefault(); }
+      }, true);
+    })();
+    window.addEventListener('resize', paintTabOrb);
+    requestAnimationFrame(() => paintTabOrb());
 
     document.addEventListener('keydown', e => { if (e.key === 'Escape') { if (lyricsOpen) { closeLyrics(); return; } closeSheet(); closeNP(); } });
   }

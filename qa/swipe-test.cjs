@@ -4,7 +4,7 @@
 const fs = require('fs');
 const src = fs.readFileSync('/home/hatch/workspace/splotify/js/app.js', 'utf8');
 const start = src.indexOf('    // v10.26: site-wide swipe-right to go back.');
-const end = src.indexOf("    document.addEventListener('keydown'", start);
+const end = src.indexOf('    // v10.30: drag across the tab bar', start);
 if (start < 0 || end < 0) { console.log('IIFE NOT FOUND'); process.exit(1); }
 const iife = src.slice(start, end);
 
