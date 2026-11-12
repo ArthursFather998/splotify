@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v10.28';
+  const APP_VERSION = 'v10.29';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -5459,8 +5459,8 @@ const App = (() => {
       np.addEventListener('touchcancel', endDrag, { passive: true });
     })();
 
-    // v10.26: site-wide swipe-left to go back. On any pushed view the
-    // page follows the finger left, flies off on a real swipe, and springs
+    // v10.26: site-wide swipe-right to go back. On any pushed view the
+    // page follows the finger right, flies off on a real swipe, and springs
     // back when short. Vertical scrolling, horizontal rails, text fields,
     // and the Now Playing / sheet overlays are all left alone (those sit
     // above #view, so their touches never reach here).
@@ -5495,7 +5495,7 @@ const App = (() => {
       const flyOff = () => {
         tap();
         viewEl.style.transition = 'transform .25s ease-out, opacity .25s ease-out';
-        viewEl.style.transform = 'translateX(-100%)';
+        viewEl.style.transform = 'translateX(100%)';
         viewEl.style.opacity = '.8';
         const depth = S.stack.length;
         setTimeout(() => { if (S.stack.length === depth) back(); }, 250);
@@ -5506,13 +5506,13 @@ const App = (() => {
         const dx = t.clientX - startX, dy = t.clientY - startY;
         if (!swiping) {
           if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 6) {
-            if (dx < 0) { swiping = true; viewEl.style.transition = 'none'; }
+            if (dx > 0) { swiping = true; viewEl.style.transition = 'none'; }
             else { bailed = true; return; }
           } else if (Math.abs(dy) > 6) { bailed = true; return; }
           else return;
         }
         if (e.cancelable) e.preventDefault();
-        viewEl.style.transform = 'translateX(' + Math.min(0, dx) + 'px)';
+        viewEl.style.transform = 'translateX(' + Math.max(0, dx) + 'px)';
         viewEl.style.opacity = String(1 - Math.min(Math.abs(dx) / 1800, .15));
       }, { passive: false });
       const endSwipe = e => {
@@ -5525,12 +5525,12 @@ const App = (() => {
           // cut the gesture short. Judge it on where the finger ended up
           // instead of dropping it.
           swiping = bailed = false;
-          if (dx < -60 && Math.abs(dx) > Math.abs(dy)) { swipedAt = Date.now(); flyOff(); }
+          if (dx > 60 && Math.abs(dx) > Math.abs(dy)) { swipedAt = Date.now(); flyOff(); }
           return;
         }
         swiping = false;
         swipedAt = Date.now();
-        const fling = dx < -60 || (dx < -25 && Math.abs(dx) / dt > 0.5);
+        const fling = dx > 60 || (dx > 25 && Math.abs(dx) / dt > 0.5);
         if (fling) flyOff();
         else springBack();
         bailed = false;

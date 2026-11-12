@@ -3,7 +3,7 @@
 // as-shipped, independent of any browser's gesture recognizer.
 const fs = require('fs');
 const src = fs.readFileSync('/home/hatch/workspace/splotify/js/app.js', 'utf8');
-const start = src.indexOf('    // v10.26: site-wide swipe-left to go back.');
+const start = src.indexOf('    // v10.26: site-wide swipe-right to go back.');
 const end = src.indexOf("    document.addEventListener('keydown'", start);
 if (start < 0 || end < 0) { console.log('IIFE NOT FOUND'); process.exit(1); }
 const iife = src.slice(start, end);
@@ -71,13 +71,13 @@ function check(name, cond) { if (cond) { pass++; console.log('PASS', name); } el
 
 // 1. clean left swipe on a track row -> back()
 reset();
-await swipe(rowTitle, [[300, 400], [260, 401], [200, 402], [150, 403]]);
-check('left swipe on row calls back()', backCalls === 1);
-check('left swipe sets fly-off transform', viewEl.style.transform === 'translateX(-100%)');
+await swipe(rowTitle, [[150, 400], [190, 401], [250, 402], [300, 403]]);
+check('right swipe on row calls back()', backCalls === 1);
+check('right swipe sets fly-off transform', viewEl.style.transform === 'translateX(100%)');
 
 // 2. short swipe -> springs back, no back()
 reset();
-await swipe(rowTitle, [[300, 400], [290, 400], [275, 400]]);
+await swipe(rowTitle, [[150, 400], [160, 400], [175, 400]]);
 check('short swipe does NOT call back()', backCalls === 0);
 check('short swipe clears transform', viewEl.style.transform === '');
 
@@ -89,55 +89,55 @@ check('vertical scroll sets no transform', !viewEl.style.transform);
 
 // 4. swipe starting on a rail -> nothing (rail scrolls)
 reset();
-await swipe(railCard, [[300, 400], [200, 400], [150, 400]]);
+await swipe(railCard, [[150, 400], [200, 400], [250, 400]]);
 check('swipe on rail does NOT call back()', backCalls === 0);
 
 // 5. swipe right -> nothing
 reset();
-await swipe(rowTitle, [[150, 400], [200, 400], [260, 400]]);
-check('swipe right does NOT call back()', backCalls === 0);
+await swipe(rowTitle, [[300, 400], [250, 400], [190, 400]]);
+check('swipe left does NOT call back()', backCalls === 0);
 
 // 6. root view (stack length 1) -> nothing
 reset();
 S.stack = [{ v: 'home' }];
-await swipe(rowTitle, [[300, 400], [200, 400], [150, 400]]);
+await swipe(rowTitle, [[150, 400], [200, 400], [250, 400]]);
 check('root view swipe does NOT call back()', backCalls === 0);
 
 // 7. fast flick past 40px -> back()
 reset();
-await swipe(rowTitle, [[300, 400], [255, 400]]);
+await swipe(rowTitle, [[150, 400], [195, 400]]);
 check('fast flick calls back()', backCalls === 1);
 
 
 // 8. zero-move flick: touchstart then touchend directly, no touchmove -> back()
 reset();
-touch('touchstart', rowTitle, 300, 400);
-touch('touchend', rowTitle, 220, 400);
+touch('touchstart', rowTitle, 150, 400);
+touch('touchend', rowTitle, 230, 400);
 await sleep(320);
 check('zero-move flick calls back()', backCalls === 1);
 
 // 9. browser cancels mid-swipe after claim -> still completes
 reset();
-touch('touchstart', rowTitle, 300, 400);
-touch('touchmove', rowTitle, 260, 401);
-touch('touchmove', rowTitle, 230, 401);
-touch('touchcancel', rowTitle, 230, 401);
+touch('touchstart', rowTitle, 150, 400);
+touch('touchmove', rowTitle, 190, 401);
+touch('touchmove', rowTitle, 220, 401);
+touch('touchcancel', rowTitle, 220, 401);
 await sleep(320);
 check('touchcancel after claim calls back()', backCalls === 1);
 
 // 10. flick on a rail must NOT go back (bailed guard on the fallback)
 reset();
-touch('touchstart', railCard, 300, 400);
-touch('touchend', railCard, 220, 400);
+touch('touchstart', railCard, 150, 400);
+touch('touchend', railCard, 230, 400);
 await sleep(320);
 check('rail flick does NOT call back()', backCalls === 0);
 
 // 11. diagonal scroll ending left-down must NOT go back
 reset();
-touch('touchstart', rowTitle, 300, 400);
-touch('touchmove', rowTitle, 280, 450);
-touch('touchmove', rowTitle, 230, 520);
-touch('touchend', rowTitle, 230, 520);
+touch('touchstart', rowTitle, 150, 400);
+touch('touchmove', rowTitle, 170, 450);
+touch('touchmove', rowTitle, 220, 520);
+touch('touchend', rowTitle, 220, 520);
 await sleep(320);
 check('diagonal scroll does NOT call back()', backCalls === 0);
 
