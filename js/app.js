@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v10.46';
+  const APP_VERSION = 'v10.47';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -2473,10 +2473,18 @@ const App = (() => {
   }
   function vSettings() {
     const n = S.tracks.length;
+    const t = readTheme();
     return `<div class="pagehead"><button class="iconbtn" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><h1>Settings</h1><span style="width:44px"></span></div>
     <div class="setgroup"><h2>Account</h2>
       <div class="setrow" data-act="open-account"><div>Account<div class="sub" id="set-account">Checking…</div></div><span style="color:var(--sub)">${icon('chevR', 'width:20px;height:20px')}</span></div>
       <div class="setrow" data-act="open-activity"><div>Activity<div class="sub">Your proposals, DATUM jobs, review queue</div></div><span style="color:var(--sub)">${icon('chevR', 'width:20px;height:20px')}</span></div>
+    </div>
+    <div class="setgroup"><h2>Customize</h2>
+      <div class="setrow"><div>Accent color<div class="sub">Buttons, icons and highlights follow this color</div></div></div>
+      <div class="theme-swatches">${THEME_PRESETS.map(p => `<button class="theme-swatch${t.color === p.color ? ' on' : ''}" data-act="theme-accent" data-color="${p.color}" style="background:${p.color}" aria-label="${p.name}"></button>`).join('')}<label class="theme-custom${THEME_PRESETS.some(p => p.color === t.color) ? '' : ' on'}" aria-label="Custom color"><input type="color" id="theme-custom-input" value="${t.color}"></label></div>
+      <div class="setrow"><div>Borders<div class="sub">The glowing edge on the tab bar, mini player and sheets</div></div></div>
+      <div class="theme-modes">${['rainbow','solid','off'].map(m => `<button class="theme-mode${t.border === m ? ' on' : ''}" data-act="theme-border" data-mode="${m}">${m === 'rainbow' ? 'Rainbow' : m === 'solid' ? 'Solid' : 'Off'}</button>`).join('')}</div>
+      <div class="setrow" data-act="theme-reset"><div>Reset to default<div class="sub">Pink accent, rainbow borders</div></div></div>
     </div>
     <div class="setgroup"><h2>Music</h2>
       <div class="setrow" data-act="open-sdb"><div>SDB<div class="sub">Upload audio, import from the catalog</div></div><span style="color:var(--sub)">${icon('chevR', 'width:20px;height:20px')}</span></div>
@@ -3354,6 +3362,9 @@ const App = (() => {
           const el = document.getElementById('set-account');
           if (el) el.textContent = (d.signedIn && d.profile && d.profile.email) ? d.profile.email : 'Not signed in';
         }).catch(() => { const el = document.getElementById('set-account'); if (el) el.textContent = 'Not signed in'; });
+        // v10.47: Customize — custom color picker.
+        const ci = document.getElementById('theme-custom-input');
+        if (ci) ci.addEventListener('change', () => { const th = readTheme(); saveTheme({ ...th, color: ci.value }); render(); });
       } catch (e) {}
     }
     S._lastViewKey = cur.v + '|' + (cur.id || '');
@@ -4754,6 +4765,10 @@ const App = (() => {
       case 'open-history': nav('history'); break;
       case 'open-settings': nav('settings'); setTimeout(checkForUpdate, 40); break;
       case 'open-genre': nav('genre', id); break;
+      /* v10.47: Settings > Customize — accent color + border mode. */
+      case 'theme-accent': { const c = el.dataset.color; if (c) { const th = readTheme(); saveTheme({ ...th, color: c }); render(); } break; }
+      case 'theme-border': { const m = el.dataset.mode; if (m) { const th = readTheme(); saveTheme({ ...th, border: m }); render(); } break; }
+      case 'theme-reset': { try { localStorage.removeItem(THEME_KEY); } catch (e) {} applyTheme(); render(); toast('Back to pink and rainbow'); break; }
       case 'check-update': checkForUpdate(); break;
       case 'apply-update': {
         const sub = document.getElementById('update-sub');
@@ -5712,6 +5727,54 @@ const App = (() => {
 
     document.addEventListener('keydown', e => { if (e.key === 'Escape') { if (lyricsOpen) { closeLyrics(); return; } closeSheet(); closeNP(); } });
   }
+  /* v10.47: Settings > Customize — accent color + border mode.
+     Stored on this phone only (localStorage 'splotify-theme'). Applied
+     at once, before first paint, so there is no flash of the default pink.
+     Presets carry a curated deep shade; a custom color darkens toward black. */
+  const THEME_KEY = 'splotify-theme';
+  const THEME_PRESETS = [
+    { color:'#f3a8d0', deep:'#bd70dc', name:'Pink' },
+    { color:'#ff5a5a', deep:'#c22e4d', name:'Red' },
+    { color:'#ff8a3d', deep:'#d95d1e', name:'Orange' },
+    { color:'#ffd23d', deep:'#d9a400', name:'Yellow' },
+    { color:'#3ddc84', deep:'#1d9e5c', name:'Green' },
+    { color:'#2dd4bf', deep:'#0f9b8a', name:'Teal' },
+    { color:'#4d9fff', deep:'#2e6fd8', name:'Blue' },
+    { color:'#a970ff', deep:'#7b3fd4', name:'Purple' },
+  ];
+  const THEME_DEFAULT = { color:'#f3a8d0', border:'rainbow' };
+  function themeMix(hex, toward, amt) {
+    const n = parseInt(hex.slice(1), 16), t = parseInt(toward.slice(1), 16);
+    const c = v => Math.max(0, Math.min(255, Math.round(v)));
+    const r = c(((n >> 16) & 255) + (((t >> 16) & 255) - ((n >> 16) & 255)) * amt);
+    const g = c(((n >> 8) & 255) + (((t >> 8) & 255) - ((n >> 8) & 255)) * amt);
+    const b = c((n & 255) + ((t & 255) - (n & 255)) * amt);
+    return '#' + [r, g, b].map(x => x.toString(16).padStart(2, '0')).join('');
+  }
+  function readTheme() {
+    try {
+      const t = JSON.parse(localStorage.getItem(THEME_KEY) || 'null');
+      if (t && typeof t.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(t.color)) {
+        return { color:t.color.toLowerCase(), border:['rainbow','solid','off'].includes(t.border) ? t.border : 'rainbow' };
+      }
+    } catch (e) {}
+    return { ...THEME_DEFAULT };
+  }
+  function themeDeep(color) {
+    const p = THEME_PRESETS.find(p => p.color === color);
+    return p ? p.deep : themeMix(color, '#000000', 0.3);
+  }
+  function applyTheme() {
+    const t = readTheme();
+    const el = document.documentElement;
+    el.style.setProperty('--pink', t.color);
+    el.style.setProperty('--pink-deep', themeDeep(t.color));
+    el.style.setProperty('--pink-light', themeMix(t.color, '#ffffff', 0.25));
+    el.dataset.border = t.border;
+  }
+  function saveTheme(t) { try { localStorage.setItem(THEME_KEY, JSON.stringify(t)); } catch (e) {} applyTheme(); }
+  applyTheme();
+
   async function boot() {
     bindUI();
     // Login gate: no session, no app. The auth view is the whole app until
