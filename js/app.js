@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v10.43';
+  const APP_VERSION = 'v10.44';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -3451,7 +3451,8 @@ const App = (() => {
     const t = Player.current;
     if (!t) { mp.classList.add('hidden'); return; }
     mp.classList.remove('hidden');
-    mp.style.background = cssTint(t);
+    mp.style.setProperty('--mp-tint', cssTint(t));
+    mp.style.background = ''; // Let the Liquid Glass surface blend this tint into its translucent material.
     const mart = document.getElementById('mp-art');
     const mph = document.getElementById('mp-ph');
     const u = artURL(t);
