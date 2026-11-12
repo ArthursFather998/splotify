@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v10.41';
+  const APP_VERSION = 'v10.42';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -1183,7 +1183,7 @@ const App = (() => {
       const body = `<div class="browse-title">Browse all</div><div class="genre-grid">${GENRES.map((g, i) =>
         `<div class="genre" style="background:${colors[i % colors.length]}" data-act="open-genre" data-id="${esc(g)}"><span>${esc(g)}</span>${icon('note')}</div>`).join('')}</div>`
         + (S.tracks.length ? '' : `<div class="empty"><h3>Search your music</h3><p>Import songs first, then find them here.</p><button class="bigbtn" data-act="import">Add music</button></div>`);
-      return searchRecentHTML() + body;
+      return body + searchRecentHTML();
     }
     const d = searchData(q);
     const anyLocal = d.aHits.length || d.sHits.length || d.als.length || d.ps.length;
