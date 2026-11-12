@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v10.37';
+  const APP_VERSION = 'v10.38';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -3436,6 +3436,7 @@ const App = (() => {
   }
 
   function nav(v, id) {
+    const _bar = document.getElementById('tabbar'); if (_bar) _bar.classList.remove('tabbar-min');
     if (typeof UTAG !== 'undefined' && UTAG.getSession && !UTAG.getSession()) { showAuthGate(); return; }
     if (['home', 'search', 'library'].includes(v)) { S.tab = v; S.stack = [{ v }]; }
     else S.stack.push({ v, id });
@@ -5692,6 +5693,19 @@ const App = (() => {
         if (Date.now() - swipedAt < 400) { e.stopPropagation(); e.preventDefault(); }
       }, true);
     })();
+    // v10.34: Apple tab-bar behaviors — the bar deepens while content
+    // scrolls beneath it (scroll-edge legibility) and recedes on
+    // scroll-down, returning on scroll-up.
+    let lastScrollY = 0;
+    document.getElementById('view').addEventListener('scroll', () => {
+      const v = document.getElementById('view');
+      const bar = document.getElementById('tabbar');
+      const y = v.scrollTop;
+      bar.classList.toggle('scrolled', y > 24);
+      if (y > lastScrollY && y > 120) bar.classList.add('tabbar-min');
+      else if (y < lastScrollY) bar.classList.remove('tabbar-min');
+      lastScrollY = y;
+    }, { passive: true });
     window.addEventListener('resize', paintTabOrb);
     requestAnimationFrame(() => paintTabOrb());
 
