@@ -534,7 +534,7 @@ body.auth-gate #tabbar, body.auth-gate #miniplayer, body.auth-gate #nowplaying{d
 
 /* ---------- v10.7 search (video layout, pink replaces green) ---------- */
 .sp-searchrow{display:flex;align-items:center;gap:10px;margin:calc(var(--sat) + 12px) 16px 8px}
-.sp-searchbar{flex:1;display:flex;align-items:center;gap:8px;background:#242424;border-radius:12px;height:48px;padding:0 12px;color:#fff;min-width:0}
+.sp-searchbar{flex:1;display:flex;align-items:center;gap:8px;background:#242424;border:1px solid rgba(255,255,255,.22);border-radius:12px;height:48px;padding:0 12px;color:#fff;min-width:0}
 .sp-searchbar>svg{width:24px;height:24px;flex:none;color:#fff}
 .sp-searchbar input{flex:1;border:0;outline:0;background:none;font-size:15px;font-weight:600;color:#fff;min-width:0}
 .sp-searchbar input::placeholder{color:#a7a7a7;font-weight:500}
