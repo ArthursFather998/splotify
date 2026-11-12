@@ -61,8 +61,7 @@ input{font:inherit}
 .tab.active .tablabel{font-weight:600}
 
 /* ---------- mini player ---------- */
-#miniplayer{position:absolute;left:8px;right:8px;bottom:calc(var(--tabbar-h) + var(--sab) + 18px);z-index:39;display:flex;align-items:center;height:64px;border-radius:18px;background:linear-gradient(180deg,rgba(70,70,70,.55),rgba(45,45,45,.55));backdrop-filter:blur(22px) saturate(1.6);-webkit-backdrop-filter:blur(22px) saturate(1.6);border:1px solid rgba(255,255,255,.14);overflow:hidden;box-shadow:0 10px 28px rgba(0,0,0,.45),inset 0 1px 0 rgba(255,255,255,.2);transition:transform .25s ease,opacity .25s ease,filter .15s ease}
-#miniplayer:active{transform:scale(.985);filter:brightness(1.18)}
+#miniplayer{position:absolute;left:8px;right:8px;bottom:calc(var(--tabbar-h) + var(--sab) + 8px);z-index:39;display:flex;align-items:center;height:64px;border-radius:8px;background:#3a3a3a;overflow:hidden;box-shadow:0 8px 24px rgba(0,0,0,.5);transition:transform .25s ease,opacity .25s ease}
 #miniplayer.hidden{transform:translateY(20px);opacity:0;pointer-events:none}
 #mp-art{width:44px;height:44px;border-radius:4px;margin-left:10px;object-fit:cover;background:#222;flex:none}
 #mp-ph{width:44px;height:44px;border-radius:4px;margin-left:10px;flex:none}
@@ -585,13 +584,13 @@ body.auth-gate #tabbar, body.auth-gate #miniplayer, body.auth-gate #nowplaying{d
 .pv-add.liked{border-color:#1ed760;color:#1ed760}
 
 /* ---------- v10.34 Liquid Glass per Apple: dispersion rim ---------- */
-#miniplayer::before,#sheet::before{content:'';position:absolute;inset:0;border-radius:inherit;padding:2px;background:conic-gradient(from 210deg,rgba(255,80,120,.8),rgba(255,200,60,.7),rgba(80,255,170,.7),rgba(80,160,255,.8),rgba(190,90,255,.75),rgba(255,80,120,.8));-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);mask-composite:exclude;opacity:.6;pointer-events:none;mix-blend-mode:screen}
+#sheet::before{content:'';position:absolute;inset:0;border-radius:inherit;padding:2px;background:conic-gradient(from 210deg,rgba(255,80,120,.8),rgba(255,200,60,.7),rgba(80,255,170,.7),rgba(80,160,255,.8),rgba(190,90,255,.75),rgba(255,80,120,.8));-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);mask-composite:exclude;opacity:.6;pointer-events:none;mix-blend-mode:screen}
 
 /* ---------- v10.34: respect the phone's accessibility settings ---------- */
 @media (prefers-reduced-transparency: reduce){
-  #tabbar,#miniplayer,#sheet{background:#1b1b1b;backdrop-filter:none;-webkit-backdrop-filter:none}
+  #tabbar,#sheet{background:#1b1b1b;backdrop-filter:none;-webkit-backdrop-filter:none}
   #tab-orb{background:rgba(255,255,255,.3);backdrop-filter:none;-webkit-backdrop-filter:none}
-  #miniplayer::before,#sheet::before{display:none}
+  #sheet::before{display:none}
 }
 @media (prefers-reduced-motion: reduce){
   #tab-orb{transition:none!important}
