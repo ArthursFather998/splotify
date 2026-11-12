@@ -1,16 +1,15 @@
 /* Splotify service worker — offline app shell. Audio stays in IndexedDB, never in the cache. */
-const CACHE = 'splotify-v10.22';
+const CACHE = 'splotify-v10.23';
 const SHELL = [
   './', './index.html', './manifest.json',
   './css/app.css',
-  './js/icons.js', './js/db.js', './js/utag.js', './js/fixer.js', './js/player.js', './js/import.js', './js/artist-stats.js', './js/app.js', './js/plimport.js', './js/spotify-import.js', './js/vendor/mm.js', './js/vendor/jszip.min.js',
+  './js/icons.js', './js/db.js', './js/utag.js', './js/fixer.js', './js/player.js', './js/import.js', './js/artist-stats.js', './js/app.js', './js/plimport.js', './js/spotify-import.js', './js/vendor/mm.js', './js/vendor/jszip.min.js', './js/vendor/haptics-bridge.js',
   './js/discography.json', './js/placeholder-artists.json', './js/artist-art/d4vd.jpg',
   './js/disco-art/Stargazing.jpg', './js/disco-art/Harlot.jpg', './js/disco-art/Hiraeth.jpg',
   './js/disco-art/Tired.jpg', './js/disco-art/Intervals.jpg', './js/disco-art/Drain.jpg',
   './js/disco-art/Retarded.jpg', './js/disco-art/Feel.jpg', './js/disco-art/Your_Eyes.jpg',
   './js/disco-art/roses-album.jpg',
-  './fonts/montserrat-400.woff2', './fonts/montserrat-500.woff2', './fonts/montserrat-600.woff2',
-  './fonts/montserrat-700.woff2', './fonts/montserrat-800.woff2',
+  './fonts/figtree-latin.woff2', './fonts/figtree-latin-ext.woff2',
   './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png', './icons/favicon.png',
   './icons/shuffle-pink.png', './icons/repeat-all-pink.png', './icons/repeat-one-pink.png', './icons/create-tile.svg',
   './privacy.html', './terms.html',

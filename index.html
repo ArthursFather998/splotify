@@ -31,7 +31,7 @@
     <button data-act="tab" data-tab="create" class="tab" aria-label="Create"><span class="tabicon"></span><span class="tablabel">Create</span></button>
   </nav>
   <section id="nowplaying" aria-hidden="true" aria-label="Now playing">
-    <div id="np-bg"></div>
+    <div id="np-bg"><div class="np-bg-layer on" id="np-bg-a"></div><div class="np-bg-layer" id="np-bg-b"></div></div>
     <div id="np-inner">
       <header id="np-top">
         <button id="np-close" class="iconbtn" aria-label="Close player"></button>
@@ -93,6 +93,7 @@
 <script src="js/db.js"></script>
 <script src="js/utag.js"></script>
 <script src="js/native-audio.js"></script>
+<script src="js/vendor/haptics-bridge.js"></script>
 <script src="js/player.js"></script>
 <script src="js/import.js"></script>
 <script src="js/artist-stats.js"></script>

@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v10.22';
+  const APP_VERSION = 'v10.23';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -220,22 +220,106 @@ const App = (() => {
       img.crossOrigin = 'anonymous';
       img.onload = () => {
         try {
-          const cv = document.createElement('canvas'); cv.width = cv.height = 24;
-          const g = cv.getContext('2d'); g.drawImage(img, 0, 0, 24, 24);
-          const d = g.getImageData(0, 0, 24, 24).data;
-          let r = 0, gg = 0, b = 0, n = 0;
-          for (let i = 0; i < d.length; i += 16) { r += d[i]; gg += d[i + 1]; b += d[i + 2]; n++; }
-          r = Math.round(r / n * 0.55); gg = Math.round(gg / n * 0.55); b = Math.round(b / n * 0.55);
-          S.tintCache.set(t.id, [r, gg, b]);
+          // v10.23: most-saturated color bucket, not a flat average. A 24x24
+          // mean washes every cover out to the same muddy grey-brown; the
+          // richest bucket (3-bit channels, saturation-weighted) keeps the
+          // cover's real color. Falls back to the most frequent bucket for
+          // near-greyscale art. Stored raw; callers darken as they need.
+          const cv = document.createElement('canvas'); cv.width = cv.height = 48;
+          const g = cv.getContext('2d'); g.drawImage(img, 0, 0, 48, 48);
+          const d = g.getImageData(0, 0, 48, 48).data;
+          const buckets = new Map();
+          for (let i = 0; i < d.length; i += 4) {
+            if (d[i + 3] < 128) continue;
+            const bk = ((d[i] >> 5) << 6) | ((d[i + 1] >> 5) << 3) | (d[i + 2] >> 5);
+            let b = buckets.get(bk);
+            if (!b) { b = { n: 0, r: 0, g: 0, b: 0 }; buckets.set(bk, b); }
+            b.n++; b.r += d[i]; b.g += d[i + 1]; b.b += d[i + 2];
+          }
+          let best = null, frequent = null;
+          buckets.forEach(b => {
+            if (!frequent || b.n > frequent.n) frequent = b;
+            if (b.n < 8) return;
+            const mx = Math.max(b.r, b.g, b.b) / b.n, mn = Math.min(b.r, b.g, b.b) / b.n;
+            const sat = mx ? (mx - mn) / mx : 0;
+            if (sat > 0.25 && (!best || sat * Math.sqrt(b.n) > best.score)) best = { score: sat * Math.sqrt(b.n), b };
+          });
+          const pick = (best && best.b) || frequent;
+          if (!pick) return;
+          S.tintCache.set(t.id, [Math.round(pick.r / pick.n), Math.round(pick.g / pick.n), Math.round(pick.b / pick.n)]);
           if (Player.current && Player.current.id === t.id) paintNowPlaying();
           paintMini();
+          paintDetailHero();
         } catch (e) {}
       };
       img.src = u;
     } catch (e) {}
     return null;
   }
-  const cssTint = t => { const c = tint(t); return c ? `rgb(${c[0]},${c[1]},${c[2]})` : '#3a3a3a'; };
+  const cssTint = t => { const c = tint(t); return c ? `rgb(${Math.round(c[0] * .7)},${Math.round(c[1] * .7)},${Math.round(c[2] * .7)})` : '#3a3a3a'; };
+
+  /* v10.23 haptics: light tap. Silent no-op on the web / without the bridge. */
+  function tap() { try { if (window.SplotifyHaptics) window.SplotifyHaptics.light(); } catch (e) {} }
+
+  /* v10.23 marquee: long titles scroll instead of cutting off. Rebuilds only
+     when the text changes; the .mq-track holds two copies so the -50% loop
+     in CSS is seamless. */
+  function setMarquee(el, text) {
+    if (!el) return;
+    const str = String(text == null ? '' : text);
+    if (el.dataset.mqText === str) return;
+    el.dataset.mqText = str;
+    el.classList.remove('marquee');
+    el.textContent = str;
+    requestAnimationFrame(() => {
+      if (!el.isConnected || el.dataset.mqText !== str) return;
+      if (el.scrollWidth > el.clientWidth + 4) {
+        el.innerHTML = '<span class="mq-track"><span>' + esc(str) + '</span><span aria-hidden="true">' + esc(str) + '</span></span>';
+        el.classList.add('marquee');
+      }
+    });
+  }
+
+  /* v10.23 tinted headers: paint the current detail / artist hero from the
+     artwork tint (fades into #121212, Spotify-style). Called after every
+     render and again when a tint finishes loading. */
+  function paintDetailHero() {
+    let viewEl = null;
+    try { viewEl = view(); } catch (e) {}
+    if (!viewEl) return;
+    const hero = viewEl.querySelector('.detail-hero[data-tint]');
+    const t = S._heroTint;
+    if (hero && t) {
+      const c = S.tintCache.get(t.id);
+      hero.style.background = c ? `linear-gradient(180deg, rgb(${c[0]},${c[1]},${c[2]}) 0%, rgba(${c[0]},${c[1]},${c[2]},.45) 55%, #121212 100%)` : '';
+      if (!c) tint(t);
+    }
+    const ax = viewEl.querySelector('.ax-hero-tint[data-tint-ax]');
+    const at = S._heroTintAx;
+    if (ax && at) {
+      const c = S.tintCache.get(at.id);
+      if (c) {
+        ax.style.background = `linear-gradient(180deg, rgba(${c[0]},${c[1]},${c[2]},.55) 0%, rgba(${c[0]},${c[1]},${c[2]},0) 70%)`;
+        ax.classList.add('on');
+      } else tint(at);
+    }
+  }
+
+  /* v10.23 Now Playing background: two layers cross-fade opacity, because
+     CSS cannot animate between gradients. */
+  let npBgSide = 0;
+  function npSetBg(grad) {
+    const a = document.getElementById('np-bg-a'), b = document.getElementById('np-bg-b');
+    if (!a || !b) return;
+    const fallback = 'linear-gradient(180deg,#3d4a55 0%,#232a31 45%,#14181c 100%)';
+    const show = npBgSide === 0 ? a : b, hide = npBgSide === 0 ? b : a;
+    const next = grad || fallback;
+    if (show.style.background === next && show.classList.contains('on')) return;
+    show.style.background = next;
+    show.classList.add('on');
+    hide.classList.remove('on');
+    npBgSide = 1 - npBgSide;
+  }
 
   /* ---------- derived library ---------- */
   function realAlbums() {
@@ -562,6 +646,7 @@ const App = (() => {
     clearTimeout(toastT); toastT = setTimeout(() => el.classList.add('hidden'), 2200);
   }
   function openSheet(html) {
+    tap();
     document.getElementById('sheet-body').innerHTML = html;
     document.getElementById('sheet').classList.remove('hidden');
     document.getElementById('sheet-scrim').classList.remove('hidden');
@@ -1260,7 +1345,7 @@ const App = (() => {
     if (!ca.tracks || !ca.tracks.length) return head + `<div class="empty"><p>No songs found for this album.</p></div>`;
     const localTracks = S.tracks.filter(t => (t.album || '') && normKey(t.album) === normKey(ca.release.title));
     const m = mergedAlbumRows(localTracks, ca.tracks);
-    return detailHead('go-back', ca.release.art ? `<img class="hero-art" src="${esc(ca.release.art)}" alt="" onerror="App.artErr(this)">` : heroArt(localTracks.find(t => t.art)), ca.release.title, `Album • ${m.total} songs`) + playRow() + m.html;
+    return detailHead('go-back', ca.release.art ? `<img class="hero-art" src="${esc(ca.release.art)}" alt="" onerror="App.artErr(this)">` : heroArt(localTracks.find(t => t.art)), ca.release.title, `Album • ${m.total} songs`, localTracks.find(t => t.art)) + playRow() + m.html;
   }
   async function kickCatalogAlbum(id) {
     const cur = S.stack[S.stack.length - 1] || {};
@@ -1975,8 +2060,9 @@ const App = (() => {
     if (t && t.art) return `<img class="hero-art${round ? ' round' : ''}" src="${artURL(t)}" alt="" onerror="App.artErr(this)">`;
     return `<div class="hero-art${round ? ' round' : ''} art-ph" style="display:flex;align-items:center;justify-content:center">${icon('note', 'width:72px;height:72px')}</div>`;
   }
-  function detailHead(backAct, artHTML, title, meta) {
-    return `<div class="detail-hero"><button class="iconbtn back" data-act="${backAct}" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button>${artHTML}<h1>${esc(title)}</h1><div class="meta">${meta}</div></div>`;
+  function detailHead(backAct, artHTML, title, meta, tintTrack) {
+    if (tintTrack) S._heroTint = tintTrack;
+    return `<div class="detail-hero"${tintTrack ? ' data-tint="1"' : ''}><button class="iconbtn back" data-act="${backAct}" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button>${artHTML}<h1>${esc(title)}</h1><div class="meta">${meta}</div></div>`;
   }
   function playRow(extra) {
     const extraHTML = typeof extra === 'string' ? extra : '';
@@ -1993,7 +2079,7 @@ const App = (() => {
       ? `<div class="hero-art" style="display:grid;grid-template-columns:1fr 1fr;overflow:hidden">${arts.map(t => `<img src="${artURL(t)}" style="width:104px;height:104px;object-fit:cover" onerror="App.artErr(this)">`).join('')}</div>`
       : arts.length ? `<img class="hero-art" src="${artURL(arts[0])}" alt="" onerror="App.artErr(this)">` : `<div class="hero-art art-ph" style="display:flex;align-items:center;justify-content:center">${icon('note', 'width:72px;height:72px')}</div>`;
     S.viewCtx = { kicker: 'PLAYING FROM PLAYLIST', name: p.name, kind: 'playlist', id: p.id };
-    return detailHead('go-back', artHTML, p.name, `Playlist • ${ts.length} song${ts.length === 1 ? '' : 's'}`)
+    return detailHead('go-back', artHTML, p.name, `Playlist • ${ts.length} song${ts.length === 1 ? '' : 's'}` , arts[0] || ts[0])
       + playRow(p.trackIds)
       + (ts.length ? ts.map(t => trackRow(t)).join('') : `<div class="empty"><p>This playlist is empty.</p><button class="bigbtn" data-act="tab" data-tab="search">Find songs</button></div>`)
       + `<div class="sectionhead"><h2></h2><button data-act="delete-playlist" data-id="${p.id}" style="color:#ff7b7b">DELETE PLAYLIST</button></div>`;
@@ -2005,7 +2091,8 @@ const App = (() => {
     // v10.7: local rows render immediately; the full UTAG tracklist is
     // patched into #album-tracks by kickAlbumCatalog (play-all only ever
     // picks data-act="play-track" rows, so catalog rows can't enter a queue).
-    return `<div class="detail-hero"><button class="iconbtn back" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button>${heroArt(a.art)}<h1>${esc(a.name)}</h1><div class="meta" id="album-meta">${a.single ? 'Single' : 'Album'} • ${esc(a.artist)} • ${a.tracks.length} song${a.tracks.length === 1 ? '' : 's'}</div></div>`
+    S._heroTint = a.art;
+    return `<div class="detail-hero" data-tint="1"><button class="iconbtn back" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button>${heroArt(a.art)}<h1>${esc(a.name)}</h1><div class="meta" id="album-meta">${a.single ? 'Single' : 'Album'} • ${esc(a.artist)} • ${a.tracks.length} song${a.tracks.length === 1 ? '' : 's'}</div></div>`
       + playRow()
       + `<div id="album-tracks">${a.tracks.map(t => trackRow(t)).join('')}</div>`;
   }
@@ -2018,6 +2105,7 @@ const App = (() => {
     const stats = artistStats(a.name);
     const hero = artistHeroSrc(a);
     const top = artistTopTracks(a);
+    S._heroTintAx = top && top[0] ? top[0] : null;
     const shownTop = (S.artistExpanded ? top.slice(0, 10) : top.slice(0, 5));
     const rels = artistReleases(a);
     const following = S.followedArtists.has(akey);
@@ -2046,7 +2134,7 @@ const App = (() => {
     const clips = `<div class="ax-empty">${icon('playRect', 'width:58px;height:58px')}<h3>No clips here yet</h3><p>Clips from ${esc(a.name)} will sit on this tab when video lives in your library.</p></div>`;
     return `<div class="ax-page">
       <header class="ax-topbar"><button class="ax-back" data-act="go-back" aria-label="Back">${icon('chevD', 'transform:rotate(90deg)')}</button><div class="ax-topname">${esc(a.name)}</div><span class="ax-topsp"></span></header>
-      <section class="ax-hero">${hero ? `<img class="ax-hero-img" src="${esc(hero)}" alt="" onerror="App.artErr(this)">` : `<div class="ax-hero-img ax-hero-fallback">${icon('note', 'width:86px;height:86px')}</div>`}<div class="ax-hero-shade"></div>
+      <section class="ax-hero">${hero ? `<img class="ax-hero-img" src="${esc(hero)}" alt="" onerror="App.artErr(this)">` : `<div class="ax-hero-img ax-hero-fallback">${icon('note', 'width:86px;height:86px')}</div>`}<div class="ax-hero-tint" data-tint-ax="1"></div><div class="ax-hero-shade"></div>
         <div class="ax-hero-text"><h1>${esc(a.name)}</h1>${stats ? `<div class="ax-verified"><span>${icon('check')}</span>Verified artist</div>` : ''}</div>
       </section>
       <div class="ax-stat">${esc(statLine)}</div>
@@ -2084,7 +2172,7 @@ const App = (() => {
   function vLiked() {
     const ids = [...Player.state.liked].map(Number).filter(id => S.byId.has(id)).reverse();
     S.viewCtx = { kicker: 'PLAYING FROM PLAYLIST', name: 'Liked Songs', kind: 'liked', id: 'liked' };
-    return detailHead('go-back', `<div class="liked-heart-tile">${icon('heartF')}</div>`, 'Liked Songs', `${ids.length} song${ids.length === 1 ? '' : 's'}`)
+    return detailHead('go-back', `<div class="liked-heart-tile">${icon('heartF')}</div>`, 'Liked Songs', `${ids.length} song${ids.length === 1 ? '' : 's'}` , ids.length ? S.byId.get(ids[0]) : null)
       + (ids.length ? playRow(ids) + ids.map(id => trackRow(S.byId.get(id))).join('') : `<div class="empty">${icon('heart', 'width:64px;height:64px;color:var(--pink)')}<h3>Songs you like will live here</h3></div>`);
   }
   function vPlaylists() {
@@ -2265,7 +2353,7 @@ const App = (() => {
     const { tracks, urls } = mixTracksArts(mix, 4);
     const ids = tracks.map(t => t.id);
     S.viewCtx = { kicker: 'PLAYING FROM PLAYLIST', name: mix.name, kind: 'curated', id: mix.id };
-    return detailHead('go-back', `<div class="mixart hero">${mixArtInner(mix, urls)}</div>`, mix.name, `Playlist \u2022 ${ids.length} song${ids.length === 1 ? '' : 's'} \u2022 Made by Splotify`)
+    return detailHead('go-back', `<div class="mixart hero">${mixArtInner(mix, urls)}</div>`, mix.name, `Playlist \u2022 ${ids.length} song${ids.length === 1 ? '' : 's'} \u2022 Made by Splotify`, tracks[0])
       + (ids.length ? playRow(ids) + tracks.map(t => trackRow(t)).join('') : `<div class="empty"><h3>Nothing here yet</h3><p>Play some music and this mix will fill in.</p></div>`);
   }
   function vStub(title, ic, msg) {
@@ -2950,7 +3038,7 @@ const App = (() => {
   function vGenre(g) {
     const ts = S.tracks.filter(t => (t.genre || '') === g);
     S.viewCtx = { kicker: 'PLAYING FROM SONGS', name: g, kind: 'genre', id: g };
-    return detailHead('go-back', heroArt(ts.find(t => t.art)), g, `${ts.length} songs`)
+    return detailHead('go-back', heroArt(ts.find(t => t.art)), g, `${ts.length} songs`, ts.find(t => t.art))
       + (ts.length ? playRow(ts.map(t => t.id)) + ts.map(t => trackRow(t)).join('')
         : `<div class="empty"><h3>No ${esc(g)} songs yet</h3><p>Search the catalog or import audio.</p><button class="bigbtn pink" data-act="tab" data-tab="search">Search songs</button></div>`);
   }
@@ -3113,6 +3201,7 @@ const App = (() => {
       try { if (UTAG.getSession()) ensureAdmin(); } catch (e) {}
     }
     document.body.classList.toggle('auth-gate', cur.v === 'auth');
+    const apply = () => {
     const st = view().scrollTop;
     const sameView = S._lastViewKey === cur.v + '|' + (cur.id || '');
     const qHadFocus = document.activeElement && document.activeElement.id === 'q';
@@ -3199,6 +3288,12 @@ const App = (() => {
     updateStorageLine();
     updatePlImportLine();
     if ((S.stack[S.stack.length - 1] || {}).v === 'plimport') PlImport.paint();
+    paintDetailHero();
+    };
+    if (S._navAnim && document.startViewTransition) {
+      S._navAnim = false;
+      try { document.startViewTransition(apply); } catch (e) { apply(); }
+    } else apply();
   }
   async function updatePlImportLine() {
     const el = document.getElementById('plimport-sub');
@@ -3214,9 +3309,10 @@ const App = (() => {
     if (typeof UTAG !== 'undefined' && UTAG.getSession && !UTAG.getSession()) { showAuthGate(); return; }
     if (['home', 'search', 'library'].includes(v)) { S.tab = v; S.stack = [{ v }]; }
     else S.stack.push({ v, id });
+    S._navAnim = true;
     render();
   }
-  function back() { if (S.stack.length > 1) { S.stack.pop(); render(); } }
+  function back() { if (S.stack.length > 1) { S.stack.pop(); S._navAnim = true; render(); } }
 
   /* ================= mini player + now playing ================= */
   function paintMini() {
@@ -3255,7 +3351,7 @@ const App = (() => {
     };
     if (u) { mart.src = u; mart.style.display = ''; if (mph) mph.style.display = 'none'; }
     else { mart.removeAttribute('src'); mart.style.display = 'none'; if (mph) mph.style.display = 'none'; }
-    document.getElementById('mp-title').textContent = t.title;
+    setMarquee(document.getElementById('mp-title'), t.title);
     document.getElementById('mp-artist').textContent = t.artist;
     document.getElementById('mp-play').innerHTML = Player.state.loading ? '<span class="spin"></span>' : icon(Player.isPlaying ? 'pause' : 'play');
     document.getElementById('mp-devices').innerHTML = icon('devices');
@@ -3264,9 +3360,9 @@ const App = (() => {
   function paintNowPlaying() {
     const t = Player.current;
     if (!t) return;
-    const bg = document.getElementById('np-bg');
     const c = S.tintCache.get(t.id);
-    bg.style.background = c ? `linear-gradient(180deg, rgb(${Math.min(255, c[0] + 60)},${Math.min(255, c[1] + 60)},${Math.min(255, c[2] + 60)}) 0%, #14181c 78%)` : '';
+    npSetBg(c ? `linear-gradient(180deg, rgb(${c[0]},${c[1]},${c[2]}) 0%, rgb(${Math.round(c[0] * .45)},${Math.round(c[1] * .45)},${Math.round(c[2] * .45)}) 48%, #14181c 100%)` : '');
+    document.getElementById('nowplaying').classList.toggle('paused', !Player.isPlaying);
     const ctx = Player.state.ctx || {};
     document.getElementById('np-context-kicker').textContent = ctx.kicker || 'PLAYING FROM SONGS';
     // Album contexts resolve live: if the track's tags were fixed after play started,
@@ -3306,7 +3402,7 @@ const App = (() => {
     };
     if (u) { art.src = u; art.style.display = ''; ph.style.display = 'none'; ph.className = 'art-ph'; }
     else { art.removeAttribute('src'); art.style.display = 'none'; ph.style.display = ''; ph.className = 'art-ph'; if (!ph.innerHTML) ph.innerHTML = icon('note'); }
-    document.getElementById('np-title').textContent = t.title;
+    setMarquee(document.getElementById('np-title'), t.title);
     document.getElementById('np-artist').textContent = t.artist;
     const like = document.getElementById('np-like');
     const liked = isLikedFor(t);
@@ -3476,6 +3572,14 @@ const App = (() => {
     btn.innerHTML = icon(Player.isPlaying ? 'pause' : 'play');
     btn.classList.toggle('playing', Player.isPlaying);
   }
+  function paintLyricDistance(box, idx) {
+    if (!box || idx < 0) return;
+    box.querySelectorAll('.lyr-full-line').forEach((el, li) => {
+      const d = Math.abs(li - idx);
+      el.style.opacity = d === 0 ? '1' : d === 1 ? '.8' : d === 2 ? '.6' : '.45';
+    });
+  }
+
   function renderLyricsPreview() {
     const box = document.getElementById('np-lyrics-preview-lines');
     if (!box) return;
@@ -3485,6 +3589,7 @@ const App = (() => {
     const idx = lyricsLines[0].t != null ? activeLyricsIndex(lyricsLastTime) : 0;
     const shown = lyricsLines.slice(idx, idx + 6);
     box.innerHTML = shown.map((ln, i) => '<div class="lyr-prev-line' + ((lyricsLines[0].t != null && i === 0) ? ' active' : '') + '" data-lyr="' + (idx + i) + '">' + esc(ln.text) + '</div>').join('');
+    box.querySelectorAll('.lyr-prev-line').forEach((el, li) => { el.style.opacity = li === 0 ? '1' : li === 1 ? '.85' : li === 2 ? '.7' : '.55'; });
     // Preview lines do not seek: tapping the card opens the full view,
     // where tapping a line seeks. Seeking from the preview would both
     // seek and open, which is not what the screenshot does.
@@ -3505,6 +3610,7 @@ const App = (() => {
     if (!lyricsLines.length) { box.innerHTML = '<div class="lyr-full-note">' + esc(lyricsNote(t)) + '</div>'; return; }
     const idx = lyricsLines[0].t != null ? activeLyricsIndex(lyricsLastTime) : -1;
     box.innerHTML = lyricsLines.map((ln, i) => '<div class="lyr-full-line' + (i === idx ? ' active' : '') + '" data-lyr="' + i + '">' + esc(ln.text) + '</div>').join('');
+    paintLyricDistance(box, idx);
     bindLyricSeek(box, 'lyr-full-line');
     if (sameTrack) box.scrollTop = prevScroll;
   }
@@ -3535,6 +3641,7 @@ const App = (() => {
     const box = document.getElementById('lyrics-full-lines');
     if (!box) return;
     box.querySelectorAll('.lyr-full-line').forEach((el, i) => el.classList.toggle('active', i === idx));
+    paintLyricDistance(box, idx);
     if (!lyricsOpen) return;
     if (Date.now() < lyricsManualUntil) return;
     const active = box.querySelector('.lyr-full-line.active');
@@ -4491,6 +4598,7 @@ const App = (() => {
         break;
       }
       case 'artist-play': case 'artist-shuffle': {
+        tap();
         const a = artistByName(id); closeSheet();
         if (!a) break;
         const ids = artistTopTracks(a).map(t => t.id);
@@ -4533,6 +4641,7 @@ const App = (() => {
         break;
       }
       case 'play-all': case 'shuffle-all': {
+        tap();
         const ids = [...el.closest('#view').querySelectorAll('.trow[data-act="play-track"]')].map(r => refId(r.dataset.id)).filter(v => (typeof v === 'string' && v) || (typeof v === 'number' && Number.isFinite(v) && v > 0));
         const ctx = ctxOf();
         if (!ids.length) break;
@@ -4744,7 +4853,7 @@ const App = (() => {
       }
       case 'queue-jump': closeSheet(); await Player.jumpToQueueId(refId(id)); break;
       case 'track-menu': trackSheet(Number(id)); break;
-      case 'sheet-like': { const n = Number(id); if (n) await Player.toggleLike(n); closeSheet(); paintNowPlaying(); break; }
+      case 'sheet-like': { tap(); const n = Number(id); if (n) await Player.toggleLike(n); closeSheet(); paintNowPlaying(); break; }
       case 'sheet-download': closeSheet(); downloadTrack(Number(id)); break;
       case 'sheet-addto': addToSheet(Number(id)); break;
       case 'sheet-newpl': {
@@ -5062,24 +5171,44 @@ const App = (() => {
     });
     // mini player
     document.getElementById('miniplayer').addEventListener('click', e => {
-      if (e.target.closest('#mp-play')) { Player.toggle(); return; }
+      if (e.target.closest('#mp-play')) { tap(); Player.toggle(); return; }
       if (e.target.closest('#mp-devices')) { toast('Playing on this iPhone'); return; }
       openNP();
     });
+    // v10.23: swipe the mini player left/right to skip. A swipe must not
+    // also open the player, so the click right after one is swallowed.
+    (() => {
+      const mp = document.getElementById('miniplayer');
+      let sx = 0, sy = 0, swipedAt = 0;
+      mp.addEventListener('touchstart', e => { const t = e.touches[0]; sx = t.clientX; sy = t.clientY; }, { passive: true });
+      mp.addEventListener('touchend', e => {
+        const t = e.changedTouches[0];
+        const dx = t.clientX - sx, dy = t.clientY - sy;
+        if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy)) {
+          swipedAt = Date.now();
+          tap();
+          if (dx < 0) Player.next(); else Player.prev();
+        }
+      }, { passive: true });
+      mp.addEventListener('click', e => {
+        if (Date.now() - swipedAt < 400) { e.stopPropagation(); e.preventDefault(); }
+      }, true);
+    })();
+
     // now playing controls
     document.getElementById('np-close').addEventListener('click', closeNP);
-    document.getElementById('np-play').addEventListener('click', () => Player.toggle());
-    document.getElementById('np-next').addEventListener('click', () => Player.next());
-    document.getElementById('np-prev').addEventListener('click', () => Player.prev());
-    document.getElementById('np-shuffle').addEventListener('click', () => Player.toggleShuffle());
-    document.getElementById('np-repeat').addEventListener('click', () => Player.toggleRepeat());
-    document.getElementById('np-like').addEventListener('click', () => { const t = Player.current; if (t) Player.toggleLike(t.id); });
+    document.getElementById('np-play').addEventListener('click', () => { tap(); Player.toggle(); });
+    document.getElementById('np-next').addEventListener('click', () => { tap(); Player.next(); });
+    document.getElementById('np-prev').addEventListener('click', () => { tap(); Player.prev(); });
+    document.getElementById('np-shuffle').addEventListener('click', () => { tap(); Player.toggleShuffle(); });
+    document.getElementById('np-repeat').addEventListener('click', () => { tap(); Player.toggleRepeat(); });
+    document.getElementById('np-like').addEventListener('click', () => { tap(); const t = Player.current; if (t) Player.toggleLike(t.id); });
     document.getElementById('np-devices').addEventListener('click', () => toast('Playing on this iPhone'));
     document.getElementById('np-lyrics-preview-btn').addEventListener('click', openLyrics);
     document.getElementById('np-lyrics-preview').addEventListener('click', openLyrics);
     document.getElementById('lyrics-full-close').innerHTML = icon('chevD');
     document.getElementById('lyrics-full-close').addEventListener('click', closeLyrics);
-    document.getElementById('lyrics-full-play').addEventListener('click', () => Player.toggle());
+    document.getElementById('lyrics-full-play').addEventListener('click', () => { tap(); Player.toggle(); });
     document.getElementById('lyrics-full-bar').addEventListener('click', ev => {
       const track = document.getElementById('lyrics-full-track');
       if (!track) return;
@@ -5106,36 +5235,56 @@ const App = (() => {
     bar.addEventListener('pointerdown', ev => { seeking = true; bar.setPointerCapture(ev.pointerId); setFromEvent(ev); });
     bar.addEventListener('pointermove', ev => { if (seeking) setFromEvent(ev); });
     bar.addEventListener('pointerup', ev => { if (seeking) { seeking = false; Player.seek(setFromEvent(ev)); } });
-    // Seamless swipe-down to minimize: the screen follows the finger, then
-    // either finishes closing or springs back on release. The progress bar
-    // keeps priority (seeking), horizontal swipes are ignored.
+    // Swipe-down to minimize (the screen follows the finger), and swipe
+    // the artwork left/right to skip. The progress bar keeps priority;
+    // horizontal swipes anywhere else are ignored.
     (() => {
       const np = document.getElementById('nowplaying');
-      let startY = 0, startX = 0, startT = 0, dragging = false, bailed = false;
+      let startY = 0, startX = 0, startT = 0, dragging = false, horiz = false, bailed = false, artTarget = false;
       np.addEventListener('touchstart', e => {
-        bailed = dragging = false;
+        bailed = dragging = horiz = false;
         if (!np.classList.contains('open')) { bailed = true; return; }
         const t = e.touches[0];
         if (t.target.closest && t.target.closest('#np-bar')) { bailed = true; return; }
         if (t.target.closest && t.target.closest('#lyrics-full')) { bailed = true; return; }
+        artTarget = !!(t.target.closest && t.target.closest('#np-artwrap'));
         startY = t.clientY; startX = t.clientX; startT = performance.now();
       }, { passive: true });
       np.addEventListener('touchmove', e => {
         if (bailed) return;
         const t = e.touches[0];
         const dy = t.clientY - startY, dx = t.clientX - startX;
-        if (!dragging) {
-          if (Math.abs(dx) > Math.abs(dy)) { bailed = true; return; }
-          if (dy < 10) return;
-          const inner = document.getElementById('np-inner');
-          if (inner && inner.scrollTop > 0) { bailed = true; return; }
-          dragging = true;
-          np.style.transition = 'none';
+        if (!dragging && !horiz) {
+          if (Math.abs(dx) > Math.abs(dy)) {
+            if (Math.abs(dx) > 12 && artTarget) { horiz = true; }
+            else { bailed = true; return; }
+          } else {
+            if (dy < 10) return;
+            const inner = document.getElementById('np-inner');
+            if (inner && inner.scrollTop > 0) { bailed = true; return; }
+            dragging = true;
+            np.style.transition = 'none';
+          }
+        }
+        if (horiz) {
+          const aw = document.getElementById('np-artwrap');
+          if (aw) aw.style.transform = 'translateX(' + dx + 'px)';
+          return;
         }
         if (e.cancelable) e.preventDefault();
         np.style.transform = 'translateY(' + Math.max(0, dy) + 'px)';
       }, { passive: false });
       const endDrag = e => {
+        const aw = document.getElementById('np-artwrap');
+        if (aw) aw.style.transform = '';
+        if (horiz) {
+          horiz = false;
+          const t = e.changedTouches[0];
+          const dx = t.clientX - startX;
+          if (Math.abs(dx) > 60) { tap(); if (dx < 0) Player.next(); else Player.prev(); }
+          bailed = false;
+          return;
+        }
         if (bailed || !dragging) { bailed = dragging = false; return; }
         dragging = false;
         const t = e.changedTouches[0];
