@@ -1,5 +1,5 @@
 /* Splotify service worker — offline app shell. Audio stays in IndexedDB, never in the cache. */
-const CACHE = 'splotify-v10.23';
+const CACHE = 'splotify-v10.24';
 const SHELL = [
   './', './index.html', './manifest.json',
   './css/app.css',
@@ -9,7 +9,8 @@ const SHELL = [
   './js/disco-art/Tired.jpg', './js/disco-art/Intervals.jpg', './js/disco-art/Drain.jpg',
   './js/disco-art/Retarded.jpg', './js/disco-art/Feel.jpg', './js/disco-art/Your_Eyes.jpg',
   './js/disco-art/roses-album.jpg',
-  './fonts/figtree-latin.woff2', './fonts/figtree-latin-ext.woff2',
+  './fonts/montserrat-400.woff2', './fonts/montserrat-500.woff2', './fonts/montserrat-600.woff2',
+  './fonts/montserrat-700.woff2', './fonts/montserrat-800.woff2',
   './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png', './icons/favicon.png',
   './icons/shuffle-pink.png', './icons/repeat-all-pink.png', './icons/repeat-one-pink.png', './icons/create-tile.svg',
   './privacy.html', './terms.html',

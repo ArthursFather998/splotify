@@ -1,6 +1,6 @@
 /* Splotify app — views, router, artwork, sheets. */
 const App = (() => {
-  const APP_VERSION = 'v10.23';
+  const APP_VERSION = 'v10.24';
   const view = () => document.getElementById('view');
   const S = {
     tracks: [], byId: new Map(),
@@ -5175,21 +5175,62 @@ const App = (() => {
       if (e.target.closest('#mp-devices')) { toast('Playing on this iPhone'); return; }
       openNP();
     });
-    // v10.23: swipe the mini player left/right to skip. A swipe must not
+    // v10.24: swipe the mini player left/right to skip, with a proper
+    // fling animation. The card follows the finger, flies off on a real
+    // skip, and springs back when the swipe falls short. A swipe must not
     // also open the player, so the click right after one is swallowed.
     (() => {
       const mp = document.getElementById('miniplayer');
-      let sx = 0, sy = 0, swipedAt = 0;
-      mp.addEventListener('touchstart', e => { const t = e.touches[0]; sx = t.clientX; sy = t.clientY; }, { passive: true });
+      let sx = 0, sy = 0, startT = 0, swipedAt = 0, following = false;
+      const springBack = () => {
+        mp.style.transition = 'transform .3s cubic-bezier(.32,.72,.35,1), opacity .3s ease';
+        mp.style.transform = '';
+        mp.style.opacity = '';
+      };
+      mp.addEventListener('touchstart', e => {
+        following = false;
+        const t = e.touches[0]; sx = t.clientX; sy = t.clientY; startT = performance.now();
+      }, { passive: true });
+      mp.addEventListener('touchmove', e => {
+        const t = e.touches[0];
+        const dx = t.clientX - sx, dy = t.clientY - sy;
+        if (!following) {
+          if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 8) {
+            following = true;
+            mp.style.transition = 'none';
+          } else return;
+        }
+        mp.style.transform = 'translateX(' + dx + 'px)';
+        mp.style.opacity = String(1 - Math.min(Math.abs(dx) / 900, .3));
+      }, { passive: true });
       mp.addEventListener('touchend', e => {
+        if (!following) return;
+        following = false;
         const t = e.changedTouches[0];
         const dx = t.clientX - sx, dy = t.clientY - sy;
-        if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy)) {
+        const dt = Math.max(1, performance.now() - startT);
+        const fling = Math.abs(dx) > 50 || (Math.abs(dx) > 25 && Math.abs(dx) / dt > 0.5);
+        if (fling && Math.abs(dx) > Math.abs(dy)) {
           swipedAt = Date.now();
           tap();
-          if (dx < 0) Player.next(); else Player.prev();
-        }
+          const dir = dx < 0 ? -1 : 1;
+          mp.style.transition = 'transform .22s ease-out, opacity .22s ease-out';
+          mp.style.transform = 'translateX(' + (dir * 110) + '%)';
+          mp.style.opacity = '0';
+          setTimeout(() => {
+            if (dir < 0) Player.next(); else Player.prev();
+            mp.style.transition = 'none';
+            mp.style.transform = 'translateX(' + (-dir * 60) + 'px)';
+            mp.style.opacity = '0';
+            requestAnimationFrame(() => requestAnimationFrame(() => {
+              mp.style.transition = '';
+              mp.style.transform = '';
+              mp.style.opacity = '';
+            }));
+          }, 220);
+        } else springBack();
       }, { passive: true });
+      mp.addEventListener('touchcancel', () => { if (following) { following = false; springBack(); } }, { passive: true });
       mp.addEventListener('click', e => {
         if (Date.now() - swipedAt < 400) { e.stopPropagation(); e.preventDefault(); }
       }, true);
@@ -5236,11 +5277,21 @@ const App = (() => {
     bar.addEventListener('pointermove', ev => { if (seeking) setFromEvent(ev); });
     bar.addEventListener('pointerup', ev => { if (seeking) { seeking = false; Player.seek(setFromEvent(ev)); } });
     // Swipe-down to minimize (the screen follows the finger), and swipe
-    // the artwork left/right to skip. The progress bar keeps priority;
-    // horizontal swipes anywhere else are ignored.
+    // the artwork left/right to skip, with a proper fling: the art follows
+    // the finger, flies off on a real skip while the next art slides in,
+    // and springs back when the swipe falls short. The progress bar keeps
+    // priority; horizontal swipes anywhere else are ignored.
     (() => {
       const np = document.getElementById('nowplaying');
       let startY = 0, startX = 0, startT = 0, dragging = false, horiz = false, bailed = false, artTarget = false;
+      const artWrap = () => document.getElementById('np-artwrap');
+      const springArtBack = () => {
+        const aw = artWrap();
+        if (!aw) return;
+        aw.style.transition = 'transform .3s cubic-bezier(.32,.72,.35,1), opacity .3s ease';
+        aw.style.transform = '';
+        aw.style.opacity = '';
+      };
       np.addEventListener('touchstart', e => {
         bailed = dragging = horiz = false;
         if (!np.classList.contains('open')) { bailed = true; return; }
@@ -5248,6 +5299,10 @@ const App = (() => {
         if (t.target.closest && t.target.closest('#np-bar')) { bailed = true; return; }
         if (t.target.closest && t.target.closest('#lyrics-full')) { bailed = true; return; }
         artTarget = !!(t.target.closest && t.target.closest('#np-artwrap'));
+        // Take over cleanly if a previous skip's enter animation is still
+        // running: snap the art home instead of leaving it offset/invisible.
+        const aw = artWrap();
+        if (aw) { aw.style.transition = 'none'; aw.style.transform = ''; aw.style.opacity = ''; }
         startY = t.clientY; startX = t.clientX; startT = performance.now();
       }, { passive: true });
       np.addEventListener('touchmove', e => {
@@ -5267,21 +5322,47 @@ const App = (() => {
           }
         }
         if (horiz) {
-          const aw = document.getElementById('np-artwrap');
-          if (aw) aw.style.transform = 'translateX(' + dx + 'px)';
+          const aw = artWrap();
+          if (aw) {
+            aw.style.transition = 'none';
+            aw.style.transform = 'translateX(' + dx + 'px) scale(' + (1 - Math.min(Math.abs(dx) / 2500, .06)) + ')';
+            aw.style.opacity = String(1 - Math.min(Math.abs(dx) / 1200, .25));
+          }
           return;
         }
         if (e.cancelable) e.preventDefault();
         np.style.transform = 'translateY(' + Math.max(0, dy) + 'px)';
       }, { passive: false });
       const endDrag = e => {
-        const aw = document.getElementById('np-artwrap');
-        if (aw) aw.style.transform = '';
         if (horiz) {
           horiz = false;
           const t = e.changedTouches[0];
           const dx = t.clientX - startX;
-          if (Math.abs(dx) > 60) { tap(); if (dx < 0) Player.next(); else Player.prev(); }
+          const dt = Math.max(1, performance.now() - startT);
+          const fling = Math.abs(dx) > 60 || (Math.abs(dx) > 30 && Math.abs(dx) / dt > 0.5);
+          const aw = artWrap();
+          if (fling) {
+            tap();
+            const dir = dx < 0 ? -1 : 1;
+            if (aw) {
+              aw.style.transition = 'transform .22s ease-out, opacity .22s ease-out';
+              aw.style.transform = 'translateX(' + (dir * 110) + '%) scale(.94)';
+              aw.style.opacity = '0';
+            }
+            setTimeout(() => {
+              if (dir < 0) Player.next(); else Player.prev();
+              if (aw) {
+                aw.style.transition = 'none';
+                aw.style.transform = 'translateX(' + (-dir * 60) + 'px)';
+                aw.style.opacity = '0';
+                requestAnimationFrame(() => requestAnimationFrame(() => {
+                  aw.style.transition = 'transform .35s cubic-bezier(.32,.72,.35,1), opacity .35s ease';
+                  aw.style.transform = '';
+                  aw.style.opacity = '';
+                }));
+              }
+            }, 220);
+          } else springArtBack();
           bailed = false;
           return;
         }
