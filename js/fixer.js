@@ -1,7 +1,7 @@
 /* UTAG Fixer engine - ported from the Splotify v7/v8 catalog fixer.
    No AI. Sources, in order: library roster → Apple Music → Deezer →
    MusicBrainz → AcoustID fingerprint. Artwork: Apple → Deezer →
-   Cover Art Archive → fanart.tv. Lyrics: embedded tags first, then
+   Cover Art Archive → fanart.tv → Wikipedia. Lyrics: embedded tags first, then
    LRCLIB. No lyrics-site scraping.
    Reads tags in-browser (vendored music-metadata). Returns scored
    proposals; the caller reviews and applies. Nothing is written
@@ -558,7 +558,40 @@ window.UtagFixer = (() => {
     return { proposals: out, releaseGroupId: (rel && rel.id) || null };
   }
 
-  /* Artwork chain: Apple/Deezer hits first, then Cover Art Archive, then fanart.tv. */
+  /* Wikipedia cover lookup, last resort only. The summary endpoint
+     returns the infobox cover even for fair-use art, where the
+     pageimages endpoint returns nothing. Only a page whose title starts
+     with the album title, reads as a music release, and names the
+     artist in its text counts, so a same-title release by someone else
+     or a news page that merely mentions the artist can never supply
+     the cover. */
+  async function wikiArt(t) {
+    const album = (t.album || "").trim();
+    const artist = (t.artist || "").trim();
+    if (!album || /^unknown album$/i.test(album)) return null;
+    if (!artist || /^unknown artist$/i.test(artist) || /^various artists?$/i.test(artist)) return null;
+    const s = await fetchJSON("https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=" + encodeURIComponent(album + " " + artist) + "&srnamespace=0&srlimit=3&format=json&origin=*", 8000);
+    const hits = (s && s.query && s.query.search) || [];
+    const hayArtist = norm(artist);
+    const firstToken = hayArtist.split(" ").filter(w => w.length >= 4 && w !== "with" && w !== "feat")[0] || "";
+    for (const h of hits) {
+      const pt = norm(h.title), at = norm(album);
+      if (pt !== at && pt.indexOf(at + " ") !== 0) continue;
+      const sum = await fetchJSON("https://en.wikipedia.org/api/rest_v1/page/summary/" + encodeURIComponent(h.title.replace(/ /g, "_")), 6000);
+      if (!sum || !sum.thumbnail || !sum.thumbnail.source) continue;
+      if (sum.type === "disambiguation") continue;
+      const hay = norm((sum.description || "") + " " + (sum.extract || ""));
+      const descWords = norm(sum.description || "").split(" ").filter(Boolean);
+      const releaseWords = ["album", "ep", "single", "song", "mixtape", "soundtrack", "compilation"];
+      const isRelease = releaseWords.some(w => descWords.indexOf(w) !== -1) || hay.indexOf("album by") !== -1 || hay.indexOf("single by") !== -1 || hay.indexOf("song by") !== -1 || hay.indexOf("ep by") !== -1;
+      if (!isRelease) continue;
+      if (hay.indexOf(hayArtist) === -1 && (!firstToken || hay.indexOf(firstToken) === -1)) continue;
+      return { url: sum.thumbnail.source.split("?")[0], w: 300, source: "Wikipedia" };
+    }
+    return null;
+  }
+
+  /* Artwork chain: Apple/Deezer hits first, then Cover Art Archive, then fanart.tv, then Wikipedia. */
   async function fetchArtBlob(url) {
     try {
       const c = new AbortController();
@@ -596,12 +629,22 @@ window.UtagFixer = (() => {
       /* AcoustID gives a release-group id - different CAA endpoint. */
       cands.push({ url: "https://coverartarchive.org/release-group/" + rgId + "/front", w: 1350, source: "Cover Art Archive" });
     }
-    if (!cands.length) return null;
-    cands.sort((a, b) => b.w - a.w);
-    for (const cd of cands) {
-      const blob = await fetchArtBlob(cd.url);
-      if (blob) return { blob, url: cd.url, source: cd.source };
+    if (cands.length) {
+      cands.sort((a, b) => b.w - a.w);
+      for (const cd of cands) {
+        const blob = await fetchArtBlob(cd.url);
+        if (blob) return { blob, url: cd.url, source: cd.source };
+      }
     }
+    /* Last resort: Wikipedia covers notable albums the other sources
+       miss. Low-res, so it only runs after everything else fails. */
+    try {
+      const w = await wikiArt(t);
+      if (w) {
+        const blob = await fetchArtBlob(w.url);
+        if (blob) return { blob, url: w.url, source: w.source };
+      }
+    } catch (e) {}
     return null;
   }
 
@@ -677,7 +720,7 @@ window.UtagFixer = (() => {
     return { proposals: [...byField.values()], verified, art, artSource: art ? art.source : null, lyrics: lyrics || null };
   }
 
-  return { parseFile, auditFile, parseLrc, stripLrc, lrclibLyrics, getKey, setKey, fmtDur: s => {
+  return { parseFile, auditFile, wikiArt, parseLrc, stripLrc, lrclibLyrics, getKey, setKey, fmtDur: s => {
     if (!s || !isFinite(s)) return "";
     s = Math.round(s);
     return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
