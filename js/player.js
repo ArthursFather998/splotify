@@ -353,6 +353,7 @@ const Player = (() => {
       // A track that cannot load (stream gone, local file missing) must
       // never stall the queue: keep advancing until one plays, or the
       // queue runs out. One quiet failure notice if nothing plays.
+      const fromPos = S.pos;
       let played = false;
       let guard = 0;
       for (;;) {
@@ -365,8 +366,13 @@ const Player = (() => {
         if (++guard >= S.list.length) break;
       }
       if (!played) {
-        if (S.repeat !== 'all') { out.pause(); out.currentTime = 0; syncPlayState(); }
-        else emit('track-error', { id: curId() });
+        // Nothing later can play: come back to the track that was
+        // playing and stop on it, instead of parking on a song with no
+        // audio that the play button cannot revive.
+        S.pos = fromPos;
+        await load(curId(), false);
+        out.pause(); out.currentTime = 0; syncPlayState();
+        if (S.repeat === 'all') emit('track-error', { id: curId() });
       }
       emit('queue', null);
     },
@@ -374,10 +380,18 @@ const Player = (() => {
       if (!S.list.length) return;
       if (out.currentTime > 3) { out.currentTime = 0; return; }
       if (S.pos > 0) {
-        S.pos--;
-        let ok = await load(curId(), true);
-        while (!ok && S.pos > 0) { S.pos--; ok = await load(curId(), true); }
-        if (!ok) { out.pause(); out.currentTime = 0; syncPlayState(); }
+        // A track with no audio must never strand the player: keep
+        // walking back until one plays. If none can, come back to the
+        // track that was playing and restart it, instead of parking on
+        // a song with no audio that the play button cannot revive.
+        const fromPos = S.pos;
+        let p = S.pos - 1, ok = false;
+        while (p >= 0 && !ok) { S.pos = p; ok = await load(curId(), true); if (!ok) p--; }
+        if (!ok) {
+          S.pos = fromPos;
+          const again = await load(curId(), true);
+          if (!again) { out.pause(); out.currentTime = 0; syncPlayState(); }
+        }
       }
       else { out.currentTime = 0; }
       emit('queue', null);
